@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'theme.dart';
+import 'auth_gate.dart';
 
 Future<void> main() async {
   // 1. Ensure Flutter is initialized before calling native code
@@ -26,20 +28,17 @@ class DashApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Create MaterialTheme with the default Material text theme
+    final materialTheme = MaterialTheme(Typography.englishLike2018);
+
     return MaterialApp(
-      title: 'DASH Running App',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-        useMaterial3: true,
-      ),
-      home: const Scaffold(
-        body: Center(
-          child: Text(
-            'DASH - Connection Successful!',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-          ),
-        ),
-      ),
+      title: 'DASH',
+      // Automatically apply your Light and Dark themes!
+      theme: materialTheme.light(),
+      darkTheme: materialTheme.dark(),
+      themeMode: ThemeMode.system, // Switches automatically based on phone settings
+      debugShowCheckedModeBanner: false,
+      home: const AuthGate(),
     );
   }
 }

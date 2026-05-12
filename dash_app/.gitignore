@@ -46,3 +46,7 @@ app.*.map.json
 
 # Secret environment variables
 .env
+
+# Ignore AI agent logs (bulletproof version)
+**/claude\ logs/
+claude\ logs/
