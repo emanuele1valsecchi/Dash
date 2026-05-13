@@ -94,7 +94,22 @@ class _RegistrationFlowState extends State<RegistrationFlow> {
             onErrorCleared: () => setState(() => _errorMessage = null),
             onOAuthSignUp: (provider) => _handleOAuthSignUp(provider),
           ),
-          // ... The rest of your steps remain exactly the same ...
+          // Step 2: Password (must come before OTP so signUp is called first)
+          _PasswordStep(
+            password: _password,
+            onPasswordChanged: (value) => setState(() => _password = value),
+            onNext: () => _handleSignUp(), // Call _handleSignUp which sends confirmation email
+            onPrevious: _previousStep,
+            onSignUp: () => _handleSignUp(),
+            colorScheme: colorScheme,
+            isLoading: _isLoading,
+            setLoading: (value) => setState(() => _isLoading = value),
+            errorMessage: _errorMessage,
+            onErrorCleared: () => setState(() => _errorMessage = null),
+            onErrorSet: (error) => setState(() => _errorMessage = error),
+            email: _email,
+          ),
+          // Step 3: OTP (after signUp is called)
           _OTPStep(
             email: _email,
             onNext: _nextStep,
@@ -106,24 +121,12 @@ class _RegistrationFlowState extends State<RegistrationFlow> {
             onErrorCleared: () => setState(() => _errorMessage = null),
             onErrorSet: (error) => setState(() => _errorMessage = error),
           ),
-          _PasswordStep(
-            password: _password,
-            onPasswordChanged: (value) => setState(() => _password = value),
-            onNext: _nextStep,
-            onPrevious: _previousStep,
-            onSignUp: () => _handleSignUp(),
-            colorScheme: colorScheme,
-            isLoading: _isLoading,
-            setLoading: (value) => setState(() => _isLoading = value),
-            errorMessage: _errorMessage,
-            onErrorCleared: () => setState(() => _errorMessage = null),
-            onErrorSet: (error) => setState(() => _errorMessage = error),
-            email: _email,
-          ),
+          // Step 4: Welcome
           _WelcomeStep(
             onNext: _nextStep,
             colorScheme: colorScheme,
           ),
+          // Step 5: Profile Setup
           _ProfileSetupStep(
             username: _username,
             onUsernameChanged: (value) => setState(() => _username = value),
@@ -246,8 +249,19 @@ class _RegistrationFlowState extends State<RegistrationFlow> {
           'last_name': _surname,
           'nickname': _username,
           'avatar_url': '',
-          // total_points defaults to 0, no need to set
         });
+
+        // Initialize user_stats table (required for the user)
+        await Supabase.instance.client.from('user_stats').upsert({
+          'user_id': user.id,
+          'total_distance_meters': 0,
+          'total_duration_seconds': 0,
+          'max_speed_kmh': 0,
+          'longest_run_meters': 0,
+          'current_streak_days': 0,
+        });
+      } else {
+        throw Exception('User not authenticated');
       }
 
       if (mounted) {
@@ -267,12 +281,14 @@ class _RegistrationFlowState extends State<RegistrationFlow> {
         );
       }
     } catch (error) {
+      final errorMsg = error.toString();
+      print('Profile setup error: $errorMsg');
       setState(() {
-        _errorMessage = 'Profile setup failed. Please try again.';
+        _errorMessage = 'Profile setup failed: $errorMsg';
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Profile setup failed')),
+          SnackBar(content: Text('Profile setup failed: $errorMsg')),
         );
       }
     } finally {
@@ -793,7 +809,12 @@ class _PasswordStepState extends State<_PasswordStep> {
   void initState() {
     super.initState();
     _passwordController.text = widget.password;
-    _updateValidation();
+    // Initialize validation flags directly without setState or callbacks
+    final password = widget.password;
+    _isMinLength = password.length >= 8;
+    _hasUppercase = password.contains(RegExp(r'[A-Z]'));
+    _hasNumber = password.contains(RegExp(r'[0-9]'));
+    _hasSpecialChar = password.contains(RegExp(r'[!@#$%^&*(),.?":{}|<>]'));
   }
 
   @override
