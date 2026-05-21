@@ -1,8 +1,10 @@
 import 'package:dash/screens/login_screen.dart';
 import 'package:dash/screens/welcome_page.dart';
+import 'package:dash/screens/home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 
 void main() async {
@@ -51,8 +53,24 @@ class AuthGate extends StatelessWidget {
           return const LoginScreen();
         }
 
-        // 3. Utente loggato (Email / Google / Facebook) → WelcomePage
-        return const WelcomePage();
+        // 3. Utente loggato → check if profile exists in Firestore
+        return FutureBuilder<DocumentSnapshot>(
+          future: FirebaseFirestore.instance
+              .collection('profiles')
+              .doc(snapshot.data!.uid)
+              .get(),
+          builder: (context, profileSnapshot) {
+            if (profileSnapshot.connectionState == ConnectionState.waiting) {
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
+            if (profileSnapshot.data?.exists == true) {
+              return const HomeScreen();
+            }
+            return const WelcomePage();
+          },
+        );
       },
     );
   }

@@ -85,7 +85,7 @@ class ImageUploadService {
     // Verifica coerenza tra estensione e MIME type
     final bool isJpegAlias =
         mimeType == 'image/jpeg' && (ext == 'jpg' || ext == 'jpeg');
-    final String? expectedExt = extensionFromMime(mimeType);
+    final String expectedExt = extensionFromMime(mimeType);
     if (expectedExt != null && expectedExt != ext && !isJpegAlias) {
       return "Estensione e contenuto del file non corrispondono.";
     }
