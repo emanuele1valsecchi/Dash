@@ -34,17 +34,11 @@ class DashApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Dash',
       debugShowCheckedModeBanner: false,
-      themeMode: ThemeMode.dark,
+      title: 'DASH',
       theme: ThemeData(
+        primarySwatch: Colors.green,
         useMaterial3: true,
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: Colors.black,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFB8F5C8),
-          brightness: Brightness.dark,
-        ),
       ),
       home: const OnboardingScreen(),
     );

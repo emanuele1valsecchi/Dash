@@ -1,0 +1,139 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isSelf(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+    function isOwner(resourceData) {
+      return isSignedIn() && request.auth.uid == resourceData.userId;
+    }
+    // Reject any write that tries to set/modify a field the client must
+    // never own. Used to protect aggregate counters and awarded points.
+    function noServerOnlyFields(data, fields) {
+      return !(fields.hasAny(data.keys()));
+    }
+
+    // ---------- profiles ----------
+    match /profiles/{uid} {
+      allow read: if isSignedIn();
+
+      // On create the doc ID must equal the caller's UID, and totalPoints
+      // is forced to zero. The client cannot self-award points.
+      allow create: if isSelf(uid)
+        && request.resource.data.totalPoints == 0
+        && request.resource.data.userId == null  // userId is implicit (doc ID)
+        || ( isSelf(uid)
+             && request.resource.data.totalPoints == 0 );
+
+      // On update, totalPoints must not be changed by the client.
+      allow update: if isSelf(uid)
+        && request.resource.data.totalPoints == resource.data.totalPoints;
+
+      allow delete: if false; // disable client-side deletes
+    }
+
+    // ---------- nicknames (uniqueness index) ----------
+    match /nicknames/{nickname} {
+      allow read: if isSignedIn();
+      // Claim only if the document does not already exist and the caller
+      // writes their own UID into it.
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid;
+      allow update: if false;
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    // ---------- follows ----------
+    match /follows/{followId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.followerId == request.auth.uid
+        && request.resource.data.followerId != request.resource.data.followingId;
+      allow delete: if isSignedIn() && resource.data.followerId == request.auth.uid;
+      allow update: if false;
+    }
+
+    // ---------- routes ----------
+    match /routes/{routeId} {
+      allow read: if isSignedIn()
+        && (resource.data.userId == request.auth.uid
+            || resource.data.isPublic == true);
+
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.distanceMeters is number
+        && request.resource.data.isLoop is bool;
+
+      // Owner may rename or toggle visibility. Geometry is immutable.
+      allow update: if isOwner(resource.data)
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.routePolyline == resource.data.routePolyline
+        && request.resource.data.waypoints == resource.data.waypoints
+        && request.resource.data.distanceMeters == resource.data.distanceMeters;
+
+      allow delete: if false; // soft delete via update of `deletedAt` only
+    }
+
+    // ---------- claimedAreas ----------
+    match /claimedAreas/{areaId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && areaId == request.resource.data.routeId; // ID must mirror routeId
+      allow update: if false; // claims are immutable once written
+      allow delete: if isOwner(resource.data);
+    }
+
+    // ---------- runningSessions ----------
+    match /runningSessions/{sessionId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.pointsEarned == 0;
+      // Client may finalize the session (set endTime, stats) but cannot
+      // change ownership or points (Cloud Function owns pointsEarned).
+      allow update: if isOwner(resource.data)
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.pointsEarned == resource.data.pointsEarned;
+      allow delete: if false;
+    }
+
+    // ---------- userStats ----------
+    // Read-only from the client. All writes go through Cloud Functions
+    // using the Admin SDK, which bypasses these rules.
+    match /userStats/{uid} {
+      allow read: if isSelf(uid);
+      allow write: if false;
+    }
+
+    // ---------- favoriteRoutes ----------
+    match /favoriteRoutes/{favId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && favId == (request.auth.uid + '_' + request.resource.data.routeId);
+      allow delete: if isOwner(resource.data);
+      allow update: if false;
+    }
+
+    // ---------- notifications ----------
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      // Only Cloud Functions create notifications.
+      allow create: if false;
+      // The recipient may only flip isRead / readAt.
+      allow update: if isSignedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['isRead', 'readAt']);
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+  }
+}
