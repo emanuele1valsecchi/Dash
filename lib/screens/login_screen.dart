@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:google_sign_in/google_sign_in.dart';
-import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
-import 'registration_screen.dart';
-
+import 'package:flutter/gestures.dart';
+import '../services/auth_service.dart';
+import 'legal_screen.dart';
+import 'register_screen.dart';
+import '../services/profile_service.dart';
+import 'welcome_register_screen.dart';
+import '../screens/home_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -12,157 +14,19 @@ class LoginScreen extends StatefulWidget {
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
-
 class _LoginScreenState extends State<LoginScreen> {
+  final _authService = AuthService();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  bool _obscurePassword = true;
   bool _isLoading = false;
+  String? _errorMessage;
 
-
-  // --- VALIDAZIONE ---
-  bool _isInputValid() {
-    if (_emailController.text.isEmpty || !_emailController.text.contains('@')) {
-      _showError("Inserisci un'email valida");
-      return false;
-    }
-    if (_passwordController.text.length < 6) {
-      _showError("La password deve avere almeno 6 caratteri");
-      return false;
-    }
-    return true;
-  }
-
-
-  // --- LOGIN CON EMAIL E PASSWORD ---
-  Future<void> signInWithEmail() async {
-    if (!_isInputValid()) return;
-    setState(() => _isLoading = true);
-
-    try {
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text.trim(),
-      );
-      
-    } on FirebaseAuthException catch (e) {
-      switch (e.code) {
-        case 'user-not-found':
-          _showError("Account non trovato. Registrati prima!");
-          break;
-        case 'wrong-password':
-        case 'invalid-credential': // Firebase Auth v2+ usa questo
-          _showError("Credenziali errate. Controlla email e password.");
-          break;
-        case 'user-disabled':
-          _showError("Account disabilitato. Contatta il supporto.");
-          break;
-        case 'too-many-requests':
-          _showError("Troppi tentativi. Riprova tra qualche minuto.");
-          break;
-        default:
-          _showError("Errore: ${e.message}");
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-
-  // --- LOGIN CON GOOGLE ---
-  Future<void> signInWithGoogle() async {
-    setState(() => _isLoading = true);
-    try {
-      final GoogleSignIn googleSignIn = GoogleSignIn();
-
-      // disconnect() invece di signOut() — più sicuro, silent fail se non serve
-      try {
-        await googleSignIn.disconnect();
-      } catch (_) {}
-
-      final GoogleSignInAccount? googleUser = await googleSignIn.signIn();
-
-      // L'utente ha chiuso il popup senza scegliere
-      if (googleUser == null) return;
-
-      final GoogleSignInAuthentication googleAuth =
-          await googleUser.authentication;
-
-      // Controllo esplicito: se i token sono null non proseguire
-      if (googleAuth.accessToken == null || googleAuth.idToken == null) {
-        _showError("Errore nel recupero del token Google. Riprova.");
-        return;
-      }
-
-      final credential = GoogleAuthProvider.credential(
-        accessToken: googleAuth.accessToken,
-        idToken: googleAuth.idToken,
-      );
-
-      await FirebaseAuth.instance.signInWithCredential(credential);
-
-    } catch (e) {
-      _showError("Errore Google: $e");
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-
-  // --- LOGIN CON FACEBOOK ---
-  Future<void> signInWithFacebook() async {
-    setState(() => _isLoading = true);
-    try {
-      final LoginResult result = await FacebookAuth.instance.login();
-
-      switch (result.status) {
-        case LoginStatus.success:
-          final accessToken = result.accessToken;
-
-          if (accessToken == null) {
-            _showError("Token Facebook non disponibile. Riprova.");
-            return;
-          }
-          
-          final OAuthCredential credential =
-              FacebookAuthProvider.credential(accessToken.tokenString);
-
-          await FirebaseAuth.instance.signInWithCredential(credential);
-          // ✅ Nessun Navigator: AuthGate gestisce la navigazione
-          break;
-
-        case LoginStatus.cancelled:
-          // L'utente ha annullato — non mostrare errore
-          break;
-
-        case LoginStatus.failed:
-          _showError("Errore Facebook: ${result.message}");
-          break;
-
-        default:
-          _showError("Stato Facebook sconosciuto: ${result.status}");
-      }
-
-    } catch (e) {
-      _showError("Errore imprevisto Facebook: $e");
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-
-  // --- HELPER ERRORI ---
-  void _showError(String message) {
-    debugPrint("[LoginScreen] $message");
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.red,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
+  static const Color _bgColor     = Color(0xFFF0F5EC);
+  static const Color _accentGreen = Color(0xFFB8F5C8);
+  static const Color _textDark    = Color(0xFF2A2A2A);
+  static const Color _textMuted   = Color(0xFF888888);
+  static const Color _inputBorder = Color(0xFFCCCCCC);
 
   @override
   void dispose() {
@@ -171,170 +35,446 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+  Future<void> _onLoginPressed() async {
+    if (_emailController.text.trim().isEmpty ||
+        _passwordController.text.isEmpty) {
+      setState(() => _errorMessage = 'Enter email and password');
+      return;
+    }
+    setState(() { _isLoading = true; _errorMessage = null; });
+    try {
+      await _authService.loginWithEmail(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+      );
+      if (mounted) {
+        await _navigateAfterLogin(context);
+      }
+    } on Exception catch (e) {
+      setState(() => _errorMessage = _parseError(e.toString()));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FBF1),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 30),
-            child: Column(
-              children: [
-                const SizedBox(height: 40),
-                Image.asset('assets/images/IconPlain.png', height: 80),
-                const Text(
-                  "DASH",
-                  style: TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 4,
-                    color: Color(0xFF4A5D3F),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                const Text(
-                  "The world is a blank map. Lace up and start drawing your borders. Login with your Dash account",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.black54),
-                ),
-                const SizedBox(height: 40),
+  Future<void> _onGooglePressed() async {
+    setState(() { _isLoading = true; _errorMessage = null; });
+    try {
+      final result = await _authService.signInWithGoogle();
+      if (result != null && mounted) {
+        await _navigateAfterLogin(context);
+      }
+    } on Exception catch (e) {
+      setState(() => _errorMessage = _parseError(e.toString()));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
 
-                // --- CAMPO EMAIL ---
-                TextField(
-                  controller: _emailController,
-                  keyboardType: TextInputType.emailAddress,
-                  autocorrect: false,
-                  decoration: InputDecoration(
-                    labelText: 'email',
-                    hintText: 'youremail@domain.com',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(15),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 20),
+  void _onRegisterTap() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const RegisterScreen()),
+    );
+  }
 
-                // --- CAMPO PASSWORD ---
-                TextField(
-                  controller: _passwordController,
-                  obscureText: true,
-                  decoration: InputDecoration(
-                    labelText: 'password',
-                    hintText: 'Type your password',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(15),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 30),
-
-                // --- BOTTONE LOGIN ---
-                SizedBox(
-                  width: double.infinity,
-                  height: 55,
-                  child: ElevatedButton(
-                    onPressed: _isLoading ? null : signInWithEmail,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFCDF0B6),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(30),
-                      ),
-                    ),
-                    child: _isLoading
-                        ? const CircularProgressIndicator(color: Colors.black)
-                        : const Text(
-                            "Let's go",
-                            style: TextStyle(
-                              color: Colors.black,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                          ),
-                  ),
-                ),
-
-                const SizedBox(height: 15),
-
-                // --- LINK REGISTRAZIONE ---
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Text(
-                      "Are you not registered yet? ",
-                      style: TextStyle(color: Colors.black54),
-                    ),
-                    GestureDetector(
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => const RegistrationScreen(),
-                          ),
-                        );
-                      },
-                      child: const Text(
-                        "Register Here",
-                        style: TextStyle(
-                          color: Color(0xFF4A5D3F),
-                          fontWeight: FontWeight.bold,
-                          decoration: TextDecoration.underline,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 30),
-                const Text("— or —", style: TextStyle(color: Colors.grey)),
-                const SizedBox(height: 20),
-
-                // --- SOCIAL BUTTONS ---
-                _socialButton(
-                  "Continue with Google",
-                  Icons.g_mobiledata,
-                  signInWithGoogle,
-                ),
-                _socialButton(
-                  "Continue with Facebook",
-                  Icons.facebook,
-                  signInWithFacebook,
-                ),
-
-                const SizedBox(height: 30),
-              ],
-            ),
-          ),
-        ),
+  void _onTermsTap() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const LegalScreen(type: LegalType.terms),
       ),
     );
   }
 
+  void _onPrivacyTap() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const LegalScreen(type: LegalType.privacy),
+      ),
+    );
+  }
 
-  Widget _socialButton(
-    String text,
-    IconData iconData,
-    VoidCallback onPressed,
-  ) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 15),
-      child: OutlinedButton.icon(
-        onPressed: _isLoading ? null : onPressed,
-        icon: Icon(iconData, size: 28, color: Colors.black87),
-        label: Text(
-          text,
-          style: const TextStyle(color: Colors.black87, fontSize: 16),
-        ),
-        style: OutlinedButton.styleFrom(
-          minimumSize: const Size(double.infinity, 55),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(25),
+  Future<void> _navigateAfterLogin(BuildContext context) async {
+  final profileService = ProfileService();
+  final exists = await profileService.profileExists();
+  if (!context.mounted) return;
+  if (exists) {
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const HomeScreen()),
+    );
+  } else {
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const WelcomeRegisterScreen()),
+    );
+  }
+}
+
+  String _parseError(String error) {
+    if (error.contains('user-not-found'))    return 'No account found with this email';
+    if (error.contains('wrong-password'))    return 'Incorrect password';
+    if (error.contains('invalid-email'))     return 'Invalid email address';
+    if (error.contains('too-many-requests')) return 'Too many attempts. Try again later';
+    return 'Something went wrong. Try again.';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _bgColor,
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+
+              // ── Logo ───────────────────────────────────────
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Image.asset(
+                    'assets/images/IconPlain.png',
+                    width: 52, height: 52, fit: BoxFit.contain,
+                  ),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'DASH',
+                    style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.w800,
+                      color: _textDark,
+                      letterSpacing: 2,
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 20),
+
+              // ── Tagline ────────────────────────────────────
+              const Text(
+                'The world is a blank map. Lace up and start drawing your borders. Create an account to claim your first territory today',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 14, color: _textDark, height: 1.5),
+              ),
+
+              const SizedBox(height: 32),
+
+              // ── Email ──────────────────────────────────────
+              _InputField(
+                controller: _emailController,
+                label: 'email',
+                hint: 'youremail@domain.com',
+                keyboardType: TextInputType.emailAddress,
+                textInputAction: TextInputAction.next,
+              ),
+
+              const SizedBox(height: 14),
+
+              // ── Password ───────────────────────────────────
+              _InputField(
+                controller: _passwordController,
+                label: 'password',
+                hint: 'Type your password',
+                obscureText: _obscurePassword,
+                textInputAction: TextInputAction.done,
+                suffixIcon: IconButton(
+                  icon: Icon(
+                    _obscurePassword
+                        ? Icons.visibility_off_outlined
+                        : Icons.visibility_outlined,
+                    color: _textMuted, size: 20,
+                  ),
+                  onPressed: () =>
+                      setState(() => _obscurePassword = !_obscurePassword),
+                ),
+                onSubmitted: (_) => _onLoginPressed(),
+              ),
+
+              // ── Errore ─────────────────────────────────────
+              if (_errorMessage != null) ...[
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    _errorMessage!,
+                    style: const TextStyle(
+                      color: Color(0xFFCC2200), fontSize: 13,
+                    ),
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: 22),
+
+              // ── Let's go ───────────────────────────────────
+              SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: ElevatedButton(
+                  onPressed: _isLoading ? null : _onLoginPressed,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _accentGreen,
+                    foregroundColor: _textDark,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    disabledBackgroundColor: _accentGreen.withValues(alpha: 0.6),
+                  ),
+                  child: _isLoading
+                      ? const SizedBox(
+                          width: 22, height: 22,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.black54),
+                        )
+                      : const Text(
+                          "Let's go",
+                          style: TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w600),
+                        ),
+                ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // ── Register link ──────────────────────────────
+              RichText(
+                text: TextSpan(
+                  style: const TextStyle(fontSize: 14, color: _textDark),
+                  children: [
+                    const TextSpan(text: 'Are you not registered yet? '),
+                    TextSpan(
+                      text: 'Register Here',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF2E7D32),
+                      ),
+                      recognizer: TapGestureRecognizer()..onTap = _onRegisterTap,
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              // ── Divider OR ─────────────────────────────────
+              Row(
+                children: [
+                  const Expanded(child: Divider(color: _inputBorder)),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Text('or',
+                        style: TextStyle(color: _textMuted, fontSize: 13)),
+                  ),
+                  const Expanded(child: Divider(color: _inputBorder)),
+                ],
+              ),
+
+              const SizedBox(height: 20),
+
+              // ── Google ─────────────────────────────────────
+              _SocialButton(
+                onPressed: _isLoading ? () {} : _onGooglePressed,
+                icon: _GoogleIcon(),
+                label: 'Continue with Google',
+              ),
+
+              const SizedBox(height: 32),
+
+              // ── Terms & Privacy ────────────────────────────
+              RichText(
+                textAlign: TextAlign.center,
+                text: TextSpan(
+                  style: const TextStyle(
+                      fontSize: 12, color: _textMuted, height: 1.6),
+                  children: [
+                    const TextSpan(
+                        text: 'By continuing, you are agreeing to our '),
+                    TextSpan(
+                      text: 'Terms of Service',
+                      style: const TextStyle(
+                        color: _textDark,
+                        decoration: TextDecoration.underline,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      recognizer: TapGestureRecognizer()..onTap = _onTermsTap,
+                    ),
+                    const TextSpan(text: ' and '),
+                    TextSpan(
+                      text: 'Privacy Policy',
+                      style: const TextStyle(
+                        color: _textDark,
+                        decoration: TextDecoration.underline,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      recognizer: TapGestureRecognizer()..onTap = _onPrivacyTap,
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-          backgroundColor: const Color(0xFFE8F5D6),
-          side: BorderSide.none,
         ),
       ),
     );
   }
 }
+
+// ─── Input Field ──────────────────────────────────────────────────────────────
+
+class _InputField extends StatelessWidget {
+  final TextEditingController controller;
+  final String label;
+  final String hint;
+  final bool obscureText;
+  final TextInputType keyboardType;
+  final TextInputAction textInputAction;
+  final Widget? suffixIcon;
+  final ValueChanged<String>? onSubmitted;
+
+  const _InputField({
+    required this.controller,
+    required this.label,
+    required this.hint,
+    this.obscureText = false,
+    this.keyboardType = TextInputType.text,
+    this.textInputAction = TextInputAction.next,
+    this.suffixIcon,
+    this.onSubmitted,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      obscureText: obscureText,
+      keyboardType: keyboardType,
+      textInputAction: textInputAction,
+      onSubmitted: onSubmitted,
+      style: const TextStyle(fontSize: 15, color: Color(0xFF2A2A2A)),
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: hint,
+        hintStyle: const TextStyle(color: Color(0xFFAAAAAA), fontSize: 14),
+        labelStyle: const TextStyle(color: Color(0xFF888888), fontSize: 13),
+        suffixIcon: suffixIcon,
+        filled: true,
+        fillColor: Colors.white.withValues(alpha: 0.6),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFFCCCCCC), width: 1),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFF4CAF50), width: 1.5),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Social Button ────────────────────────────────────────────────────────────
+
+class _SocialButton extends StatelessWidget {
+  final VoidCallback onPressed;
+  final Widget icon;
+  final String label;
+
+  const _SocialButton({
+    required this.onPressed,
+    required this.icon,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: 50,
+      child: ElevatedButton(
+        onPressed: onPressed,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFFD6EDCA),
+          foregroundColor: const Color(0xFF2A2A2A),
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(30),
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            icon,
+            const SizedBox(width: 10),
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w500)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Google Icon ──────────────────────────────────────────────────────────────
+
+class _GoogleIcon extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 24, height: 24,
+      child: CustomPaint(painter: _GooglePainter()),
+    );
+  }
+}
+
+class _GooglePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+    final r = size.width / 2;
+
+    canvas.drawCircle(Offset(cx, cy), r, Paint()..color = Colors.white);
+
+    final colors = [
+      const Color(0xFF4285F4),
+      const Color(0xFF34A853),
+      const Color(0xFFFBBC05),
+      const Color(0xFFEA4335),
+    ];
+    final rect = Rect.fromCircle(center: Offset(cx, cy), radius: r * 0.72);
+    double startAngle = -90.0;
+    for (int i = 0; i < 4; i++) {
+      canvas.drawArc(
+        rect,
+        startAngle * (3.14159 / 180),
+        90 * (3.14159 / 180),
+        false,
+        Paint()
+          ..color = colors[i]
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = r * 0.28,
+      );
+      startAngle += 90;
+    }
+    canvas.drawRect(
+      Rect.fromLTWH(cx, cy - r * 0.14, r * 0.72, r * 0.28),
+      Paint()..color = Colors.white,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+// ─── Meta Icon ────────────────────────────────────────────────────────────────
+
+class _MetaIcon extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) =>
+      const Icon(Icons.facebook, color: Color(0xFF1877F2), size: 24);
+}
+
