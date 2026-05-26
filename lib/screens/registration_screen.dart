@@ -1,4 +1,4 @@
-import 'package:dash/screens/welcome_page.dart';
+import 'welcome_page.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
