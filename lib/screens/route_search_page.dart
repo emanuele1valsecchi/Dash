@@ -1,0 +1,1497 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
+import 'package:latlong2/latlong.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+import '../services/routing_service.dart';
+
+// ── Data models ────────────────────────────────────────────────────────────────
+
+class _FoundRoute {
+  final List<LatLng> polyline;
+  final double distanceKm;
+  final double estimatedTimeMin;
+  final double estimatedCalories;
+  final Color color;
+
+  const _FoundRoute({
+    required this.polyline,
+    required this.distanceKm,
+    required this.estimatedTimeMin,
+    required this.estimatedCalories,
+    required this.color,
+  });
+
+  LatLng get midpoint => polyline[polyline.length ~/ 2];
+}
+
+class _NominatimResult {
+  final String displayName;
+  final LatLng latLng;
+  const _NominatimResult({required this.displayName, required this.latLng});
+}
+
+// ── Page ───────────────────────────────────────────────────────────────────────
+
+class RouteSearchPage extends StatefulWidget {
+  const RouteSearchPage({super.key});
+
+  @override
+  State<RouteSearchPage> createState() => _RouteSearchPageState();
+}
+
+class _RouteSearchPageState extends State<RouteSearchPage> {
+  // ── Map ───────────────────────────────────────────────────────────────────
+  final MapController _mapController = MapController();
+  LatLng? _currentPosition;
+  bool _isLoadingLocation = true;
+  StreamSubscription<Position>? _positionStream;
+
+  // ── Bottom sheet ──────────────────────────────────────────────────────────
+  final DraggableScrollableController _sheetController =
+      DraggableScrollableController();
+
+  // ── Form state ────────────────────────────────────────────────────────────
+  bool _isClosedCircuit = false;
+
+  bool _useCurrentPositionAsStart = true;
+  final TextEditingController _startCtrl = TextEditingController();
+  LatLng? _startLatLng; // pre-resolved from suggestion
+
+  bool _useCurrentPositionAsDest = false;
+  final TextEditingController _destCtrl = TextEditingController();
+  LatLng? _destLatLng;
+
+  bool _hasStop = false;
+  final TextEditingController _stopCtrl = TextEditingController();
+  LatLng? _stopLatLng;
+
+  final TextEditingController _timeCtrl = TextEditingController();
+  final TextEditingController _distCtrl = TextEditingController();
+  final TextEditingController _calCtrl = TextEditingController();
+
+  // ── Result / UI state ─────────────────────────────────────────────────────
+  bool _isSearching = false;
+  List<_FoundRoute> _foundRoutes = [];
+  bool _hasSearched = false;
+
+  // true while routes are displayed on the map; form fields are read-only
+  bool _isResultsMode = false;
+
+  // index of the route the user last tapped (highlighted on map), -1 = none
+  int _selectedRouteIndex = -1;
+
+  // ── Constants ─────────────────────────────────────────────────────────────
+
+  static const double _defaultZoom = 14.0;
+  static const double _paceMinPerKm = 9.0;   // magic default
+  static const double _calPerKm = 70.0;       // magic default
+  static const double _tolerance = 0.30;
+
+  static const List<Color> _palette = [
+    Color(0xFF2E7D32),
+    Color(0xFF1565C0),
+    Color(0xFFE65100),
+    Color(0xFF6A1B9A),
+    Color(0xFF00695C),
+    Color(0xFFAD1457),
+  ];
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+  @override
+  void initState() {
+    super.initState();
+    _initLocation();
+  }
+
+  @override
+  void dispose() {
+    _positionStream?.cancel();
+    _mapController.dispose();
+    _sheetController.dispose();
+    for (final c in [
+      _startCtrl, _destCtrl, _stopCtrl,
+      _timeCtrl, _distCtrl, _calCtrl,
+    ]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  // ── Location ──────────────────────────────────────────────────────────────
+
+  Future<void> _initLocation() async {
+    final status = await Permission.locationWhenInUse.request();
+    if (!status.isGranted) {
+      setState(() => _isLoadingLocation = false);
+      return;
+    }
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings:
+            const LocationSettings(accuracy: LocationAccuracy.high),
+      );
+      final ll = LatLng(pos.latitude, pos.longitude);
+      setState(() {
+        _currentPosition = ll;
+        _isLoadingLocation = false;
+      });
+      _mapController.move(ll, _defaultZoom);
+    } catch (_) {
+      setState(() => _isLoadingLocation = false);
+    }
+    _positionStream = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high, distanceFilter: 5),
+    ).listen((p) =>
+        setState(() => _currentPosition = LatLng(p.latitude, p.longitude)));
+  }
+
+  // ── Geocoding ─────────────────────────────────────────────────────────────
+
+  Future<LatLng?> _geocode(String address) async {
+    try {
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/search'
+        '?q=${Uri.encodeComponent(address.trim())}&format=json&limit=1',
+      );
+      final res = await http
+          .get(uri, headers: {'User-Agent': 'DashApp/1.0'})
+          .timeout(const Duration(seconds: 8));
+      if (res.statusCode != 200) return null;
+      final list = jsonDecode(res.body) as List<dynamic>;
+      if (list.isEmpty) return null;
+      final item = list[0] as Map<String, dynamic>;
+      return LatLng(double.parse(item['lat'] as String),
+          double.parse(item['lon'] as String));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<LatLng?> _resolveStart() async {
+    if (_useCurrentPositionAsStart) return _currentPosition;
+    if (_startLatLng != null) return _startLatLng;
+    if (_startCtrl.text.trim().isEmpty) return null;
+    return _geocode(_startCtrl.text);
+  }
+
+  Future<LatLng?> _resolveDestination() async {
+    if (_useCurrentPositionAsDest) return _currentPosition;
+    if (_destLatLng != null) return _destLatLng;
+    if (_destCtrl.text.trim().isEmpty) return null;
+    return _geocode(_destCtrl.text);
+  }
+
+  Future<LatLng?> _resolveStop() async {
+    if (_stopLatLng != null) return _stopLatLng;
+    if (_stopCtrl.text.trim().isEmpty) return null;
+    return _geocode(_stopCtrl.text);
+  }
+
+  // ── Constraint resolution ─────────────────────────────────────────────────
+
+  ({bool isConflict, bool isEmpty, double? targetKm}) _deriveTarget() {
+    final double? fromTime = double.tryParse(_timeCtrl.text.trim()) != null
+        ? double.parse(_timeCtrl.text.trim()) / _paceMinPerKm
+        : null;
+    final double? fromDist = double.tryParse(_distCtrl.text.trim());
+    final double? fromCal = double.tryParse(_calCtrl.text.trim()) != null
+        ? double.parse(_calCtrl.text.trim()) / _calPerKm
+        : null;
+
+    final targets =
+        [fromTime, fromDist, fromCal].whereType<double>().toList();
+
+    if (targets.isEmpty) return (isConflict: false, isEmpty: true, targetKm: null);
+
+    if (targets.length > 1) {
+      final minV = targets.reduce(math.min);
+      final maxV = targets.reduce(math.max);
+      if (minV > 0 && (maxV - minV) / minV > _tolerance) {
+        return (isConflict: true, isEmpty: false, targetKm: null);
+      }
+    }
+
+    final avg = targets.reduce((a, b) => a + b) / targets.length;
+    return (isConflict: false, isEmpty: false, targetKm: avg);
+  }
+
+  // ── Geometry ──────────────────────────────────────────────────────────────
+
+  LatLng _offset(LatLng center, double distanceM, double bearingDeg) {
+    final rad = bearingDeg * math.pi / 180;
+    const mPerLat = 110540.0;
+    final mPerLng = 111320.0 * math.cos(center.latitude * math.pi / 180);
+    return LatLng(
+      center.latitude + (distanceM * math.cos(rad)) / mPerLat,
+      center.longitude + (distanceM * math.sin(rad)) / mPerLng,
+    );
+  }
+
+  // ── Routing helpers ───────────────────────────────────────────────────────
+
+  Future<RouteSegment> _route(LatLng from, LatLng to) async =>
+      await RoutingService.fetchRoute(from, to) ??
+      RoutingService.straightLine(from, to);
+
+  RouteSegment _stitch(RouteSegment a, RouteSegment b) => RouteSegment(
+        polyline: [...a.polyline, ...b.polyline.skip(1)],
+        distanceMeters: a.distanceMeters + b.distanceMeters,
+      );
+
+  _FoundRoute _toFoundRoute(RouteSegment seg, int index) {
+    final km = seg.distanceMeters / 1000;
+    return _FoundRoute(
+      polyline: seg.polyline,
+      distanceKm: km,
+      estimatedTimeMin: km * _paceMinPerKm,
+      estimatedCalories: km * _calPerKm,
+      color: _palette[index % _palette.length],
+    );
+  }
+
+  // ── Results mode ──────────────────────────────────────────────────────────
+
+  void _enterEditMode() {
+    setState(() {
+      _isResultsMode = false;
+      _hasSearched = false;
+      _foundRoutes = [];
+      _selectedRouteIndex = -1;
+    });
+    if (_sheetController.isAttached) {
+      _sheetController.animateTo(0.52,
+          duration: const Duration(milliseconds: 350), curve: Curves.easeOut);
+    }
+  }
+
+  // ── Search entry point ────────────────────────────────────────────────────
+
+  Future<void> _search() async {
+    FocusScope.of(context).unfocus();
+
+    final start = await _resolveStart();
+    if (start == null) {
+      _snack('Could not resolve starting point');
+      return;
+    }
+
+    final target = _deriveTarget();
+
+    // Closed circuit requires a distance/time/calorie target so the loop
+    // generator knows how far to travel.
+    if (_isClosedCircuit && target.isEmpty) {
+      _snack('Set at least one parameter for a closed circuit');
+      return;
+    }
+
+    if (target.isConflict) {
+      _snack('Constraints conflict — remove one value and try again');
+      return;
+    }
+
+    setState(() {
+      _isSearching = true;
+      _foundRoutes = [];
+      _hasSearched = false;
+      _selectedRouteIndex = -1;
+    });
+
+    List<_FoundRoute> routes;
+
+    if (_isClosedCircuit) {
+      routes = await _generateLoopRoutes(start, target.targetKm! * 1000);
+    } else {
+      final end = await _resolveDestination();
+      if (end == null) {
+        if (mounted) setState(() => _isSearching = false);
+        _snack('Could not resolve destination');
+        return;
+      }
+      final stop = _hasStop ? await _resolveStop() : null;
+      // targetDistM is null when no constraints → show ORS alternatives freely
+      routes = await _generateDirectRoutes(
+          start, stop, end, target.targetKm?.let((km) => km * 1000));
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isSearching = false;
+      _foundRoutes = routes;
+      _hasSearched = true;
+      _isResultsMode = routes.isNotEmpty;
+    });
+
+    if (routes.isNotEmpty) {
+      _collapseSheet();
+      _fitMap(routes);
+    }
+  }
+
+  // ── Loop route generation ──────────────────────────────────────────────────
+  //
+  // Places two intermediate waypoints at radius = D × 0.25 from start, 90°
+  // apart, and routes start → wp1 → wp2 → start.  Eight candidate bearings
+  // (every 45°) are evaluated in parallel to produce geometrically distinct
+  // loops.  Routes within ±30 % of the target distance are kept (up to 5).
+
+  Future<List<_FoundRoute>> _generateLoopRoutes(
+      LatLng start, double targetDistM) async {
+    final radius = targetDistM * 0.25;
+
+    final candidates = await Future.wait(
+      List.generate(8, (i) async {
+        final theta = i * 45.0;
+        final wp1 = _offset(start, radius, theta);
+        final wp2 = _offset(start, radius, theta + 90.0);
+        final s1 = await _route(start, wp1);
+        final s2 = await _route(wp1, wp2);
+        final s3 = await _route(wp2, start);
+        return _stitch(_stitch(s1, s2), s3);
+      }),
+    );
+
+    final results = <_FoundRoute>[];
+    for (final seg in candidates) {
+      final ratio = seg.distanceMeters / targetDistM;
+      if (ratio < 1 - _tolerance || ratio > 1 + _tolerance) continue;
+      results.add(_toFoundRoute(seg, results.length));
+      if (results.length >= 5) break;
+    }
+    return results;
+  }
+
+  // ── Direct (A → B) route generation ───────────────────────────────────────
+
+  Future<List<_FoundRoute>> _generateDirectRoutes(
+    LatLng start,
+    LatLng? stop,
+    LatLng end,
+    double? targetDistM, // null → no constraint, show all alternatives
+  ) async {
+    // When a stop is specified route through it (single result).
+    if (stop != null) {
+      final a = await _route(start, stop);
+      final b = await _route(stop, end);
+      final full = _stitch(a, b);
+      if (targetDistM != null) {
+        final ratio = full.distanceMeters / targetDistM;
+        if (ratio < 1 - _tolerance || ratio > 1 + _tolerance) return [];
+      }
+      return [_toFoundRoute(full, 0)];
+    }
+
+    // No stop: use ORS alternative routes endpoint for up to 3 results.
+    final alternatives = await RoutingService.fetchAlternatives(start, end);
+
+    if (targetDistM == null) {
+      // No constraints — return all alternatives as-is.
+      return alternatives.asMap().entries
+          .map((e) => _toFoundRoute(e.value, e.key))
+          .toList();
+    }
+
+    // Filter by ±30 % tolerance.
+    final results = <_FoundRoute>[];
+    for (final seg in alternatives) {
+      final ratio = seg.distanceMeters / targetDistM;
+      if (ratio < 1 - _tolerance || ratio > 1 + _tolerance) continue;
+      results.add(_toFoundRoute(seg, results.length));
+    }
+    return results;
+  }
+
+  // ── Map helpers ───────────────────────────────────────────────────────────
+
+  void _collapseSheet() {
+    if (!_sheetController.isAttached) return;
+    _sheetController.animateTo(0.12,
+        duration: const Duration(milliseconds: 350), curve: Curves.easeOut);
+  }
+
+  void _fitMap(List<_FoundRoute> routes) {
+    final pts = routes.expand((r) => r.polyline).toList();
+    if (pts.isEmpty) return;
+
+    var minLat = pts.first.latitude, maxLat = pts.first.latitude;
+    var minLng = pts.first.longitude, maxLng = pts.first.longitude;
+    for (final p in pts) {
+      if (p.latitude < minLat) minLat = p.latitude;
+      if (p.latitude > maxLat) maxLat = p.latitude;
+      if (p.longitude < minLng) minLng = p.longitude;
+      if (p.longitude > maxLng) maxLng = p.longitude;
+    }
+
+    _mapController.fitCamera(
+      CameraFit.bounds(
+        bounds: LatLngBounds(
+            LatLng(minLat, minLng), LatLng(maxLat, maxLng)),
+        padding: const EdgeInsets.fromLTRB(48, 120, 48, 220),
+      ),
+    );
+  }
+
+  void _selectRoute(int index) {
+    setState(() => _selectedRouteIndex = index);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _RouteDetailsSheet(
+        route: _foundRoutes[index],
+        routeNumber: index + 1,
+      ),
+    );
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Stack(
+        children: [
+          _buildMap(),
+          if (_isLoadingLocation) _buildLoadingOverlay(),
+          _buildSheet(),
+          _buildBackButton(),
+        ],
+      ),
+    );
+  }
+
+  // ── Map layer ─────────────────────────────────────────────────────────────
+
+  Widget _buildMap() {
+    final hasSelection = _selectedRouteIndex >= 0 &&
+        _selectedRouteIndex < _foundRoutes.length;
+
+    return FlutterMap(
+      mapController: _mapController,
+      options: MapOptions(
+        initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
+        initialZoom: _defaultZoom,
+        onTap: (tapPos, point) {
+          FocusScope.of(context).unfocus();
+          // Tapping the map background clears the route highlight.
+          if (_selectedRouteIndex != -1) {
+            setState(() => _selectedRouteIndex = -1);
+          }
+        },
+      ),
+      children: [
+        TileLayer(
+          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          userAgentPackageName: 'com.dash',
+        ),
+
+        // ── Dimmed non-selected routes (rendered first, below) ────────────
+        if (_foundRoutes.isNotEmpty && hasSelection)
+          PolylineLayer(
+            polylines: _foundRoutes.asMap().entries
+                .where((e) => e.key != _selectedRouteIndex)
+                .map((e) => Polyline(
+                      points: e.value.polyline,
+                      color: e.value.color.withValues(alpha: 0.25),
+                      strokeWidth: 3.0,
+                    ))
+                .toList(),
+          ),
+
+        // ── All routes at full opacity (when nothing is selected) ──────────
+        if (_foundRoutes.isNotEmpty && !hasSelection)
+          PolylineLayer(
+            polylines: _foundRoutes
+                .map((r) => Polyline(
+                      points: r.polyline,
+                      color: r.color,
+                      strokeWidth: 4.5,
+                    ))
+                .toList(),
+          ),
+
+        // ── Selected route on top, with white border for contrast ─────────
+        if (hasSelection)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: _foundRoutes[_selectedRouteIndex].polyline,
+                color: _foundRoutes[_selectedRouteIndex].color,
+                strokeWidth: 6.5,
+                borderColor: Colors.white,
+                borderStrokeWidth: 2.0,
+              ),
+            ],
+          ),
+
+        // ── GPS dot ───────────────────────────────────────────────────────
+        if (_currentPosition != null)
+          MarkerLayer(
+            markers: [
+              Marker(
+                point: _currentPosition!,
+                width: 60,
+                height: 60,
+                child: const _LocationDot(),
+              ),
+            ],
+          ),
+
+        // ── Numbered tap-targets at route midpoints ───────────────────────
+        if (_foundRoutes.isNotEmpty)
+          MarkerLayer(
+            markers: _foundRoutes.asMap().entries.map((e) {
+              final idx = e.key;
+              final route = e.value;
+              final isSelected = idx == _selectedRouteIndex;
+              return Marker(
+                point: route.midpoint,
+                width: 38,
+                height: 38,
+                child: GestureDetector(
+                  onTap: () => _selectRoute(idx),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isSelected
+                          ? route.color
+                          : route.color.withValues(
+                              alpha: _selectedRouteIndex == -1 ? 1.0 : 0.45),
+                      border: Border.all(
+                        color: Colors.white,
+                        width: isSelected ? 3.0 : 2.0,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: isSelected ? 8 : 4,
+                        ),
+                      ],
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      '${idx + 1}',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: isSelected ? 14 : 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+      ],
+    );
+  }
+
+  // ── Back button ───────────────────────────────────────────────────────────
+
+  Widget _buildBackButton() {
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 12,
+      left: 12,
+      child: Material(
+        color: Colors.white,
+        shape: const CircleBorder(),
+        elevation: 2,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () => Navigator.of(context).pop(),
+          child: const Padding(
+            padding: EdgeInsets.all(10),
+            child:
+                Icon(Icons.arrow_back, color: Color(0xFF425143), size: 22),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Bottom sheet ──────────────────────────────────────────────────────────
+
+  Widget _buildSheet() {
+    return DraggableScrollableSheet(
+      controller: _sheetController,
+      initialChildSize: 0.52,
+      minChildSize: 0.12,
+      maxChildSize: 0.90,
+      snap: true,
+      snapSizes: const [0.12, 0.52, 0.90],
+      builder: (context, scrollController) => Container(
+        decoration: const BoxDecoration(
+          color: Color(0xFFF3F5EE),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 10)],
+        ),
+        child: Column(
+          children: [
+            // Drag handle
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            // Header row
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Row(
+                children: [
+                  const Text(
+                    'Search a route',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF2A3028),
+                    ),
+                  ),
+                  const Spacer(),
+                  // Loading spinner while searching
+                  if (_isSearching)
+                    const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Color(0xFF4A8C52)),
+                    )
+                  // "N found" badge in results mode
+                  else if (_hasSearched && !_isResultsMode)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: _foundRoutes.isNotEmpty
+                            ? const Color(0xFFEAF7E0)
+                            : const Color(0xFFF0F0F0),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        '${_foundRoutes.length} found',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: _foundRoutes.isNotEmpty
+                              ? const Color(0xFF2E7D32)
+                              : Colors.grey,
+                        ),
+                      ),
+                    )
+                  // "Edit search" button in results mode
+                  else if (_isResultsMode)
+                    TextButton.icon(
+                      onPressed: _enterEditMode,
+                      icon: const Icon(Icons.edit_outlined, size: 16),
+                      label: const Text('Edit search'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: const Color(0xFF4A8C52),
+                        padding: EdgeInsets.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            // Form content
+            Expanded(
+              child: ListView(
+                controller: scrollController,
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 40),
+                children: [
+                  _buildCircuitToggle(),
+                  const SizedBox(height: 16),
+                  _buildStartSection(),
+                  if (!_isClosedCircuit) ...[
+                    const SizedBox(height: 16),
+                    _buildDestinationSection(),
+                  ],
+                  const SizedBox(height: 16),
+                  _buildIntermediateStopSection(),
+                  const SizedBox(height: 20),
+                  _buildParametersSection(),
+                  const SizedBox(height: 24),
+                  _buildBottomRow(),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Form sections ─────────────────────────────────────────────────────────
+
+  Widget _buildCircuitToggle() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: _isResultsMode ? const Color(0xFFEEEEEE) : Colors.white,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.loop_rounded,
+              size: 20,
+              color: _isResultsMode
+                  ? Colors.grey
+                  : const Color(0xFF4A8C52)),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Search for a closed circuit',
+                    style: TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w500)),
+                Text('Route must form a loop back to start',
+                    style:
+                        TextStyle(fontSize: 11, color: Colors.grey)),
+              ],
+            ),
+          ),
+          Switch(
+            value: _isClosedCircuit,
+            onChanged:
+                _isResultsMode ? null : (v) => setState(() => _isClosedCircuit = v),
+            activeThumbColor: const Color(0xFF4A8C52),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStartSection() {
+    return _FormSection(
+      label: 'Starting point',
+      child: _useCurrentPositionAsStart
+          ? _LocationChip(
+              enabled: !_isResultsMode,
+              onEdit: _isResultsMode
+                  ? null
+                  : () => setState(() => _useCurrentPositionAsStart = false),
+            )
+          : _AddressInputField(
+              controller: _startCtrl,
+              hint: 'Enter an address',
+              enabled: !_isResultsMode,
+              onUseLocation: _isResultsMode
+                  ? null
+                  : () => setState(() => _useCurrentPositionAsStart = true),
+              onSuggestionPicked: (ll) => setState(() => _startLatLng = ll),
+            ),
+    );
+  }
+
+  Widget _buildDestinationSection() {
+    return _FormSection(
+      label: 'Destination',
+      child: _useCurrentPositionAsDest
+          ? _LocationChip(
+              enabled: !_isResultsMode,
+              onEdit: _isResultsMode
+                  ? null
+                  : () => setState(() => _useCurrentPositionAsDest = false),
+            )
+          : _AddressInputField(
+              controller: _destCtrl,
+              hint: 'Enter an address',
+              enabled: !_isResultsMode,
+              onUseLocation: _isResultsMode
+                  ? null
+                  : () => setState(() => _useCurrentPositionAsDest = true),
+              onSuggestionPicked: (ll) => setState(() => _destLatLng = ll),
+            ),
+    );
+  }
+
+  Widget _buildIntermediateStopSection() {
+    return _FormSection(
+      label: 'Intermediate stop',
+      child: _hasStop
+          ? _AddressInputField(
+              controller: _stopCtrl,
+              hint: 'Enter an address',
+              enabled: !_isResultsMode,
+              onRemove: _isResultsMode
+                  ? null
+                  : () => setState(() {
+                        _hasStop = false;
+                        _stopCtrl.clear();
+                        _stopLatLng = null;
+                      }),
+              onSuggestionPicked: (ll) => setState(() => _stopLatLng = ll),
+            )
+          : GestureDetector(
+              onTap: _isResultsMode
+                  ? null
+                  : () => setState(() => _hasStop = true),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: _isResultsMode
+                        ? Colors.grey.shade300
+                        : const Color(0xFFCAF0B8),
+                    width: 1.5,
+                  ),
+                  borderRadius: BorderRadius.circular(10),
+                  color: Colors.white,
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.add_circle_outline,
+                        size: 18,
+                        color: _isResultsMode
+                            ? Colors.grey
+                            : const Color(0xFF4A8C52)),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Add a stop',
+                      style: TextStyle(
+                        color: _isResultsMode
+                            ? Colors.grey
+                            : const Color(0xFF4A8C52),
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+    );
+  }
+
+  Widget _buildParametersSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Text(
+              'Session parameters',
+              style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF5E655C)),
+            ),
+            if (_isClosedCircuit) ...[
+              const SizedBox(width: 6),
+              const Text(
+                '(required for loops)',
+                style: TextStyle(fontSize: 11, color: Color(0xFFE65100)),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 2),
+        const Text(
+          'Defaults: 9 min/km · 70 kcal/km',
+          style: TextStyle(fontSize: 11, color: Colors.grey),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+                child: _ParamField(
+                    controller: _timeCtrl,
+                    hint: 'Time',
+                    unit: 'min',
+                    enabled: !_isResultsMode)),
+            const SizedBox(width: 8),
+            Expanded(
+                child: _ParamField(
+                    controller: _distCtrl,
+                    hint: 'Distance',
+                    unit: 'km',
+                    enabled: !_isResultsMode)),
+            const SizedBox(width: 8),
+            Expanded(
+                child: _ParamField(
+                    controller: _calCtrl,
+                    hint: 'Calories',
+                    unit: 'kcal',
+                    enabled: !_isResultsMode)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBottomRow() {
+    final n = _foundRoutes.length;
+    final label =
+        _isClosedCircuit ? 'Total circuits found' : 'Total routes found';
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        ElevatedButton.icon(
+          onPressed: (_isSearching || _isResultsMode) ? null : _search,
+          icon: const Icon(Icons.search_rounded, size: 18),
+          label: const Text('Show track'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFFCAF0B8),
+            foregroundColor: const Color(0xFF2E7D32),
+            disabledBackgroundColor: const Color(0xFFE0E0E0),
+            elevation: 0,
+            padding:
+                const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+            textStyle: const TextStyle(
+                fontWeight: FontWeight.w600, fontSize: 14),
+          ),
+        ),
+        const Spacer(),
+        if (_hasSearched || _isSearching)
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(label,
+                  style: const TextStyle(
+                      fontSize: 11, color: Colors.grey)),
+              Text(
+                _isSearching ? '…' : '$n',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w800,
+                  color: n > 0
+                      ? const Color(0xFF2E7D32)
+                      : const Color(0xFF9E9E9E),
+                ),
+              ),
+            ],
+          ),
+      ],
+    );
+  }
+
+  // ── Loading overlay ───────────────────────────────────────────────────────
+
+  Widget _buildLoadingOverlay() {
+    return Container(
+      color: Colors.black45,
+      child: const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(color: Colors.white),
+            SizedBox(height: 12),
+            Text('Getting your location…',
+                style: TextStyle(color: Colors.white, fontSize: 16)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Extension for nullable chaining ───────────────────────────────────────────
+
+extension _Let<T> on T {
+  R let<R>(R Function(T) block) => block(this);
+}
+
+// ── Form helper widgets ────────────────────────────────────────────────────────
+
+class _FormSection extends StatelessWidget {
+  final String label;
+  final Widget child;
+  const _FormSection({required this.label, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF5E655C))),
+        const SizedBox(height: 6),
+        child,
+      ],
+    );
+  }
+}
+
+class _LocationChip extends StatelessWidget {
+  final VoidCallback? onEdit;
+  final bool enabled;
+  const _LocationChip({required this.onEdit, this.enabled = true});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onEdit,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color:
+              enabled ? const Color(0xFFEAF7E0) : const Color(0xFFF0F0F0),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: enabled
+                ? const Color(0xFF4A8C52)
+                : Colors.grey.shade300,
+            width: 1.0,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.my_location,
+                size: 16,
+                color: enabled
+                    ? const Color(0xFF4A8C52)
+                    : Colors.grey),
+            const SizedBox(width: 6),
+            Text('Current position',
+                style: TextStyle(
+                    color: enabled
+                        ? const Color(0xFF4A8C52)
+                        : Colors.grey,
+                    fontSize: 14)),
+            const SizedBox(width: 10),
+            Icon(Icons.edit_outlined,
+                size: 14,
+                color: enabled
+                    ? const Color(0xFF4A8C52)
+                    : Colors.grey),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Address input with Nominatim autocomplete ──────────────────────────────────
+
+class _AddressInputField extends StatefulWidget {
+  final TextEditingController controller;
+  final String hint;
+  final bool enabled;
+  final VoidCallback? onUseLocation;
+  final VoidCallback? onRemove;
+  final void Function(LatLng? latLng) onSuggestionPicked;
+
+  const _AddressInputField({
+    required this.controller,
+    required this.hint,
+    required this.onSuggestionPicked,
+    this.enabled = true,
+    this.onUseLocation,
+    this.onRemove,
+  });
+
+  @override
+  State<_AddressInputField> createState() => _AddressInputFieldState();
+}
+
+class _AddressInputFieldState extends State<_AddressInputField> {
+  final FocusNode _focusNode = FocusNode();
+  Timer? _debounce;
+  List<_NominatimResult> _suggestions = [];
+  bool _showSuggestions = false;
+
+  // Guards against the listener re-firing when text is set programmatically
+  // (after tapping a suggestion).
+  bool _suppressNextChange = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onTextChanged);
+    _focusNode.addListener(() {
+      if (!_focusNode.hasFocus && mounted) {
+        setState(() => _showSuggestions = false);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _onTextChanged() {
+    if (_suppressNextChange) {
+      _suppressNextChange = false;
+      return;
+    }
+    // Invalidate any previously selected suggestion LatLng.
+    widget.onSuggestionPicked(null);
+
+    _debounce?.cancel();
+    final text = widget.controller.text.trim();
+    if (text.length < 3) {
+      if (mounted) setState(() { _suggestions = []; _showSuggestions = false; });
+      return;
+    }
+    _debounce = Timer(const Duration(milliseconds: 350),
+        () => _fetchSuggestions(text));
+  }
+
+  Future<void> _fetchSuggestions(String query) async {
+    try {
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/search'
+        '?q=${Uri.encodeComponent(query)}&format=json&limit=5',
+      );
+      final res = await http
+          .get(uri, headers: {'User-Agent': 'DashApp/1.0'})
+          .timeout(const Duration(seconds: 5));
+      if (res.statusCode != 200) return;
+      final list = jsonDecode(res.body) as List<dynamic>;
+      final results = list.map((item) {
+        final m = item as Map<String, dynamic>;
+        return _NominatimResult(
+          displayName: m['display_name'] as String,
+          latLng: LatLng(
+            double.parse(m['lat'] as String),
+            double.parse(m['lon'] as String),
+          ),
+        );
+      }).toList();
+      if (mounted) {
+        setState(() {
+          _suggestions = results;
+          _showSuggestions = results.isNotEmpty && _focusNode.hasFocus;
+        });
+      }
+    } catch (_) {}
+  }
+
+  void _selectSuggestion(_NominatimResult result) {
+    _suppressNextChange = true;
+    widget.controller.text = result.displayName;
+    widget.controller.selection = TextSelection.fromPosition(
+        TextPosition(offset: result.displayName.length));
+    setState(() { _showSuggestions = false; _suggestions = []; });
+    widget.onSuggestionPicked(result.latLng);
+    _focusNode.unfocus();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: widget.controller,
+          focusNode: _focusNode,
+          enabled: widget.enabled,
+          style: const TextStyle(fontSize: 14),
+          decoration: InputDecoration(
+            hintText: widget.hint,
+            hintStyle:
+                const TextStyle(color: Colors.grey, fontSize: 14),
+            prefixIcon: const Icon(Icons.search, size: 18, color: Colors.grey),
+            suffixIcon: widget.onUseLocation != null
+                ? IconButton(
+                    icon: const Icon(Icons.my_location,
+                        size: 16, color: Color(0xFF4A8C52)),
+                    onPressed: widget.onUseLocation,
+                    tooltip: 'Use current position',
+                  )
+                : widget.onRemove != null
+                    ? IconButton(
+                        icon: const Icon(Icons.close,
+                            size: 16, color: Colors.grey),
+                        onPressed: widget.onRemove,
+                        tooltip: 'Remove stop',
+                      )
+                    : null,
+            filled: true,
+            fillColor:
+                widget.enabled ? Colors.white : const Color(0xFFF0F0F0),
+            contentPadding:
+                const EdgeInsets.symmetric(vertical: 10),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide.none,
+            ),
+          ),
+        ),
+        // Suggestions dropdown
+        if (_showSuggestions && _suggestions.isNotEmpty)
+          Material(
+            elevation: 4,
+            borderRadius: const BorderRadius.vertical(
+                bottom: Radius.circular(10)),
+            color: Colors.white,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 200),
+              child: ListView.separated(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                physics: const ClampingScrollPhysics(),
+                itemCount: _suggestions.length,
+                separatorBuilder: (_, __) =>
+                    const Divider(height: 1, indent: 12, endIndent: 12),
+                itemBuilder: (_, i) {
+                  final s = _suggestions[i];
+                  return InkWell(
+                    onTap: () => _selectSuggestion(s),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.location_on_outlined,
+                              size: 15, color: Color(0xFF4A8C52)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              s.displayName,
+                              style: const TextStyle(fontSize: 12),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _ParamField extends StatelessWidget {
+  final TextEditingController controller;
+  final String hint;
+  final String unit;
+  final bool enabled;
+
+  const _ParamField({
+    required this.controller,
+    required this.hint,
+    required this.unit,
+    this.enabled = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      enabled: enabled,
+      keyboardType:
+          const TextInputType.numberWithOptions(decimal: true),
+      textAlign: TextAlign.center,
+      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(color: Colors.grey, fontSize: 11),
+        suffixText: unit,
+        suffixStyle: const TextStyle(color: Colors.grey, fontSize: 11),
+        filled: true,
+        fillColor:
+            enabled ? Colors.white : const Color(0xFFF0F0F0),
+        contentPadding:
+            const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: BorderSide.none,
+        ),
+      ),
+    );
+  }
+}
+
+// ── Route details modal sheet ──────────────────────────────────────────────────
+
+class _RouteDetailsSheet extends StatelessWidget {
+  final _FoundRoute route;
+  final int routeNumber;
+  const _RouteDetailsSheet({required this.route, required this.routeNumber});
+
+  String _formatTime(double min) {
+    if (min < 60) return '${min.round()} min';
+    final h = (min / 60).floor();
+    final m = (min % 60).round();
+    return '${h}h ${m}min';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 40),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2)),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Container(
+                width: 14,
+                height: 14,
+                decoration: BoxDecoration(
+                    shape: BoxShape.circle, color: route.color),
+              ),
+              const SizedBox(width: 10),
+              Text('Route $routeNumber',
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.w700)),
+            ],
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              _StatCard(
+                icon: Icons.straighten_rounded,
+                label: 'Distance',
+                value: '${route.distanceKm.toStringAsFixed(2)} km',
+              ),
+              const SizedBox(width: 10),
+              _StatCard(
+                icon: Icons.timer_outlined,
+                label: 'Est. time',
+                value: _formatTime(route.estimatedTimeMin),
+              ),
+              const SizedBox(width: 10),
+              _StatCard(
+                icon: Icons.local_fire_department_outlined,
+                label: 'Calories',
+                value: '${route.estimatedCalories.round()} kcal',
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () {
+                // TODO: save route to user's favourites/profile in Firestore
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Save coming soon!')),
+                );
+              },
+              icon: const Icon(Icons.bookmark_border_rounded),
+              label: const Text('Save route'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFCAF0B8),
+                foregroundColor: const Color(0xFF2E7D32),
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+                textStyle: const TextStyle(
+                    fontWeight: FontWeight.w600, fontSize: 15),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatCard extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  const _StatCard(
+      {required this.icon, required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF3F5EE),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, size: 20, color: const Color(0xFF4A8C52)),
+            const SizedBox(height: 6),
+            Text(value,
+                style: const TextStyle(
+                    fontWeight: FontWeight.w700, fontSize: 13)),
+            const SizedBox(height: 2),
+            Text(label,
+                style: const TextStyle(color: Colors.grey, fontSize: 11)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── GPS dot ────────────────────────────────────────────────────────────────────
+
+class _LocationDot extends StatelessWidget {
+  const _LocationDot();
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.blue.withValues(alpha: 0.2),
+          ),
+        ),
+        Container(
+          width: 16,
+          height: 16,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.blue,
+            border: Border.all(color: Colors.white, width: 2),
+            boxShadow: const [
+              BoxShadow(color: Colors.black26, blurRadius: 4),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
