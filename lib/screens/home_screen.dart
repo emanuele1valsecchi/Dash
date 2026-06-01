@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import '../models/home_models.dart';
+import 'explore_page.dart';
+import 'route_create_page.dart';
+import 'route_search_page.dart';
 import '../widgets/home/badge_progress_section.dart';
 import '../widgets/home/leaderboard_preview_card.dart';
 import '../widgets/home/start_run_overlay.dart';
@@ -86,11 +89,17 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _searchRoute() {
-    // TODO
+    setState(() => _showRunOverlay = false);
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const RouteSearchPage()),
+    );
   }
 
   void _createRoute() {
-    // TODO
+    setState(() => _showRunOverlay = false);
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const RouteCreatePage()),
+    );
   }
 
   void _startRunNow() {
@@ -230,8 +239,13 @@ class _HomeScreenState extends State<HomeScreen> {
         selectedIndex: _currentIndex,
         indicatorColor: const Color(0xFFCFE8BD),
         onDestinationSelected: (index) {
+          if (index == 0) {
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const ExplorePage()),
+            );
+            return;
+          }
           setState(() => _currentIndex = index);
-          // TODO: navigation
         },
         destinations: const [
           NavigationDestination(
