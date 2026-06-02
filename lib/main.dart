@@ -1,8 +1,10 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
+import 'screens/home_screen.dart';
 import 'screens/onboarding_screen.dart';
 
 Future<void> main() async {
@@ -28,6 +30,21 @@ Future<void> main() async {
   runApp(const DashApp());
 }
 
+/// Shown for the brief moment while Firebase resolves the cached auth token.
+class _SplashScreen extends StatelessWidget {
+  const _SplashScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: Color(0xFFF3F5EE),
+      body: Center(
+        child: CircularProgressIndicator(color: Color(0xFF4A8C52)),
+      ),
+    );
+  }
+}
+
 class DashApp extends StatelessWidget {
   const DashApp({super.key});
 
@@ -40,7 +57,18 @@ class DashApp extends StatelessWidget {
         primarySwatch: Colors.green,
         useMaterial3: true,
       ),
-      home: const OnboardingScreen(),
+      home: StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const _SplashScreen();
+          }
+          if (snapshot.hasData) {
+            return const HomeScreen();
+          }
+          return const OnboardingScreen();
+        },
+      ),
     );
   }
 }

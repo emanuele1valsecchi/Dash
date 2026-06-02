@@ -78,7 +78,7 @@ service cloud.firestore {
         && request.resource.data.waypoints == resource.data.waypoints
         && request.resource.data.distanceMeters == resource.data.distanceMeters;
 
-      allow delete: if false; // soft delete via update of `deletedAt` only
+      allow delete: if isOwner(resource.data);
     }
 
     // ---------- claimedAreas ----------
