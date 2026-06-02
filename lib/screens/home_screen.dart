@@ -3,6 +3,7 @@ import '../models/home_models.dart';
 import 'explore_page.dart';
 import 'route_create_page.dart';
 import 'route_search_page.dart';
+import 'temp_profile_page.dart';
 import '../widgets/home/badge_progress_section.dart';
 import '../widgets/home/leaderboard_preview_card.dart';
 import '../widgets/home/start_run_overlay.dart';
@@ -242,6 +243,12 @@ class _HomeScreenState extends State<HomeScreen> {
           if (index == 0) {
             Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const ExplorePage()),
+            );
+            return;
+          }
+          if (index == 2) {
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const TempProfilePage()),
             );
             return;
           }

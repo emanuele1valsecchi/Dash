@@ -68,9 +68,8 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   final TextEditingController _destCtrl = TextEditingController();
   LatLng? _destLatLng;
 
-  bool _hasStop = false;
-  final TextEditingController _stopCtrl = TextEditingController();
-  LatLng? _stopLatLng;
+  final List<TextEditingController> _stopCtrls = [];
+  final List<LatLng?> _stopLatLngs = [];
 
   final TextEditingController _timeCtrl = TextEditingController();
   final TextEditingController _distCtrl = TextEditingController();
@@ -117,9 +116,12 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     _mapController.dispose();
     _sheetController.dispose();
     for (final c in [
-      _startCtrl, _destCtrl, _stopCtrl,
+      _startCtrl, _destCtrl,
       _timeCtrl, _distCtrl, _calCtrl,
     ]) {
+      c.dispose();
+    }
+    for (final c in _stopCtrls) {
       c.dispose();
     }
     super.dispose();
@@ -190,10 +192,18 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     return _geocode(_destCtrl.text);
   }
 
-  Future<LatLng?> _resolveStop() async {
-    if (_stopLatLng != null) return _stopLatLng;
-    if (_stopCtrl.text.trim().isEmpty) return null;
-    return _geocode(_stopCtrl.text);
+  Future<List<LatLng>> _resolveStops() async {
+    final resolved = <LatLng>[];
+    for (int i = 0; i < _stopCtrls.length; i++) {
+      final cached = _stopLatLngs[i];
+      if (cached != null) {
+        resolved.add(cached);
+      } else if (_stopCtrls[i].text.trim().isNotEmpty) {
+        final ll = await _geocode(_stopCtrls[i].text);
+        if (ll != null) resolved.add(ll);
+      }
+    }
+    return resolved;
   }
 
   // ── Constraint resolution ─────────────────────────────────────────────────
@@ -261,6 +271,9 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   // ── Results mode ──────────────────────────────────────────────────────────
 
   void _enterEditMode() {
+    for (final c in _stopCtrls) { c.dispose(); }
+    _stopCtrls.clear();
+    _stopLatLngs.clear();
     setState(() {
       _isResultsMode = false;
       _hasSearched = false;
@@ -316,10 +329,10 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
         _snack('Could not resolve destination');
         return;
       }
-      final stop = _hasStop ? await _resolveStop() : null;
+      final stops = await _resolveStops();
       // targetDistM is null when no constraints → show ORS alternatives freely
       routes = await _generateDirectRoutes(
-          start, stop, end, target.targetKm?.let((km) => km * 1000));
+          start, stops, end, target.targetKm?.let((km) => km * 1000));
     }
 
     if (!mounted) return;
@@ -373,15 +386,17 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
 
   Future<List<_FoundRoute>> _generateDirectRoutes(
     LatLng start,
-    LatLng? stop,
+    List<LatLng> stops, // empty → no intermediate stops
     LatLng end,
     double? targetDistM, // null → no constraint, show all alternatives
   ) async {
-    // When a stop is specified route through it (single result).
-    if (stop != null) {
-      final a = await _route(start, stop);
-      final b = await _route(stop, end);
-      final full = _stitch(a, b);
+    // When stops are specified, route through them sequentially (single result).
+    if (stops.isNotEmpty) {
+      final waypoints = [start, ...stops, end];
+      var full = await _route(waypoints[0], waypoints[1]);
+      for (int i = 1; i < waypoints.length - 1; i++) {
+        full = _stitch(full, await _route(waypoints[i], waypoints[i + 1]));
+      }
       if (targetDistM != null) {
         final ratio = full.distanceMeters / targetDistM;
         if (ratio < 1 - _tolerance || ratio > 1 + _tolerance) return [];
@@ -389,7 +404,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
       return [_toFoundRoute(full, 0)];
     }
 
-    // No stop: use ORS alternative routes endpoint for up to 3 results.
+    // No stops: use ORS alternative routes endpoint for up to 3 results.
     final alternatives = await RoutingService.fetchAlternatives(start, end);
 
     if (targetDistM == null) {
@@ -410,6 +425,12 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   }
 
   // ── Map helpers ───────────────────────────────────────────────────────────
+
+  void _centerOnUser() {
+    if (_currentPosition != null) {
+      _mapController.move(_currentPosition!, _defaultZoom);
+    }
+  }
 
   void _collapseSheet() {
     if (!_sheetController.isAttached) return;
@@ -435,6 +456,29 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
         bounds: LatLngBounds(
             LatLng(minLat, minLng), LatLng(maxLat, maxLng)),
         padding: const EdgeInsets.fromLTRB(48, 120, 48, 220),
+      ),
+    );
+  }
+
+  Widget _buildMapButtons() {
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 12,
+      right: 12,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _RoundMapButton(
+            icon: Icons.explore_outlined,
+            tooltip: 'Reset north',
+            onTap: () => _mapController.rotate(0),
+          ),
+          const SizedBox(height: 8),
+          _RoundMapButton(
+            icon: Icons.my_location,
+            tooltip: 'My location',
+            onTap: _centerOnUser,
+          ),
+        ],
       ),
     );
   }
@@ -467,6 +511,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
           if (_isLoadingLocation) _buildLoadingOverlay(),
           _buildSheet(),
           _buildBackButton(),
+          _buildMapButtons(),
         ],
       ),
     );
@@ -824,62 +869,68 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     );
   }
 
+  void _addStop() {
+    setState(() {
+      _stopCtrls.add(TextEditingController());
+      _stopLatLngs.add(null);
+    });
+  }
+
+  void _removeStop(int index) {
+    final ctrl = _stopCtrls.removeAt(index);
+    _stopLatLngs.removeAt(index);
+    ctrl.dispose();
+    setState(() {});
+  }
+
   Widget _buildIntermediateStopSection() {
     return _FormSection(
-      label: 'Intermediate stop',
-      child: _hasStop
-          ? _AddressInputField(
-              controller: _stopCtrl,
-              hint: 'Enter an address',
+      label: 'Intermediate stops',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // One field per added stop
+          for (int i = 0; i < _stopCtrls.length; i++) ...[
+            if (i > 0) const SizedBox(height: 8),
+            _AddressInputField(
+              controller: _stopCtrls[i],
+              hint: 'Stop ${i + 1}',
               enabled: !_isResultsMode,
-              onRemove: _isResultsMode
-                  ? null
-                  : () => setState(() {
-                        _hasStop = false;
-                        _stopCtrl.clear();
-                        _stopLatLng = null;
-                      }),
-              onSuggestionPicked: (ll) => setState(() => _stopLatLng = ll),
-            )
-          : GestureDetector(
-              onTap: _isResultsMode
-                  ? null
-                  : () => setState(() => _hasStop = true),
+              onRemove: _isResultsMode ? null : () => _removeStop(i),
+              onSuggestionPicked: (ll) =>
+                  setState(() => _stopLatLngs[i] = ll),
+            ),
+          ],
+          // "Add a stop" button — always visible below the last field
+          if (!_isResultsMode) ...[
+            if (_stopCtrls.isNotEmpty) const SizedBox(height: 8),
+            GestureDetector(
+              onTap: _addStop,
               child: Container(
                 padding: const EdgeInsets.symmetric(
                     horizontal: 14, vertical: 12),
                 decoration: BoxDecoration(
                   border: Border.all(
-                    color: _isResultsMode
-                        ? Colors.grey.shade300
-                        : const Color(0xFFCAF0B8),
-                    width: 1.5,
-                  ),
+                      color: const Color(0xFFCAF0B8), width: 1.5),
                   borderRadius: BorderRadius.circular(10),
                   color: Colors.white,
                 ),
-                child: Row(
+                child: const Row(
                   children: [
                     Icon(Icons.add_circle_outline,
-                        size: 18,
-                        color: _isResultsMode
-                            ? Colors.grey
-                            : const Color(0xFF4A8C52)),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Add a stop',
-                      style: TextStyle(
-                        color: _isResultsMode
-                            ? Colors.grey
-                            : const Color(0xFF4A8C52),
-                        fontSize: 14,
-                      ),
-                    ),
+                        size: 18, color: Color(0xFF4A8C52)),
+                    SizedBox(width: 8),
+                    Text('Add a stop',
+                        style: TextStyle(
+                            color: Color(0xFF4A8C52), fontSize: 14)),
                   ],
-                ),
-              ),
-            ),
-    );
+                ),  // Row
+              ),    // Container
+            ),      // GestureDetector
+          ],        // if (!_isResultsMode)
+        ],          // Column children
+      ),            // Column
+    );              // _FormSection
   }
 
   Widget _buildParametersSection() {
@@ -1252,7 +1303,7 @@ class _AddressInputFieldState extends State<_AddressInputField> {
                 shrinkWrap: true,
                 physics: const ClampingScrollPhysics(),
                 itemCount: _suggestions.length,
-                separatorBuilder: (_, __) =>
+                separatorBuilder: (_, _) =>
                     const Divider(height: 1, indent: 12, endIndent: 12),
                 itemBuilder: (_, i) {
                   final s = _suggestions[i];
@@ -1462,6 +1513,40 @@ class _StatCard extends StatelessWidget {
 }
 
 // ── GPS dot ────────────────────────────────────────────────────────────────────
+
+// ── Reusable round map button ──────────────────────────────────────────────────
+
+class _RoundMapButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onTap;
+
+  const _RoundMapButton({
+    required this.icon,
+    required this.tooltip,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.white,
+        shape: const CircleBorder(),
+        elevation: 2,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Icon(icon, color: const Color(0xFF425143), size: 22),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _LocationDot extends StatelessWidget {
   const _LocationDot();

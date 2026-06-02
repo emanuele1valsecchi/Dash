@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../services/route_repository.dart';
 import '../services/routing_service.dart';
 import '../utils/geometry_utils.dart';
 
@@ -86,6 +87,7 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
 
   // ── Form ──────────────────────────────────────────────────────────────────
   final TextEditingController _trackNameCtrl = TextEditingController();
+  bool _isPublishing = false;
 
   // ── Derived stats ─────────────────────────────────────────────────────────
   double get _totalDistanceKm =>
@@ -429,6 +431,37 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
 
   // ── Clear all ─────────────────────────────────────────────────────────────
 
+  void _centerOnUser() {
+    if (_currentPosition != null) {
+      _mapController.move(_currentPosition!, _defaultZoom);
+    }
+  }
+
+  Widget _buildMapButtons() {
+    // Offset below the search-bar row (12 top-padding + 46 bar height + 10 gap).
+    final top = MediaQuery.of(context).padding.top + 68.0;
+    return Positioned(
+      top: top,
+      right: 12,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _RoundMapButton(
+            icon: Icons.explore_outlined,
+            tooltip: 'Reset north',
+            onTap: () => _mapController.rotate(0),
+          ),
+          const SizedBox(height: 8),
+          _RoundMapButton(
+            icon: Icons.my_location,
+            tooltip: 'My location',
+            onTap: _centerOnUser,
+          ),
+        ],
+      ),
+    );
+  }
+
   void _clearAll() {
     setState(() {
       _waypoints = [];
@@ -445,6 +478,45 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
     _trackNameCtrl.clear();
   }
 
+  Future<void> _publishRoute() async {
+    if (_isPublishing) return;
+    setState(() => _isPublishing = true);
+
+    // Merge segments into a single flat polyline, skipping duplicate junction points.
+    final poly = <LatLng>[];
+    for (int s = 0; s < _segments.length; s++) {
+      final pts = _segments[s].polyline;
+      final start = s == 0 ? 0 : 1;
+      for (int i = start; i < pts.length; i++) {
+        poly.add(pts[i]);
+      }
+    }
+
+    try {
+      await RouteRepository.instance.publishRoute(
+        name: _trackNameCtrl.text,
+        waypoints: List<LatLng>.from(_waypoints),
+        routePolyline: poly,
+        distanceMeters: _totalDistanceKm * 1000,
+        estimatedTimeMin: _estimatedTimeMin,
+        estimatedCalories: _estimatedCalories,
+        isLoop: _isLoopClosed,
+        loopAreaM2: _loopAreaM2,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Route published!')),
+      );
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Failed to publish: $e')));
+    } finally {
+      if (mounted) setState(() => _isPublishing = false);
+    }
+  }
+
   // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
@@ -456,6 +528,7 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
           if (_isLoadingLocation) _buildLoadingOverlay(),
           SafeArea(child: _buildTopBar()),
           _buildSheet(),
+          _buildMapButtons(),
         ],
       ),
     );
@@ -731,18 +804,20 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
                       Expanded(
                         flex: 2,
                         child: ElevatedButton.icon(
-                          onPressed: _waypoints.length >= 2
-                              ? () {
-                                  // TODO: save route to Firestore (routes collection)
-                                  ScaffoldMessenger.of(context)
-                                      .showSnackBar(const SnackBar(
-                                          content: Text(
-                                              'Publish coming soon!')));
-                                }
+                          onPressed: (_waypoints.length >= 2 && !_isPublishing)
+                              ? _publishRoute
                               : null,
-                          icon: const Icon(
-                              Icons.check_circle_outline_rounded,
-                              size: 18),
+                          icon: _isPublishing
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: Color(0xFF2E7D32)),
+                                )
+                              : const Icon(
+                                  Icons.check_circle_outline_rounded,
+                                  size: 18),
                           label: const Text('Publish path'),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFFCAF0B8),
@@ -1205,6 +1280,40 @@ class _PlaceSearchBarState extends State<_PlaceSearchBar> {
 }
 
 // ── GPS dot ────────────────────────────────────────────────────────────────────
+
+// ── Reusable round map button ──────────────────────────────────────────────────
+
+class _RoundMapButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onTap;
+
+  const _RoundMapButton({
+    required this.icon,
+    required this.tooltip,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.white,
+        shape: const CircleBorder(),
+        elevation: 2,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Icon(icon, color: const Color(0xFF425143), size: 22),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _LocationDot extends StatelessWidget {
   const _LocationDot();
