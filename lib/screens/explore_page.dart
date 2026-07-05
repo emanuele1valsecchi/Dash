@@ -33,7 +33,6 @@ class _ExplorePageState extends State<ExplorePage> {
   // ── Map settings ──────────────────────────────────────────────────────────
   bool _isSatellite = false;
 
-  // TODO: wire _showAreas to the PolygonLayer once claimedAreas are populated in Firestore
   bool _showAreas = true;
 
   // ── Search ────────────────────────────────────────────────────────────────

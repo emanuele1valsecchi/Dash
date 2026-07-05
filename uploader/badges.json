@@ -1,0 +1,344 @@
+[
+  {
+    "id": "rookie",
+    "title": "Rookie",
+    "description": "First workout completed",
+    "imagePath": "/badges/Rookie.png",
+    "defaultVisible": true,
+    "order": 1,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "is_it_a_triangle_or_a_square",
+    "title": "Is it a triangle or a square?",
+    "description": "First perimeter completed",
+    "imagePath": "/badges/IsItATriangleOrASquare.png",
+    "defaultVisible": true,
+    "order": 2,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "warming_up",
+    "title": "Warming Up",
+    "description": "You run a total of 10 km",
+    "imagePath": "/badges/WarmingUp.png",
+    "defaultVisible": true,
+    "order": 3,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "hot_feet",
+    "title": "Hot Feet",
+    "description": "You run a total of 100 km",
+    "imagePath": "/badges/HotFeet.png",
+    "defaultVisible": false,
+    "order": 4,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "smoldering_feet",
+    "title": "Smoldering Feet",
+    "description": "You run a total of 1000 km",
+    "imagePath": "/badges/SmolderingFeet.png",
+    "defaultVisible": false,
+    "order": 5,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "starter",
+    "title": "Starter",
+    "description": "You run for 20 minutes",
+    "imagePath": "/badges/Starter.png",
+    "defaultVisible": true,
+    "order": 6,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "need_a_break",
+    "title": "Need a break",
+    "description": "You run for 40 minutes",
+    "imagePath": "/badges/NeedABreak.png",
+    "defaultVisible": false,
+    "order": 7,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "great_stamina",
+    "title": "Great Stamina",
+    "description": "You run for 1 hour",
+    "imagePath": "/badges/GreatStamina.png",
+    "defaultVisible": false,
+    "order": 8,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "half_a_marathon",
+    "title": "Half a marathon",
+    "description": "You run for 2 hours",
+    "imagePath": "/badges/HalfAMarathon.png",
+    "defaultVisible": false,
+    "order": 9,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "youre_looking_good",
+    "title": "You're looking good",
+    "description": "You have completed 2 workouts in a week",
+    "imagePath": "/badges/YoureLookingGood.png",
+    "defaultVisible": false,
+    "order": 10,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "consistent",
+    "title": "Consistent",
+    "description": "You run once a week for a whole month",
+    "imagePath": "/badges/Consistent.png",
+    "defaultVisible": false,
+    "order": 11,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "its_all_mine",
+    "title": "It's all mine",
+    "description": "You stole an area from another player",
+    "imagePath": "/badges/ItsAllMine.png",
+    "defaultVisible": false,
+    "order": 12,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "the_defender",
+    "title": "The Defender",
+    "description": "You have claimed back your area",
+    "imagePath": "/badges/TheDefender.png",
+    "defaultVisible": false,
+    "order": 13,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "the_champion",
+    "title": "The champion",
+    "description": "You won a tournament",
+    "imagePath": "/badges/TheChampion.png",
+    "defaultVisible": false,
+    "order": 14,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "first_time",
+    "title": "First Time?",
+    "description": "You took part in a tournament",
+    "imagePath": "/badges/FirstTime.png",
+    "defaultVisible": false,
+    "order": 15,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "by_a_whisker",
+    "title": "By a whisker",
+    "description": "You stopped the running session 500 meters before closing it",
+    "imagePath": "/badges/ByAWhisker.png",
+    "defaultVisible": false,
+    "order": 16,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "home_sweet_home",
+    "title": "Home Sweet Home",
+    "description": "You closed 10 circuits, all starting from the same position",
+    "imagePath": "/badges/HomeSweetHome.png",
+    "defaultVisible": false,
+    "order": 17,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "traveller",
+    "title": "Traveller",
+    "description": "You completed 5 circuits all starting from different points",
+    "imagePath": "/badges/Traveller.png",
+    "defaultVisible": false,
+    "order": 18,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "interrail",
+    "title": "Interrail",
+    "description": "You completed 10 circuits all starting from different points",
+    "imagePath": "/badges/Interrail.png",
+    "defaultVisible": false,
+    "order": 19,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "aspiring_boss",
+    "title": "Aspiring boss",
+    "description": "You covered 25% of your city",
+    "imagePath": "/badges/AspiringBoss.png",
+    "defaultVisible": false,
+    "order": 20,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "gym_bro",
+    "title": "Gym Bro",
+    "description": "You covered 50% of your city",
+    "imagePath": "/badges/GymBro.png",
+    "defaultVisible": false,
+    "order": 21,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "duke",
+    "title": "Duke",
+    "description": "You covered 100% of your city",
+    "imagePath": "/badges/Duke.png",
+    "defaultVisible": false,
+    "order": 22,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "im_following_you",
+    "title": "I'm following you",
+    "description": "You follow another player",
+    "imagePath": "/badges/ImFollowingYou.png",
+    "defaultVisible": false,
+    "order": 23,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "my_shadow",
+    "title": "My shadow",
+    "description": "You get a follower",
+    "imagePath": "/badges/MyShadow.png",
+    "defaultVisible": false,
+    "order": 24,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "the_important_thing_is_to_participate",
+    "title": "The important thing is to participate",
+    "description": "You get on a tournament podium",
+    "imagePath": "/badges/TheImportantThingIsToParticipate.png",
+    "defaultVisible": false,
+    "order": 25,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "cheetah",
+    "title": "Cheetah",
+    "description": "Surpass 5 people in the tournament ranking",
+    "imagePath": "/badges/Cheetah.png",
+    "defaultVisible": false,
+    "order": 26,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "turtle",
+    "title": "Turtle",
+    "description": "Let 10 players surpass you in the tournament",
+    "imagePath": "/badges/Turtle.png",
+    "defaultVisible": false,
+    "order": 27,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "coup",
+    "title": "Coup",
+    "description": "Take the duke area",
+    "imagePath": "/badges/Coup.png",
+    "defaultVisible": false,
+    "order": 28,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "the_foreigner",
+    "title": "The foreigner",
+    "description": "Get into the ranking of another city",
+    "imagePath": "/badges/TheForeigner.png",
+    "defaultVisible": false,
+    "order": 29,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "expanding_kingdom",
+    "title": "Expanding Kingdom",
+    "description": "Win the tournament of another city",
+    "imagePath": "/badges/ExpandingKingdom.png",
+    "defaultVisible": false,
+    "order": 30,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "napoleone",
+    "title": "Napoleone",
+    "description": "Win 5 tournaments in 5 different cities",
+    "imagePath": "/badges/Napoleone.png",
+    "defaultVisible": false,
+    "order": 31,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "thats_me",
+    "title": "That's me",
+    "description": "Upload a profile picture",
+    "imagePath": "/badges/ThatsMe.png",
+    "defaultVisible": true,
+    "order": 32,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "local_guide",
+    "title": "Local guide",
+    "description": "Publish 5 paths",
+    "imagePath": "/badges/LocalGuide.png",
+    "defaultVisible": false,
+    "order": 33,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "spy",
+    "title": "Spy",
+    "description": "Publish a path in another city",
+    "imagePath": "/badges/Spy.png",
+    "defaultVisible": false,
+    "order": 34,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "cheater",
+    "title": "Cheater!",
+    "description": "Start a running session on public transportation",
+    "imagePath": "/badges/Cheater.png",
+    "defaultVisible": false,
+    "order": 35,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "buuuu",
+    "title": "Buuuu!",
+    "description": "You beat a ghost",
+    "imagePath": "/badges/Buuuu.png",
+    "defaultVisible": false,
+    "order": 36,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "try_to_beat_me",
+    "title": "Try to beat me",
+    "description": "Launch a challenge",
+    "imagePath": "/badges/TryToBeatMe.png",
+    "defaultVisible": false,
+    "order": 37,
+    "requiredValue": 1.0
+  },
+  {
+    "id": "eat_my_dust",
+    "title": "Eat my dust",
+    "description": "You won a challenge",
+    "imagePath": "/badges/EatMyDust.png",
+    "defaultVisible": false,
+    "order": 38,
+    "requiredValue": 1.0
+  }
+]

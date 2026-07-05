@@ -46,8 +46,6 @@ class LegalScreen extends StatelessWidget {
 }
 
 // ─── Testi ────────────────────────────────────────────────────────────────────
-// TODO: sostituisci con il testo legale definitivo
-
 const _termsText = '''
 Terms of Service
 

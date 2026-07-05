@@ -20,8 +20,9 @@ class WeeklyStatsSection extends StatelessWidget {
         ),
         const SizedBox(height: 14),
         SizedBox(
-          height: 175,
+          height: 190,
           child: ListView.separated(
+            physics: const ClampingScrollPhysics(),
             scrollDirection: Axis.horizontal,
             itemCount: stats.length,
             separatorBuilder: (_, _) => const SizedBox(width: 18),
@@ -50,16 +51,17 @@ class _StatCircleCard extends StatelessWidget {
         color: const Color(0xFFF0F2EB),
       ),
       child: Column(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           SizedBox(
-            width: 120,
-            height: 120,
+            width: 118,
+            height: 118,
             child: Stack(
               alignment: Alignment.center,
               children: [
                 SizedBox(
-                  width: 120,
-                  height: 120,
+                  width: 118,
+                  height: 118,
                   child: CircularProgressIndicator(
                     value: data.progress,
                     strokeWidth: 7,
@@ -72,7 +74,11 @@ class _StatCircleCard extends StatelessWidget {
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(data.icon, size: 24, color: const Color(0xFF425143)),
+                      Icon(
+                        data.icon,
+                        size: 24,
+                        color: const Color(0xFF425143),
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -83,6 +89,7 @@ class _StatCircleCard extends StatelessWidget {
                             fontSize: 14,
                             fontWeight: FontWeight.w700,
                             color: Color(0xFF425143),
+                            height: 1.15,
                           ),
                         ),
                       ),
@@ -92,7 +99,6 @@ class _StatCircleCard extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(height: 8),
           Text(
             data.value,
             style: const TextStyle(

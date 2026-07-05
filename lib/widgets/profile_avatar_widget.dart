@@ -116,7 +116,7 @@ class _ProfileAvatarWidgetState extends State<ProfileAvatarWidget> {
                 shape: BoxShape.circle,
                 color: const Color(0xFFE8F5D6),
                 border: Border.all(
-                  color: const Color(0xFF4A5D3F).withOpacity(0.25),
+                  color: const Color(0xFF4A5D3F).withValues(alpha: 0.25),
                   width: 2,
                 ),
                 image: _imageUrl != null && !_isLoading
@@ -142,7 +142,7 @@ class _ProfileAvatarWidgetState extends State<ProfileAvatarWidget> {
                   border: Border.all(color: Colors.white, width: 2),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.15),
+                      color: Colors.black.withValues(alpha: 0.15),
                       blurRadius: 4,
                       offset: const Offset(0, 2),
                     ),
@@ -176,7 +176,7 @@ class _ProfileAvatarWidgetState extends State<ProfileAvatarWidget> {
         child: Icon(
           Icons.person_rounded,
           size: size * 0.48,
-          color: const Color(0xFF4A5D3F).withOpacity(0.45),
+          color: const Color(0xFF4A5D3F).withValues(alpha: 0.45),
         ),
       );
     }

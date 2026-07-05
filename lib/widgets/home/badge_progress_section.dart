@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import '../../models/home_models.dart';
+import '../../models/home_badge_ui_model.dart';
 
 class BadgeProgressSection extends StatelessWidget {
-  final List<BadgeProgressData> badges;
+  final List<HomeBadgeUiModel> badges;
 
   const BadgeProgressSection({
     super.key,
@@ -14,115 +14,90 @@ class BadgeProgressSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionTitle(
-          icon: Icons.workspace_premium_outlined,
-          title: 'Badge Progress',
+        const Row(
+          children: [
+            Icon(
+              Icons.workspace_premium_outlined,
+              color: Color(0xFF4A554A),
+              size: 24,
+            ),
+            SizedBox(width: 8),
+            Text(
+              'Badge progress',
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF394137),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 14),
         SizedBox(
-          height: 150,
+          height: 170,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             itemCount: badges.length,
-            separatorBuilder: (_, _) => const SizedBox(width: 18),
+            separatorBuilder: (_, _) => const SizedBox(width: 12),
             itemBuilder: (context, index) {
               final badge = badges[index];
-              return _BadgeItem(data: badge);
-            },
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _BadgeItem extends StatelessWidget {
-  final BadgeProgressData data;
-
-  const _BadgeItem({required this.data});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 110,
-      child: Column(
-        children: [
-          SizedBox(
-            width: 100,
-            height: 100,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                SizedBox(
-                  width: 100,
-                  height: 100,
-                  child: CircularProgressIndicator(
-                    value: data.progress,
-                    strokeWidth: 6,
-                    backgroundColor: const Color(0xFFD7DAD2),
-                    valueColor: const AlwaysStoppedAnimation(Color(0xFF315865)),
-                  ),
+              return Container(
+                width: 140,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFECEFE6),
+                  borderRadius: BorderRadius.circular(24),
                 ),
-                Container(
-                  width: 82,
-                  height: 82,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Color(0xFFE6E8E1),
-                  ),
-                  child: ClipOval(
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        Image.asset(data.imageAsset, fit: BoxFit.cover),
-                        if (data.progress < 1)
-                          Container(
-                            color: Colors.black.withValues(alpha: 0.38),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Center(
+                        child: Image.network(
+                          badge.imageUrl,
+                          fit: BoxFit.contain,
+                          errorBuilder: (_, _, _) => const Icon(
+                            Icons.image_not_supported_outlined,
+                            size: 36,
+                            color: Colors.grey,
                           ),
-                      ],
+                          loadingBuilder: (context, child, progress) {
+                            if (progress == null) return child;
+                            return const Center(
+                              child: SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
                     ),
-                  ),
+                    const SizedBox(height: 10),
+                    Text(
+                      badge.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF2A3028),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: LinearProgressIndicator(
+                        value: badge.progress,
+                        minHeight: 8,
+                        backgroundColor: const Color(0xFFD9DDD2),
+                        valueColor: const AlwaysStoppedAnimation(Color(0xFFB9E29D)),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            data.title,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 15,
-              color: Color(0xFF444B40),
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SectionTitle extends StatelessWidget {
-  final IconData icon;
-  final String title;
-
-  const _SectionTitle({
-    required this.icon,
-    required this.title,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, size: 22, color: const Color(0xFF4A554A)),
-        const SizedBox(width: 8),
-        Text(
-          title,
-          style: const TextStyle(
-            fontSize: 17,
-            fontWeight: FontWeight.w700,
-            color: Color(0xFF394137),
+              );
+            },
           ),
         ),
       ],

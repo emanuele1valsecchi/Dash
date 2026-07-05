@@ -471,10 +471,10 @@ class _GooglePainter extends CustomPainter {
 }
 
 // ─── Meta Icon ────────────────────────────────────────────────────────────────
-
+/*
 class _MetaIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) =>
       const Icon(Icons.facebook, color: Color(0xFF1877F2), size: 24);
-}
+}*/
 
