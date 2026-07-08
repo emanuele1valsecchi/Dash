@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../../models/home_badge_ui_model.dart';
 
@@ -23,7 +24,7 @@ class BadgeProgressSection extends StatelessWidget {
             ),
             SizedBox(width: 8),
             Text(
-              'Badge progress',
+              'Badge Progress',
               style: TextStyle(
                 fontSize: 17,
                 fontWeight: FontWeight.w700,
@@ -32,75 +33,192 @@ class BadgeProgressSection extends StatelessWidget {
             ),
           ],
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 16),
         SizedBox(
-          height: 170,
+          height: 185,
           child: ListView.separated(
+            physics: const ClampingScrollPhysics(),
             scrollDirection: Axis.horizontal,
             itemCount: badges.length,
-            separatorBuilder: (_, _) => const SizedBox(width: 12),
+            separatorBuilder: (_, _) => const SizedBox(width: 18),
             itemBuilder: (context, index) {
               final badge = badges[index];
-              return Container(
-                width: 140,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFECEFE6),
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: Center(
-                        child: Image.network(
-                          badge.imageUrl,
-                          fit: BoxFit.contain,
-                          errorBuilder: (_, _, _) => const Icon(
-                            Icons.image_not_supported_outlined,
-                            size: 36,
-                            color: Colors.grey,
-                          ),
-                          loadingBuilder: (context, child, progress) {
-                            if (progress == null) return child;
-                            return const Center(
-                              child: SizedBox(
-                                width: 24,
-                                height: 24,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      badge.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF2A3028),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(20),
-                      child: LinearProgressIndicator(
-                        value: badge.progress,
-                        minHeight: 8,
-                        backgroundColor: const Color(0xFFD9DDD2),
-                        valueColor: const AlwaysStoppedAnimation(Color(0xFFB9E29D)),
-                      ),
-                    ),
-                  ],
-                ),
-              );
+              return _BadgeProgressItem(badge: badge);
             },
           ),
         ),
       ],
     );
+  }
+}
+
+class _BadgeProgressItem extends StatelessWidget {
+  final HomeBadgeUiModel badge;
+
+  const _BadgeProgressItem({required this.badge});
+
+  @override
+  Widget build(BuildContext context) {
+    final progress = badge.progress.clamp(0.0, 1.0);
+    final isUnlocked = progress >= 1.0;
+    final isActive = progress > 0.0;
+
+    return SizedBox(
+      width: 128,
+      child: Column(
+        children: [
+          SizedBox(
+            width: 112,
+            height: 112,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                CustomPaint(
+                  size: const Size(112, 112),
+                  painter: _BadgeRingPainter(
+                    progress: progress,
+                    trackColor: const Color(0xFFE0E4DA),
+                    progressColor: const Color(0xFF4D6F79),
+                    strokeWidth: 8,
+                  ),
+                ),
+                Container(
+                  width: 92,
+                  height: 92,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(0xFFF2F4EE),
+                    border: Border.all(
+                      color: const Color(0xFFE2E5DD),
+                      width: 3,
+                    ),
+                  ),
+                  child: ClipOval(
+                    child: ColorFiltered(
+                      colorFilter: isUnlocked || isActive
+                          ? const ColorFilter.mode(
+                              Colors.transparent,
+                              BlendMode.multiply,
+                            )
+                          : const ColorFilter.matrix(<double>[
+                              0.2126, 0.7152, 0.0722, 0, 0,
+                              0.2126, 0.7152, 0.0722, 0, 0,
+                              0.2126, 0.7152, 0.0722, 0, 0,
+                              0, 0, 0, 1, 0,
+                            ]),
+                      child: Image.network(
+                        badge.imageUrl,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => Container(
+                          color: const Color(0xFFE7EAE2),
+                          alignment: Alignment.center,
+                          child: const Icon(
+                            Icons.workspace_premium_outlined,
+                            size: 34,
+                            color: Color(0xFF7A8477),
+                          ),
+                        ),
+                        loadingBuilder: (context, child, loadingProgress) {
+                          if (loadingProgress == null) return child;
+                          return const Center(
+                            child: SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Color(0xFF4D6F79),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            badge.title,
+            maxLines: 2,
+            textAlign: TextAlign.center,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: isUnlocked || isActive
+                  ? const Color(0xFF4D574A)
+                  : const Color(0xFF7F877C),
+              height: 1.15,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BadgeRingPainter extends CustomPainter {
+  final double progress;
+  final Color trackColor;
+  final Color progressColor;
+  final double strokeWidth;
+
+  const _BadgeRingPainter({
+    required this.progress,
+    required this.trackColor,
+    required this.progressColor,
+    required this.strokeWidth,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final progressValue = progress.clamp(0.0, 1.0);
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = (size.width - strokeWidth) / 2;
+
+    final trackPaint = Paint()
+      ..color = trackColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round;
+
+    final progressPaint = Paint()
+      ..color = progressColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round;
+
+    final rect = Rect.fromCircle(center: center, radius: radius);
+
+    const startAngle = -math.pi / 2;
+    const fullSweep = math.pi * 2;
+
+    canvas.drawArc(
+      rect,
+      startAngle,
+      fullSweep,
+      false,
+      trackPaint,
+    );
+
+    if (progressValue > 0) {
+      canvas.drawArc(
+        rect,
+        startAngle,
+        fullSweep * progressValue,
+        false,
+        progressPaint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _BadgeRingPainter oldDelegate) {
+    return oldDelegate.progress != progress ||
+        oldDelegate.trackColor != trackColor ||
+        oldDelegate.progressColor != progressColor ||
+        oldDelegate.strokeWidth != strokeWidth;
   }
 }

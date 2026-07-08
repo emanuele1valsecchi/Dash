@@ -80,22 +80,33 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<List<HomeBadgeUiModel>> _loadBadges() async {
-    final badges = await _badgeService.getDefaultBadges();
-    final result = <HomeBadgeUiModel>[];
+    try {
+      final badges = await _badgeService.getDefaultBadges();
+      final result = <HomeBadgeUiModel>[];
 
-    for (final badge in badges) {
-      final imageUrl = await _storageService.getDownloadUrl(badge.imagePath);
+      for (final badge in badges) {
+        try {
+          final imageUrl = await _storageService.getDownloadUrl(badge.imagePath);
+          result.add(HomeBadgeUiModel(
+            title: badge.title,
+            imageUrl: imageUrl,
+            progress: 0.0,
+          ));
+        } catch (e) {
+          debugPrint('STORAGE BADGE ERROR ${badge.imagePath}: $e');
+          result.add(HomeBadgeUiModel(
+            title: badge.title,
+            imageUrl: '',
+            progress: 0.0,
+          ));
+        }
+      }
 
-      result.add(
-        HomeBadgeUiModel(
-          title: badge.title,
-          imageUrl: imageUrl,
-          progress: 0.0,
-        ),
-      );
+      return result;
+    } catch (e) {
+      debugPrint('FIRESTORE BADGES ERROR: $e');
+      rethrow;
     }
-
-    return result;
   }
 
   final leaderboardData = const LeaderboardPreviewData(

@@ -95,7 +95,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _navigateAfterLogin(BuildContext context) async {
   final profileService = ProfileService();
-  final exists = await profileService.profileExists();
+  final exists = await profileService.isProfileComplete();
   if (!context.mounted) return;
   if (exists) {
     Navigator.of(context).pushReplacement(

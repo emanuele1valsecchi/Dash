@@ -24,7 +24,7 @@ class _EmailConfirmationScreenState extends State<EmailConfirmationScreen> {
   // ── Naviga dopo login: primo accesso → WelcomeRegister, altrimenti Home ──
   Future<void> _navigateAfterLogin(BuildContext context) async {
     final profileService = ProfileService();
-    final exists = await profileService.profileExists();
+    final exists = await profileService.isProfileComplete();
 
     if (!context.mounted) return;
 
