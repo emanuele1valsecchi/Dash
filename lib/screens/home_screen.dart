@@ -10,6 +10,7 @@ import '../services/storage_service.dart';
 import 'explore_page.dart';
 import 'route_create_page.dart';
 import 'route_search_page.dart';
+import 'run_tracking_page.dart';
 import 'temp_profile_page.dart';
 import '../widgets/home/badge_progress_section.dart';
 import '../widgets/home/leaderboard_preview_card.dart';
@@ -185,7 +186,29 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _startRunNow() {}
+  Future<void> _startRunNow() async {
+    setState(() => _showRunOverlay = false);
+    final summary = await Navigator.of(context).push<RunSummary>(
+      MaterialPageRoute(builder: (_) => const RunTrackingPage()),
+    );
+    if (summary == null || !mounted) return;
+
+    if (!summary.saved) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Run discarded')),
+      );
+      return;
+    }
+
+    final km = (summary.distanceMeters / 1000).toStringAsFixed(2);
+    final minutes = summary.elapsed.inMinutes;
+    final loopsText = summary.loopsCompleted > 0
+        ? ', ${summary.loopsCompleted} loop${summary.loopsCompleted == 1 ? '' : 's'} closed'
+        : '';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Run saved — $km km in $minutes min$loopsText')),
+    );
+  }
 
   void _openBadgePopup(HomeBadgeUiModel badge) {
     setState(() {

@@ -67,4 +67,41 @@ class GeometryUtils {
     }
     return (area / 2).abs();
   }
+
+  /// Scans a live GPS breadcrumb trail for a point that closes a loop with
+  /// the trail's current tip.
+  ///
+  /// Walks backward from the end of [breadcrumb] accumulating on-trail
+  /// distance; once that distance passes [minPathMeters] it starts testing
+  /// each candidate's straight-line distance to the tip against
+  /// [radiusMeters]. This two-part gate (walk far enough away, then come
+  /// back close enough) avoids flagging consecutive noisy GPS fixes — which
+  /// are already close together — as a false "loop".
+  ///
+  /// Only points from index [activeStart] onward are considered, so a
+  /// previously-closed loop can't be re-closed against the same trail.
+  ///
+  /// Returns the index of the closing point, or null if no loop is closed.
+  static int? findLoopClosureIndex(
+    List<LatLng> breadcrumb, {
+    required int activeStart,
+    double radiusMeters = 18,
+    double minPathMeters = 80,
+  }) {
+    final n = breadcrumb.length;
+    if (n - activeStart < 4) return null;
+
+    const dist = Distance();
+    final tip = breadcrumb[n - 1];
+
+    double pathBehind = 0;
+    for (int i = n - 2; i >= activeStart; i--) {
+      pathBehind += dist(breadcrumb[i], breadcrumb[i + 1]);
+      if (pathBehind < minPathMeters) continue;
+      if (dist(breadcrumb[i], tip) <= radiusMeters) {
+        return i;
+      }
+    }
+    return null;
+  }
 }
