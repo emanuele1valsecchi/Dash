@@ -49,8 +49,16 @@ class RunTrackingPage extends StatefulWidget {
 class _RunTrackingPageState extends State<RunTrackingPage> {
   // ── Map ───────────────────────────────────────────────────────────────────
   final MapController _mapController = MapController();
-  static const double _defaultZoom = 17.0;
+  static const double _defaultZoom = 18.0;
   bool _isMapExpanded = false;
+
+  /// Most recent valid GPS course-over-ground, used to keep the expanded map
+  /// oriented in the runner's direction of travel instead of north-up.
+  double? _lastHeading;
+
+  /// Course-over-ground is only meaningful — and not just sensor noise —
+  /// once actually moving at more than a slow walk.
+  static const double _minSpeedForHeadingMs = 0.6; // ~2.2 km/h
 
   // ── Location ──────────────────────────────────────────────────────────────
   StreamSubscription<Position>? _positionSub;
@@ -63,7 +71,12 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
   static const double _accuracyThresholdMeters = 20.0;
 
   /// A jump implying a faster-than-humanly-possible pace is treated as a GPS
-  /// spike and discarded rather than added to the trail.
+  /// spike and discarded rather than added to the trail. This is also what
+  /// makes the dot appear to freeze when riding in a car — a car easily
+  /// exceeds running speed, so every fix gets rejected as a "spike" rather
+  /// than tracked. That's intentional (it stops someone from driving to
+  /// rack up distance/claim areas), but nothing currently tells the user
+  /// *why* tracking has stalled — flag if that should surface a message.
   static const double _maxPlausibleSpeedMs = 8.0; // ~28.8 km/h
 
   // ── Pre-run countdown ─────────────────────────────────────────────────────
@@ -225,14 +238,19 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
     });
   }
 
+  // Metres of movement required before the GPS callback fires — the main
+  // lever trading animation smoothness against battery drain, since it's
+  // a distance filter rather than a timer poll. Currently tuned for a
+  // smooth-looking dot. 5m was the original, more battery-conservative
+  // value; once a Settings page exists, wire a "Battery saver" toggle to
+  // switch between the two instead of hardcoding one.
+  static const int _distanceFilterMeters = 2;
+
   void _startPositionStream() {
     _positionSub = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        // Only wakes the callback on real movement instead of polling on a
-        // timer — the main lever for keeping battery drain low on a
-        // screen that's expected to stay open for the whole run.
-        distanceFilter: 5,
+        distanceFilter: _distanceFilterMeters,
       ),
     ).listen(_onPosition);
   }
@@ -261,9 +279,18 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
 
     setState(() => _currentPosition = newPoint);
 
+    if (pos.speed >= _minSpeedForHeadingMs && pos.heading.isFinite && pos.heading >= 0) {
+      _lastHeading = pos.heading;
+    }
+
     if (_isMapExpanded) {
       try {
-        _mapController.move(newPoint, _mapController.camera.zoom);
+        // Rotating the map by -heading (rather than +heading) is what turns
+        // the direction of travel to face up the screen: flutter_map rotates
+        // the map content clockwise by the given degree, so the content that
+        // was `heading` clockwise from north needs an equal-and-opposite
+        // rotation to land back at the top.
+        _mapController.moveAndRotate(newPoint, _mapController.camera.zoom, -(_lastHeading ?? 0));
       } catch (_) {
         // Map not attached yet — next fix will re-attempt.
       }
@@ -348,7 +375,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
     if (_isMapExpanded && _currentPosition != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         try {
-          _mapController.move(_currentPosition!, _defaultZoom);
+          _mapController.moveAndRotate(_currentPosition!, _defaultZoom, -(_lastHeading ?? 0));
         } catch (_) {}
       });
     }
