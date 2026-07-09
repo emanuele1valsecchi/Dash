@@ -4,10 +4,12 @@ import '../../models/home_badge_ui_model.dart';
 
 class BadgeProgressSection extends StatelessWidget {
   final List<HomeBadgeUiModel> badges;
+  final ValueChanged<HomeBadgeUiModel>? onBadgeTap;
 
   const BadgeProgressSection({
     super.key,
     required this.badges,
+    this.onBadgeTap,
   });
 
   @override
@@ -43,7 +45,10 @@ class BadgeProgressSection extends StatelessWidget {
             separatorBuilder: (_, _) => const SizedBox(width: 18),
             itemBuilder: (context, index) {
               final badge = badges[index];
-              return _BadgeProgressItem(badge: badge);
+              return _BadgeProgressItem(
+                badge: badge,
+                onTap: onBadgeTap,
+              );
             },
           ),
         ),
@@ -54,106 +59,114 @@ class BadgeProgressSection extends StatelessWidget {
 
 class _BadgeProgressItem extends StatelessWidget {
   final HomeBadgeUiModel badge;
+  final ValueChanged<HomeBadgeUiModel>? onTap;
 
-  const _BadgeProgressItem({required this.badge});
+  const _BadgeProgressItem({
+    required this.badge,
+    this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     final progress = badge.progress.clamp(0.0, 1.0);
-    final isUnlocked = progress >= 1.0;
+    final isUnlocked = badge.unlocked || progress >= 1.0;
     final isActive = progress > 0.0;
 
-    return SizedBox(
-      width: 128,
-      child: Column(
-        children: [
-          SizedBox(
-            width: 112,
-            height: 112,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                CustomPaint(
-                  size: const Size(112, 112),
-                  painter: _BadgeRingPainter(
-                    progress: progress,
-                    trackColor: const Color(0xFFE0E4DA),
-                    progressColor: const Color(0xFF4D6F79),
-                    strokeWidth: 8,
-                  ),
-                ),
-                Container(
-                  width: 92,
-                  height: 92,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: const Color(0xFFF2F4EE),
-                    border: Border.all(
-                      color: const Color(0xFFE2E5DD),
-                      width: 3,
+    return GestureDetector(
+      onTap: () => onTap?.call(badge),
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: 128,
+        child: Column(
+          children: [
+            SizedBox(
+              width: 112,
+              height: 112,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  CustomPaint(
+                    size: const Size(112, 112),
+                    painter: _BadgeRingPainter(
+                      progress: progress,
+                      trackColor: const Color(0xFFE0E4DA),
+                      progressColor: const Color(0xFF4D6F79),
+                      strokeWidth: 8,
                     ),
                   ),
-                  child: ClipOval(
-                    child: ColorFiltered(
-                      colorFilter: isUnlocked || isActive
-                          ? const ColorFilter.mode(
-                              Colors.transparent,
-                              BlendMode.multiply,
-                            )
-                          : const ColorFilter.matrix(<double>[
-                              0.2126, 0.7152, 0.0722, 0, 0,
-                              0.2126, 0.7152, 0.0722, 0, 0,
-                              0.2126, 0.7152, 0.0722, 0, 0,
-                              0, 0, 0, 1, 0,
-                            ]),
-                      child: Image.network(
-                        badge.imageUrl,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) => Container(
-                          color: const Color(0xFFE7EAE2),
-                          alignment: Alignment.center,
-                          child: const Icon(
-                            Icons.workspace_premium_outlined,
-                            size: 34,
-                            color: Color(0xFF7A8477),
-                          ),
-                        ),
-                        loadingBuilder: (context, child, loadingProgress) {
-                          if (loadingProgress == null) return child;
-                          return const Center(
-                            child: SizedBox(
-                              width: 22,
-                              height: 22,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Color(0xFF4D6F79),
-                              ),
+                  Container(
+                    width: 92,
+                    height: 92,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFFF2F4EE),
+                      border: Border.all(
+                        color: const Color(0xFFE2E5DD),
+                        width: 3,
+                      ),
+                    ),
+                    child: ClipOval(
+                      child: ColorFiltered(
+                        colorFilter: isUnlocked || isActive
+                            ? const ColorFilter.mode(
+                                Colors.transparent,
+                                BlendMode.multiply,
+                              )
+                            : const ColorFilter.matrix(<double>[
+                                0.2126, 0.7152, 0.0722, 0, 0,
+                                0.2126, 0.7152, 0.0722, 0, 0,
+                                0.2126, 0.7152, 0.0722, 0, 0,
+                                0, 0, 0, 1, 0,
+                              ]),
+                        child: Image.network(
+                          badge.imageUrl,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => Container(
+                            color: const Color(0xFFE7EAE2),
+                            alignment: Alignment.center,
+                            child: const Icon(
+                              Icons.workspace_premium_outlined,
+                              size: 34,
+                              color: Color(0xFF7A8477),
                             ),
-                          );
-                        },
+                          ),
+                          loadingBuilder: (context, child, loadingProgress) {
+                            if (loadingProgress == null) return child;
+                            return const Center(
+                              child: SizedBox(
+                                width: 22,
+                                height: 22,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Color(0xFF4D6F79),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 14),
-          Text(
-            badge.title,
-            maxLines: 2,
-            textAlign: TextAlign.center,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-              color: isUnlocked || isActive
-                  ? const Color(0xFF4D574A)
-                  : const Color(0xFF7F877C),
-              height: 1.15,
+            const SizedBox(height: 14),
+            Text(
+              badge.title,
+              maxLines: 2,
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: isUnlocked || isActive
+                    ? const Color(0xFF4D574A)
+                    : const Color(0xFF7F877C),
+                height: 1.15,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
