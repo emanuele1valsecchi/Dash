@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../config/map_style.dart';
 import '../services/routing_service.dart';
 import '../services/run_session_repository.dart';
 import '../utils/geometry_utils.dart';
@@ -460,8 +461,9 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
       ),
       children: [
         TileLayer(
-          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          urlTemplate: MapStyle.terrainTileUrl,
           userAgentPackageName: 'com.dash',
+          retinaMode: RetinaMode.isHighDensity(context),
         ),
         if (_loopPolygon.length >= 3)
           PolygonLayer(

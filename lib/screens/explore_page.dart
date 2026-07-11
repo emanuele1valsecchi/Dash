@@ -9,6 +9,11 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../config/map_style.dart';
+import '../models/water_fountain.dart';
+import '../services/water_fountain_service.dart';
+import '../widgets/map/water_fountain_marker_layer.dart';
+
 class ExplorePage extends StatefulWidget {
   const ExplorePage({super.key});
 
@@ -30,22 +35,19 @@ class _ExplorePageState extends State<ExplorePage> {
   StreamSubscription<QuerySnapshot>? _areasSubscription;
   List<Map<String, dynamic>> _claimedAreas = [];
 
-  // ── Map settings ──────────────────────────────────────────────────────────
-  bool _isSatellite = false;
+  // ── Water fountains (OpenStreetMap) ─────────────────────────────────────────
+  final WaterFountainService _waterFountainService = WaterFountainService();
+  List<WaterFountain> _waterFountains = [];
+  LatLng? _lastFountainFetchCenter;
+  static const double _fountainRefetchThresholdMeters = 800;
 
+  // ── Map settings ──────────────────────────────────────────────────────────
   bool _showAreas = true;
 
   // ── Search ────────────────────────────────────────────────────────────────
   bool _isSearching = false;
 
   static const double _defaultZoom = 16.0;
-
-  static const String _osmTileUrl =
-      'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-
-  // ESRI World Imagery — no API key required; note y/x order in the path
-  static const String _satelliteTileUrl =
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -95,6 +97,7 @@ class _ExplorePageState extends State<ExplorePage> {
         _isLoadingLocation = false;
       });
       _mapController.move(latLng, _defaultZoom);
+      _maybeFetchNearbyFountains(latLng);
     } catch (_) {
       setState(() => _isLoadingLocation = false);
     }
@@ -107,7 +110,25 @@ class _ExplorePageState extends State<ExplorePage> {
         distanceFilter: 5,
       ),
     ).listen((pos) {
-      setState(() => _currentPosition = LatLng(pos.latitude, pos.longitude));
+      final latLng = LatLng(pos.latitude, pos.longitude);
+      setState(() => _currentPosition = latLng);
+      _maybeFetchNearbyFountains(latLng);
+    });
+  }
+
+  /// Re-queries Overpass for nearby fountains only once the user has moved
+  /// far enough that the cached radius may no longer cover them — avoids
+  /// hitting the API on every 5m GPS update.
+  void _maybeFetchNearbyFountains(LatLng center) {
+    if (_lastFountainFetchCenter != null &&
+        const Distance()(_lastFountainFetchCenter!, center) <
+            _fountainRefetchThresholdMeters) {
+      return;
+    }
+    _lastFountainFetchCenter = center;
+    _waterFountainService.fetchNearby(center).then((fountains) {
+      if (!mounted) return;
+      setState(() => _waterFountains = fountains);
     });
   }
 
@@ -145,20 +166,6 @@ class _ExplorePageState extends State<ExplorePage> {
   // ── Map controls ──────────────────────────────────────────────────────────
 
   void _resetNorth() => _mapController.rotate(0);
-
-  void _openLayerPicker() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _LayerPickerSheet(
-        isSatellite: _isSatellite,
-        onChanged: (val) {
-          setState(() => _isSatellite = val);
-          Navigator.pop(context);
-        },
-      ),
-    );
-  }
 
   // ── City search (Nominatim) ───────────────────────────────────────────────
 
@@ -226,8 +233,9 @@ class _ExplorePageState extends State<ExplorePage> {
       ),
       children: [
         TileLayer(
-          urlTemplate: _isSatellite ? _satelliteTileUrl : _osmTileUrl,
+          urlTemplate: MapStyle.terrainTileUrl,
           userAgentPackageName: 'com.dash',
+          retinaMode: RetinaMode.isHighDensity(context),
         ),
         // Claimed areas polygons (hidden when _showAreas is false)
         if (_claimedAreas.isNotEmpty && _showAreas)
@@ -243,6 +251,8 @@ class _ExplorePageState extends State<ExplorePage> {
               );
             }).toList(),
           ),
+        if (_waterFountains.isNotEmpty)
+          WaterFountainMarkerLayer(fountains: _waterFountains),
         if (_currentPosition != null)
           MarkerLayer(
             markers: [
@@ -368,29 +378,21 @@ class _ExplorePageState extends State<ExplorePage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // 4.1 Compass — resets map rotation to north-up
+                // 3.1 Compass — resets map rotation to north-up
                 _PanelButton(
                   icon: Icons.explore_outlined,
                   onTap: _resetNorth,
                   position: _PanelPosition.top,
                 ),
                 _PanelDivider(),
-                // 4.2 Layers — opens map-style picker (standard / satellite)
-                _PanelButton(
-                  icon: Icons.layers_outlined,
-                  onTap: _openLayerPicker,
-                  active: _isSatellite,
-                  position: _PanelPosition.middle,
-                ),
-                _PanelDivider(),
-                // 4.3 Grid — reserved for future feature
+                // 3.2 Grid — reserved for future feature
                 _PanelButton(
                   icon: Icons.grid_on_outlined,
                   onTap: () {},
                   position: _PanelPosition.middle,
                 ),
                 _PanelDivider(),
-                // 4.4 Toggle claimed-area polygons visibility
+                // 3.3 Toggle claimed-area polygons visibility
                 // TODO: no-op until claimedAreas are populated in Firestore
                 _PanelButton(
                   icon: Icons.cable_outlined,
@@ -488,121 +490,6 @@ class _ExplorePageState extends State<ExplorePage> {
                 child: const Text(
                   'Settings',
                   style: TextStyle(color: Colors.white),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ── Layer picker bottom sheet ──────────────────────────────────────────────────
-
-class _LayerPickerSheet extends StatelessWidget {
-  final bool isSatellite;
-  final ValueChanged<bool> onChanged;
-
-  const _LayerPickerSheet(
-      {required this.isSatellite, required this.onChanged});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 40),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Center(
-            child: Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey[300],
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          const Text(
-            'Map style',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              _StyleOption(
-                label: 'Standard',
-                icon: Icons.map_outlined,
-                selected: !isSatellite,
-                onTap: () => onChanged(false),
-              ),
-              const SizedBox(width: 12),
-              _StyleOption(
-                label: 'Satellite',
-                icon: Icons.satellite_alt_outlined,
-                selected: isSatellite,
-                onTap: () => onChanged(true),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _StyleOption extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _StyleOption({
-    required this.label,
-    required this.icon,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    const accent = Color(0xFF4A8C52);
-    const accentBg = Color(0xFFEAF7E0);
-
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          decoration: BoxDecoration(
-            color: selected ? accentBg : const Color(0xFFF5F5F5),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: selected ? accent : Colors.transparent,
-              width: 1.5,
-            ),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon,
-                  color: selected ? accent : Colors.grey[500], size: 28),
-              const SizedBox(height: 8),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight:
-                      selected ? FontWeight.w600 : FontWeight.normal,
-                  color: selected ? accent : Colors.grey[600],
                 ),
               ),
             ],
