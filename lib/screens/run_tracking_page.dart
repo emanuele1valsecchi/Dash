@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
@@ -46,15 +48,28 @@ class RunTrackingPage extends StatefulWidget {
   State<RunTrackingPage> createState() => _RunTrackingPageState();
 }
 
-class _RunTrackingPageState extends State<RunTrackingPage> {
+class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderStateMixin {
   // ── Map ───────────────────────────────────────────────────────────────────
   final MapController _mapController = MapController();
   static const double _defaultZoom = 18.0;
   bool _isMapExpanded = false;
 
-  /// Most recent valid GPS course-over-ground, used to keep the expanded map
-  /// oriented in the runner's direction of travel instead of north-up.
+  /// Whether the map is auto-recentering on the runner. Turned off by the
+  /// "see whole path" button so the overview it animates to doesn't get
+  /// immediately overridden by the next GPS fix; the same button switches to
+  /// a "follow me" action to turn it back on.
+  bool _isFollowingUser = true;
+  bool _isCameraAnimating = false;
+
+  /// Most recent (smoothed) valid GPS course-over-ground, used to keep the
+  /// expanded map oriented in the runner's direction of travel instead of
+  /// north-up.
   double? _lastHeading;
+
+  /// Recent raw headings feeding [_lastHeading]'s circular mean — see
+  /// [_circularMeanDegrees].
+  final List<double> _recentHeadings = [];
+  static const int _headingSmoothingWindow = 3;
 
   /// Course-over-ground is only meaningful — and not just sensor noise —
   /// once actually moving at more than a slow walk.
@@ -65,6 +80,64 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
   LatLng? _currentPosition;
   bool _isLoadingLocation = true;
   bool _permissionDenied = false;
+
+  // ── Dot smoothing ─────────────────────────────────────────────────────────
+  //
+  // GPS fixes arrive in discrete jumps, which makes the marker teleport
+  // instead of glide. This is a single exponential "chase": a perpetual
+  // per-frame ticker nudges [_displayedPosition] a fraction of the remaining
+  // gap toward [_currentPosition] (the raw latest fix) every frame, scaled
+  // by real elapsed time. Two things this is deliberately NOT, because both
+  // were tried and both still visibly stalled:
+  //
+  //  1. A bounded Tween whose duration is guessed from the *previous*
+  //     fix-to-fix gap and then played back after the fix arrives. Our
+  //     position stream is triggered by a distance filter, not a fixed timer
+  //     (unlike e.g. Google's FusedLocationProvider), so fixes never arrive
+  //     on a predictable beat — any guessed duration can still finish before
+  //     the next fix shows up, leaving the dot idle in between.
+  //  2. A *fixed*-time-constant chase. This still has the same problem in
+  //     disguise: with a short constant (what shipped originally, 0.35s) the
+  //     chase converges and snaps to the target well within a typical
+  //     0.5–1s fix interval, so it's sitting "settled" — not incrementally
+  //     approaching anything — for whatever time is left until the next fix.
+  //     That idle window is indistinguishable from a stall.
+  //
+  // The fix for both: the chase's time constant (computed fresh each tick in
+  // [_onDotTick]) is *adaptive*, tracking the recently observed real gap
+  // between fixes (any pace, any GPS cadence) via
+  // [_fixIntervalEstimateSeconds], with enough headroom that the chase
+  // structurally cannot finish converging before the next fix retargets it.
+  // It only actually reaches "settled" once fixes genuinely stop arriving —
+  // i.e. the runner has actually stopped — which is exactly when the dot
+  // should stop moving.
+  LatLng? _displayedPosition;
+  double? _displayedHeading;
+  late final Ticker _dotTicker;
+  Duration _dotTickerLastElapsed = Duration.zero;
+
+  /// Rolling estimate (EMA) of the real time between accepted GPS fixes,
+  /// updated every fix from the same delta already computed for the
+  /// GPS-spike check. Seeded with a plausible default before any fixes
+  /// have arrived.
+  double _fixIntervalEstimateSeconds = 0.8;
+  static const double _fixIntervalEmaAlpha = 0.35;
+
+  /// The chase's time constant is this multiple of the observed fix
+  /// interval — comfortably longer than the gap it needs to survive, so a
+  /// fix arriving right on schedule (or even a bit late) still finds the
+  /// chase mid-glide rather than idle. Clamped so unusually fast bursts
+  /// don't make it snappy/jittery, and unusually long GPS gaps (tunnels,
+  /// poor signal) don't leave it crawling forever.
+  static const double _dotChaseTauMultiplier = 1.5;
+  static const double _dotChaseTauMin = 0.3;
+  static const double _dotChaseTauMax = 2.5;
+
+  /// How close the chase needs to get before snapping the rest of the way —
+  /// otherwise it's asymptotic and technically never *exactly* arrives,
+  /// which would mean pointless per-frame work forever once the runner
+  /// actually stops.
+  static const double _dotChaseSnapThresholdMeters = 0.25;
 
   /// Fixes worse than this are dropped entirely — a bad fix would otherwise
   /// corrupt distance, pace and loop detection.
@@ -120,11 +193,29 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
   double get _elevationDifferenceMeters =>
       _hasAltitudeSample ? (_maxAltitude - _minAltitude) : 0.0;
 
+  /// The trail as painted on the map: every confirmed fix, plus a final
+  /// "live" vertex that the dot-chase ([_onDotTick]) mutates in place each
+  /// frame rather than rebuilding this whole list from [_breadcrumb] every
+  /// tick — for a long run with thousands of points, re-copying the entire
+  /// trail 60 times a second for every glide would be needless GC pressure.
+  /// flutter_map's polyline painter already repaints every frame regardless
+  /// (it compares the outer `Polyline`/`List<Polyline>` wrapper objects,
+  /// which are freshly built on every `build()` call anyway), so mutating
+  /// this list's last element in place is safe — it doesn't skip a repaint
+  /// that would otherwise happen. Since the chase is itself a low-pass
+  /// filter on the raw fixes, this also smooths out the jagged look of
+  /// connecting noisy raw GPS points with straight segments (most visible on
+  /// turns/roundabouts) as a side effect, with no separate smoothing pass
+  /// needed. [_breadcrumb] stays the raw, unsmoothed source of truth for
+  /// distance/pace/loop-closure — none of that math is affected by this.
+  final List<LatLng> _trailPoints = [];
+
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   @override
   void initState() {
     super.initState();
+    _dotTicker = createTicker(_onDotTick)..start();
     _initLocation();
   }
 
@@ -133,6 +224,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
     _positionSub?.cancel();
     _uiTicker?.cancel();
     _countdownTimer?.cancel();
+    _dotTicker.dispose();
     _mapController.dispose();
     super.dispose();
   }
@@ -156,8 +248,10 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
       final ll = LatLng(pos.latitude, pos.longitude);
       _breadcrumb.add(_TrackPoint(ll, pos.timestamp));
       _recordAltitude(pos.altitude);
+      _trailPoints.add(ll);
       setState(() {
         _currentPosition = ll;
+        _displayedPosition = ll; // nothing to chase from yet — show it directly
         _isLoadingLocation = false;
       });
     } catch (_) {
@@ -270,6 +364,10 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
         return; // GPS spike — ignore this fix entirely.
       }
       _distanceMeters += segMeters;
+      if (segSeconds > 0) {
+        _fixIntervalEstimateSeconds =
+            _fixIntervalEmaAlpha * segSeconds + (1 - _fixIntervalEmaAlpha) * _fixIntervalEstimateSeconds;
+      }
     }
 
     _breadcrumb.add(_TrackPoint(newPoint, newTime));
@@ -277,22 +375,203 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
     _updatePace();
     _checkLoopClosure();
 
-    setState(() => _currentPosition = newPoint);
+    _currentPosition = newPoint;
 
     if (pos.speed >= _minSpeedForHeadingMs && pos.heading.isFinite && pos.heading >= 0) {
-      _lastHeading = pos.heading;
+      // Averaged over the last few fixes (circular mean, since heading wraps
+      // at 360°) rather than trusted per-fix — a single noisy course reading
+      // mid-turn was making the map's rotation visibly twitchy.
+      _recentHeadings.add(pos.heading);
+      if (_recentHeadings.length > _headingSmoothingWindow) {
+        _recentHeadings.removeAt(0);
+      }
+      _lastHeading = _circularMeanDegrees(_recentHeadings);
     }
 
-    if (_isMapExpanded) {
+    _advanceTrail(newPoint);
+  }
+
+  /// Hands the chase ticker ([_onDotTick]) a new point to head toward.
+  void _advanceTrail(LatLng newPoint) {
+    if (_displayedPosition == null) {
+      // Bootstrap: no prior position at all (the initial fetch in
+      // _initLocation must have failed) — show this fix directly, there's
+      // nothing to chase from yet.
+      _displayedPosition = newPoint;
+      _trailPoints.add(newPoint);
+      return;
+    }
+
+    // The trail's current last vertex is already wherever the dot is
+    // displayed (kept in sync every frame by `_onDotTick`), so leaving it in
+    // place freezes it. Appending a duplicate opens a new live vertex for
+    // the chase to update in place toward the new fix.
+    _trailPoints.add(_displayedPosition!);
+  }
+
+  /// Runs every frame for the lifetime of the page (started in [initState]),
+  /// nudging [_displayedPosition]/[_displayedHeading] toward [_currentPosition]
+  /// / [_lastHeading]. See the "Dot smoothing" field comments for why this is
+  /// a perpetual, adaptively-paced chase rather than a bounded per-fix
+  /// animation or a fixed time constant.
+  void _onDotTick(Duration elapsed) {
+    if (!mounted) return;
+    final dtMs = (elapsed - _dotTickerLastElapsed).inMilliseconds;
+    _dotTickerLastElapsed = elapsed;
+    if (dtMs <= 0) return;
+    final dt = dtMs / 1000.0;
+
+    final target = _currentPosition;
+    final current = _displayedPosition;
+    if (target == null || current == null) return;
+
+    final tau =
+        (_fixIntervalEstimateSeconds * _dotChaseTauMultiplier).clamp(_dotChaseTauMin, _dotChaseTauMax);
+    final factor = 1 - math.exp(-dt / tau);
+
+    var newDisplayed = LatLng(
+      current.latitude + (target.latitude - current.latitude) * factor,
+      current.longitude + (target.longitude - current.longitude) * factor,
+    );
+
+    // Snap once close enough — otherwise the chase asymptotically approaches
+    // but never *exactly* reaches the target, which would mean pointless
+    // per-frame work (and endless imperceptible drift) forever once the
+    // runner stops moving.
+    if (const Distance()(newDisplayed, target) < _dotChaseSnapThresholdMeters) {
+      newDisplayed = target;
+    }
+
+    double? newHeading = _displayedHeading;
+    final headingTarget = _lastHeading;
+    if (headingTarget != null) {
+      newHeading =
+          newHeading == null ? headingTarget : _lerpAngleDegrees(newHeading, headingTarget, factor);
+    }
+
+    final positionSettled =
+        newDisplayed.latitude == current.latitude && newDisplayed.longitude == current.longitude;
+    final headingSettled = newHeading == _displayedHeading;
+    if (positionSettled && headingSettled) return; // nothing changed — skip the rebuild.
+
+    if (_trailPoints.isNotEmpty) {
+      _trailPoints[_trailPoints.length - 1] = newDisplayed;
+    }
+
+    setState(() {
+      _displayedPosition = newDisplayed;
+      _displayedHeading = newHeading;
+    });
+
+    if (_isMapExpanded && _isFollowingUser && !_isCameraAnimating) {
       try {
-        // Rotating the map by -heading (rather than +heading) is what turns
-        // the direction of travel to face up the screen: flutter_map rotates
-        // the map content clockwise by the given degree, so the content that
-        // was `heading` clockwise from north needs an equal-and-opposite
-        // rotation to land back at the top.
-        _mapController.moveAndRotate(newPoint, _mapController.camera.zoom, -(_lastHeading ?? 0));
+        _mapController.moveAndRotate(newDisplayed, _mapController.camera.zoom, -(newHeading ?? 0));
       } catch (_) {
-        // Map not attached yet — next fix will re-attempt.
+        // Map not attached yet — next tick will re-attempt.
+      }
+    }
+  }
+
+  /// Interpolates from angle [a] to [b] (degrees) along whichever direction
+  /// is shorter, so e.g. 350°→10° sweeps forward through 360° instead of
+  /// spinning the long way back through 180°.
+  double _lerpAngleDegrees(double a, double b, double t) {
+    var diff = (b - a + 180) % 360 - 180;
+    if (diff < -180) diff += 360;
+    return a + diff * t;
+  }
+
+  /// Circular mean of [degreesList] — averaging angles by summing their unit
+  /// vectors and taking the resulting direction, rather than averaging the
+  /// raw degree values, which breaks near the 0°/360° wrap (e.g. naively
+  /// averaging 350° and 10° gives 180°, the exact opposite of the true ~0°
+  /// average).
+  double _circularMeanDegrees(List<double> degreesList) {
+    double sumSin = 0, sumCos = 0;
+    for (final d in degreesList) {
+      final rad = d * math.pi / 180;
+      sumSin += math.sin(rad);
+      sumCos += math.cos(rad);
+    }
+    var meanDeg = math.atan2(sumSin, sumCos) * 180 / math.pi;
+    if (meanDeg < 0) meanDeg += 360;
+    return meanDeg;
+  }
+
+  // ── Camera animation ─────────────────────────────────────────────────────
+
+  /// Animates the camera to [targetCenter]/[targetZoom] over a short tween
+  /// instead of jumping instantly. flutter_map has no built-in animated
+  /// move, so this drives one manually: an [AnimationController] ticks a
+  /// lat/lng/zoom [Tween] and calls [MapController.move] each frame, then
+  /// disposes itself once the animation finishes.
+  Future<void> _animateCameraTo(LatLng targetCenter, double targetZoom) async {
+    if (_isCameraAnimating) return;
+    _isCameraAnimating = true;
+
+    final MapCamera camera;
+    try {
+      camera = _mapController.camera;
+    } catch (_) {
+      _isCameraAnimating = false;
+      return; // Map not attached yet.
+    }
+
+    final latTween = Tween<double>(begin: camera.center.latitude, end: targetCenter.latitude);
+    final lngTween = Tween<double>(begin: camera.center.longitude, end: targetCenter.longitude);
+    final zoomTween = Tween<double>(begin: camera.zoom, end: targetZoom);
+
+    final controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 650));
+    final curved = CurvedAnimation(parent: controller, curve: Curves.easeInOutCubic);
+
+    void tick() {
+      try {
+        _mapController.move(
+          LatLng(latTween.transform(curved.value), lngTween.transform(curved.value)),
+          zoomTween.transform(curved.value),
+        );
+      } catch (_) {}
+    }
+
+    controller.addListener(tick);
+    try {
+      await controller.forward();
+    } finally {
+      controller.removeListener(tick);
+      controller.dispose();
+      _isCameraAnimating = false;
+    }
+  }
+
+  /// Zooms/pans out just far enough to fit the whole run trail on screen.
+  Future<void> _fitPathInView() async {
+    if (_breadcrumb.length < 2) return;
+    try {
+      final targetCamera = CameraFit.coordinates(
+        coordinates: _breadcrumb.map((t) => t.point).toList(growable: false),
+        // Leaves room for the stats bar (top) and the button/controls row (bottom).
+        padding: const EdgeInsets.fromLTRB(40, 110, 40, 170),
+        // Never zoom in past the normal follow zoom — early in a run the
+        // whole trail can fit in a tiny area, and without this cap "see
+        // whole path" would zoom in tighter than the default view instead
+        // of only ever zooming out.
+        maxZoom: _defaultZoom,
+      ).fit(_mapController.camera);
+      await _animateCameraTo(targetCamera.center, targetCamera.zoom);
+    } catch (_) {
+      // Map not attached yet.
+    }
+  }
+
+  Future<void> _handleFitPathTap() async {
+    if (_isFollowingUser) {
+      setState(() => _isFollowingUser = false);
+      await _fitPathInView();
+    } else {
+      setState(() => _isFollowingUser = true);
+      final target = _displayedPosition ?? _currentPosition;
+      if (target != null) {
+        await _animateCameraTo(target, _defaultZoom);
       }
     }
   }
@@ -364,6 +643,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
       _stopwatch.stop();
       _positionSub?.cancel();
       _positionSub = null;
+      _recentHeadings.clear(); // don't blend pre-pause direction into the resumed run
     } else {
       _stopwatch.start();
       _startPositionStream();
@@ -371,11 +651,15 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
   }
 
   void _toggleMapExpanded() {
-    setState(() => _isMapExpanded = !_isMapExpanded);
-    if (_isMapExpanded && _currentPosition != null) {
+    setState(() {
+      _isMapExpanded = !_isMapExpanded;
+      _isFollowingUser = true; // always reopen the map in follow mode
+    });
+    final target = _displayedPosition ?? _currentPosition;
+    if (_isMapExpanded && target != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         try {
-          _mapController.moveAndRotate(_currentPosition!, _defaultZoom, -(_lastHeading ?? 0));
+          _mapController.moveAndRotate(target, _defaultZoom, -(_lastHeading ?? 0));
         } catch (_) {}
       });
     }
@@ -890,6 +1174,15 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
           ),
         ),
         Positioned(
+          right: 16,
+          bottom: 108,
+          child: _RoundMapButton(
+            icon: _isFollowingUser ? Icons.zoom_out_map_rounded : Icons.my_location_rounded,
+            tooltip: _isFollowingUser ? 'See whole path' : 'Follow me',
+            onTap: (_isFollowingUser && _breadcrumb.length < 2) ? null : _handleFitPathTap,
+          ),
+        ),
+        Positioned(
           left: 24,
           right: 24,
           bottom: 16,
@@ -903,7 +1196,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
-        initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
+        initialCenter: _displayedPosition ?? _currentPosition ?? const LatLng(45.4642, 9.1900),
         initialZoom: _defaultZoom,
         interactionOptions: const InteractionOptions(
           flags: InteractiveFlag.pinchZoom | InteractiveFlag.doubleTapZoom,
@@ -929,23 +1222,23 @@ class _RunTrackingPageState extends State<RunTrackingPage> {
           ),
 
         // ── Breadcrumb trail (paint left behind the runner) ──────────────
-        if (_breadcrumb.length >= 2)
+        if (_trailPoints.length >= 2)
           PolylineLayer(
             polylines: [
               Polyline(
-                points: _breadcrumb.map((t) => t.point).toList(growable: false),
+                points: _trailPoints,
                 color: const Color(0xFF4A8C52),
-                strokeWidth: 4.5,
+                strokeWidth: 6.0,
               ),
             ],
           ),
 
         // ── Runner position ────────────────────────────────────────────
-        if (_currentPosition != null)
+        if ((_displayedPosition ?? _currentPosition) != null)
           MarkerLayer(
             markers: [
               Marker(
-                point: _currentPosition!,
+                point: _displayedPosition ?? _currentPosition!,
                 width: 60,
                 height: 60,
                 child: const _RunnerLocationDot(),
@@ -1383,6 +1676,37 @@ class _SummaryStat extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Reusable round map button ──────────────────────────────────────────────────
+
+class _RoundMapButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onTap;
+
+  const _RoundMapButton({required this.icon, required this.tooltip, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final disabled = onTap == null;
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Colors.white,
+        shape: const CircleBorder(),
+        elevation: 2,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Icon(icon, color: disabled ? Colors.grey[400] : const Color(0xFF425143), size: 24),
+          ),
+        ),
       ),
     );
   }
