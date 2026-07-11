@@ -50,6 +50,19 @@ Keep this list current — update it whenever a feature moves between these buck
   actually completed, and is what XP/missions/homepage history are meant to read from.
   Closed-loop polygons are stored as an array of `{'points': [...]}` maps, not a raw
   array-of-arrays — Firestore rejects directly nested arrays.
+- All maps use the Jawg Terrain tile style (low-detail basemap vs. standard OSM carto),
+  centralized in [lib/config/map_style.dart](lib/config/map_style.dart) and consumed by every screen's `TileLayer`
+  (explore, route create/search, run tracking, test run creator, temp profile), with
+  `retinaMode` enabled so tiles stay sharp on high-density phone screens. The Explore
+  page's satellite/layer-toggle button was removed — it didn't fit the app's style, so
+  there is now only one map style, no picker.
+- Water fountain markers (blue drop icon), sourced live from OpenStreetMap's Overpass
+  API (`amenity=drinking_water` nodes, no API key) via [lib/services/water_fountain_service.dart](lib/services/water_fountain_service.dart)
+  and rendered with [lib/widgets/map/water_fountain_marker_layer.dart](lib/widgets/map/water_fountain_marker_layer.dart). Shown on explore, route
+  create/search, and live run tracking. The explore/route screens refetch as the user's
+  GPS position moves more than ~800m from the last fetch center (grid-cell cached in the
+  service); the run-tracking screen fetches once at the run's starting position only, to
+  avoid extra network/battery use mid-workout.
 
 **Designed in Firestore rules but NOT yet built in the Flutter app** (i.e. the security
 rules anticipate these collections — `runningSessions`, `claimedAreas`, `userStats`,
@@ -75,9 +88,11 @@ Treat these as the next major milestones:
 - **Flutter** (Dart SDK ^3.11.0), Material 3.
 - **Firebase**: Auth (email/password + Google Sign-In), Cloud Firestore, Cloud Storage,
   Cloud Functions (Node/v1 functions API, [functions/](functions/)).
-- **Maps/routing**: `flutter_map` (OSM tiles) + `latlong2` for geometry, `geolocator` for
-  device location, OpenRouteService (foot-walking profile) via raw `http` calls for
-  road-snapped directions and alternative routes ([lib/services/routing_service.dart](lib/services/routing_service.dart)).
+- **Maps/routing**: `flutter_map` with the Jawg Terrain tile style ([lib/config/map_style.dart](lib/config/map_style.dart))
+  + `latlong2` for geometry, `geolocator` for device location, OpenRouteService
+  (foot-walking profile) via raw `http` calls for road-snapped directions and alternative
+  routes ([lib/services/routing_service.dart](lib/services/routing_service.dart)), OpenStreetMap Overpass API for water-fountain POIs
+  ([lib/services/water_fountain_service.dart](lib/services/water_fountain_service.dart)).
 - No state-management package (Provider/Riverpod/Bloc) is in use yet — screens manage
   their own `State` directly. Don't assume one is available.
 
@@ -147,6 +162,10 @@ for convenience, and flag it clearly if a requested change would weaken either.
   trivially extractable. It should be moved behind a backend proxy (e.g. a Cloud
   Function) or at minimum loaded from a non-committed config/secret store with key
   restrictions on the ORS side. Don't copy this pattern for any new third-party API key.
+- `MapStyle` hardcodes the Jawg access token the same way ([lib/config/map_style.dart](lib/config/map_style.dart)) —
+  same debt as the ORS key above. At minimum, restrict the token by app bundle
+  id/domain in the Jawg dashboard; longer term, move both this and the ORS key to a
+  non-committed config/secret store.
 
 ## Working conventions
 

@@ -9,8 +9,12 @@ import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../config/map_style.dart';
+import '../models/water_fountain.dart';
 import '../services/run_session_repository.dart';
+import '../services/water_fountain_service.dart';
 import '../utils/geometry_utils.dart';
+import '../widgets/map/water_fountain_marker_layer.dart';
 import 'test_run_creator_page.dart';
 
 // ── Track point ──────────────────────────────────────────────────────────────
@@ -80,6 +84,12 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   LatLng? _currentPosition;
   bool _isLoadingLocation = true;
   bool _permissionDenied = false;
+
+  // ── Water fountains (OpenStreetMap) ─────────────────────────────────────────
+  // Fetched once at the runner's starting position — not refreshed as the
+  // run progresses, to avoid extra network/battery use mid-workout.
+  final WaterFountainService _waterFountainService = WaterFountainService();
+  List<WaterFountain> _waterFountains = [];
 
   // ── Dot smoothing ─────────────────────────────────────────────────────────
   //
@@ -253,6 +263,10 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
         _currentPosition = ll;
         _displayedPosition = ll; // nothing to chase from yet — show it directly
         _isLoadingLocation = false;
+      });
+      _waterFountainService.fetchNearby(ll).then((fountains) {
+        if (!mounted) return;
+        setState(() => _waterFountains = fountains);
       });
     } catch (_) {
       setState(() => _isLoadingLocation = false);
@@ -1204,8 +1218,9 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
       ),
       children: [
         TileLayer(
-          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          urlTemplate: MapStyle.terrainTileUrl,
           userAgentPackageName: 'com.dash',
+          retinaMode: RetinaMode.isHighDensity(context),
         ),
 
         // ── Claimed loop fills ───────────────────────────────────────────
@@ -1232,6 +1247,10 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
               ),
             ],
           ),
+
+        // ── Water fountains ────────────────────────────────────────────
+        if (_waterFountains.isNotEmpty)
+          WaterFountainMarkerLayer(fountains: _waterFountains),
 
         // ── Runner position ────────────────────────────────────────────
         if ((_displayedPosition ?? _currentPosition) != null)

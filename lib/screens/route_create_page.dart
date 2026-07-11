@@ -8,9 +8,13 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../config/map_style.dart';
+import '../models/water_fountain.dart';
 import '../services/route_repository.dart';
 import '../services/routing_service.dart';
+import '../services/water_fountain_service.dart';
 import '../utils/geometry_utils.dart';
+import '../widgets/map/water_fountain_marker_layer.dart';
 
 // ── History snapshot ───────────────────────────────────────────────────────────
 
@@ -59,6 +63,12 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
   LatLng? _currentPosition;
   bool _isLoadingLocation = true;
   StreamSubscription<Position>? _positionStream;
+
+  // ── Water fountains (OpenStreetMap) ─────────────────────────────────────────
+  final WaterFountainService _waterFountainService = WaterFountainService();
+  List<WaterFountain> _waterFountains = [];
+  LatLng? _lastFountainFetchCenter;
+  static const double _fountainRefetchThresholdMeters = 800;
 
   // ── Sheet ─────────────────────────────────────────────────────────────────
   final DraggableScrollableController _sheetController =
@@ -145,14 +155,34 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
         _isLoadingLocation = false;
       });
       _mapController.move(ll, _defaultZoom);
+      _maybeFetchNearbyFountains(ll);
     } catch (_) {
       setState(() => _isLoadingLocation = false);
     }
     _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high, distanceFilter: 5),
-    ).listen((p) =>
-        setState(() => _currentPosition = LatLng(p.latitude, p.longitude)));
+    ).listen((p) {
+      final ll = LatLng(p.latitude, p.longitude);
+      setState(() => _currentPosition = ll);
+      _maybeFetchNearbyFountains(ll);
+    });
+  }
+
+  /// Re-queries Overpass for nearby fountains only once the user has moved
+  /// far enough that the cached radius may no longer cover them — avoids
+  /// hitting the API on every 5m GPS update.
+  void _maybeFetchNearbyFountains(LatLng center) {
+    if (_lastFountainFetchCenter != null &&
+        const Distance()(_lastFountainFetchCenter!, center) <
+            _fountainRefetchThresholdMeters) {
+      return;
+    }
+    _lastFountainFetchCenter = center;
+    _waterFountainService.fetchNearby(center).then((fountains) {
+      if (!mounted) return;
+      setState(() => _waterFountains = fountains);
+    });
   }
 
   // ── History ───────────────────────────────────────────────────────────────
@@ -546,8 +576,9 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
       ),
       children: [
         TileLayer(
-          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          urlTemplate: MapStyle.terrainTileUrl,
           userAgentPackageName: 'com.dash',
+          retinaMode: RetinaMode.isHighDensity(context),
         ),
 
         // ── Loop fill (below route lines) ─────────────────────────────────
@@ -589,6 +620,10 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
               ),
             ],
           ),
+
+        // ── Water fountains ──────────────────────────────────────────────
+        if (_waterFountains.isNotEmpty)
+          WaterFountainMarkerLayer(fountains: _waterFountains),
 
         // ── GPS dot ───────────────────────────────────────────────────────
         if (_currentPosition != null)
