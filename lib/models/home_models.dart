@@ -26,16 +26,18 @@ class BadgeProgressData {
   });
 }
 
-class WeeklyStatData {
+class MonthlyStatData {
   final String title;
   final String value;
   final IconData icon;
   final double progress;
+  final String bottomText; // Es: "Best overall: 10 km/h" o "New Record established"
 
-  const WeeklyStatData({
+  const MonthlyStatData({
     required this.title,
     required this.value,
     required this.icon,
     required this.progress,
+    required this.bottomText,
   });
 }
