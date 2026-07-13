@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../models/home_models.dart';
 import '../models/home_badge_ui_model.dart';
 import '../services/badge_service.dart';
+import '../services/location_service.dart';
 import '../services/storage_service.dart';
 import 'explore_page.dart';
 import 'route_create_page.dart';
@@ -62,6 +63,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _badgesFuture = _loadBadges();
     _loadNickname();
     _loadMonthlyDistance();
+    // Start the shared GPS stream as soon as the user reaches the app's main
+    // screen, so map pages read an already-warm position instead of each
+    // separately requesting permission and waiting on a fresh fix.
+    LocationService.instance.start();
   }
 
   Future<void> _loadNickname() async {

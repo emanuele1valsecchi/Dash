@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
 /// A single completed, live-tracked run as stored in the `runningSessions`
@@ -81,6 +84,14 @@ class RunSessionRepository {
   /// Persists a finished run. [closedLoops] are stored as an array of maps
   /// (`{'points': [...]}`) rather than a raw array-of-arrays — Firestore does
   /// not support nested arrays.
+  ///
+  /// Also best-effort reverse-geocodes the run's starting point to a raw
+  /// locality name (`startLocality`, e.g. "Seregno") via Nominatim. This is
+  /// deliberately just the raw place name — grouping towns into broader
+  /// "cities" for the scoreboard (e.g. treating Seregno as part of Milan) is
+  /// future scoreboard logic, not something decided here; the Cloud Function
+  /// that turns closed loops into `claimedAreas` docs copies this value
+  /// through unchanged.
   Future<void> saveSession({
     required String name,
     required double distanceMeters,
@@ -93,6 +104,9 @@ class RunSessionRepository {
     required List<LatLng> path,
     required List<List<LatLng>> closedLoops,
   }) async {
+    final startLocality =
+        path.isEmpty ? null : await _reverseGeocodeLocality(path.first);
+
     await _db.collection('runningSessions').add({
       'userId': _uid,
       'name': name.trim().isEmpty ? 'Untitled run' : name.trim(),
@@ -110,9 +124,36 @@ class RunSessionRepository {
                     poly.map((p) => GeoPoint(p.latitude, p.longitude)).toList(),
               })
           .toList(),
+      'startLocality': startLocality,
       'pointsEarned': 0,
       'createdAt': FieldValue.serverTimestamp(),
     });
+  }
+
+  Future<String?> _reverseGeocodeLocality(LatLng point) async {
+    try {
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/reverse'
+        '?lat=${point.latitude}&lon=${point.longitude}&format=json&zoom=10',
+      );
+      final response = await http
+          .get(uri, headers: {'User-Agent': 'DashApp/1.0'})
+          .timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) return null;
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final address = data['address'] as Map<String, dynamic>?;
+      if (address == null) return null;
+
+      return (address['city'] ??
+          address['town'] ??
+          address['village'] ??
+          address['municipality']) as String?;
+    } catch (_) {
+      // Best-effort only — a run should still save if reverse geocoding
+      // fails or Nominatim is unreachable.
+      return null;
+    }
   }
 
   /// Returns the current user's completed runs, newest first.

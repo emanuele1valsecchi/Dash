@@ -15,6 +15,14 @@ class ProfileService {
     return await _firestore.collection('profiles').doc(_uid).get();
   }
 
+  // ── Ritorna lo username di un utente arbitrario (es. proprietario di
+  //    un'area conquistata) — non necessariamente l'utente corrente ────────
+  Future<String?> fetchUsername(String uid) async {
+    final doc = await _firestore.collection('profiles').doc(uid).get();
+    final username = (doc.data()?['username'] as String?)?.trim();
+    return (username == null || username.isEmpty) ? null : username;
+  }
+
   // ── Controlla se il profilo è davvero completo ─────────────────────────────
   Future<bool> isProfileComplete() async {
     final doc = await _firestore.collection('profiles').doc(_uid).get();

@@ -36,6 +36,21 @@ service cloud.firestore {
         && request.resource.data.totalPoints == resource.data.totalPoints;
 
       allow delete: if false; // disable client-side deletes
+
+      // ---------- badge_progress (per-user progress toward each badge) ----------
+      // Seeded by seedUserProfileAndBadges (Admin SDK) on signup; a future
+      // Cloud Function is expected to update it as the user progresses.
+      // Read-only from the client, same trust-value reasoning as userStats.
+      match /badge_progress/{badgeId} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+      }
+    }
+
+    // ---------- badges (shared reference data: title/description/image/order) ----------
+    match /badges/{badgeId} {
+      allow read: if isSignedIn();
+      allow write: if false; // seed/admin-managed, not client-writable
     }
 
     // ---------- nicknames (uniqueness index) ----------
@@ -82,11 +97,13 @@ service cloud.firestore {
     }
 
     // ---------- claimedAreas ----------
+    // Area ownership is a trust value (see CLAUDE.md "Security & performance"
+    // — the client must never assign itself a claimed area). Areas are
+    // created only by the onRunningSessionCreateClaimedAreas Cloud Function
+    // (Admin SDK, bypasses these rules) from a completed run's closed loops.
     match /claimedAreas/{areaId} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn()
-        && request.resource.data.userId == request.auth.uid
-        && areaId == request.resource.data.routeId; // ID must mirror routeId
+      allow create: if false;
       allow update: if false; // claims are immutable once written
       allow delete: if isOwner(resource.data);
     }

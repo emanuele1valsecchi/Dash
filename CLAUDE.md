@@ -32,6 +32,12 @@ Keep this list current — update it whenever a feature moves between these buck
 - Saving/listing/deleting routes in Firestore, with a client-side cache ([lib/services/route_repository.dart](lib/services/route_repository.dart)).
 - Profile picture upload with strict validation (size/extension/MIME/magic-byte sniffing) to Firebase Storage ([lib/services/image_upload_service.dart](lib/services/image_upload_service.dart)).
 - Badge listing (default/visible badges) and a temporary profile page showing the user's saved routes ([lib/services/badge_service.dart](lib/services/badge_service.dart), [lib/screens/temp_profile_page.dart](lib/screens/temp_profile_page.dart)).
+  `firestore.rules` had no `match` block at all for `badges` or `profiles/{uid}/badge_progress`
+  until a later fix — Firestore denies unmatched paths by default, so every read of either
+  failed with `permission-denied` (badges surfaced this to the user on the homepage;
+  badge_progress failed silently into a caught `debugPrint`, always showing 0%/locked).
+  Both are covered now: `badges` is signed-in-read/no-client-write shared reference data,
+  `badge_progress` is self-read-only (same trust-value reasoning as `userStats`).
 - Cloud Function that seeds a `profiles/{uid}` doc and `badge_progress` subcollection on user signup ([functions/index.js](functions/index.js)).
 - Live run tracking screen ("Start to run now"): a 5-second pre-run countdown (STOP
   pauses it, resuming restarts it from 5) precedes GPS tracking; battery-efficient GPS
@@ -56,25 +62,109 @@ Keep this list current — update it whenever a feature moves between these buck
   `retinaMode` enabled so tiles stay sharp on high-density phone screens. The Explore
   page's satellite/layer-toggle button was removed — it didn't fit the app's style, so
   there is now only one map style, no picker.
-- Water fountain markers (blue drop icon), sourced live from OpenStreetMap's Overpass
-  API (`amenity=drinking_water` nodes, no API key) via [lib/services/water_fountain_service.dart](lib/services/water_fountain_service.dart)
-  and rendered with [lib/widgets/map/water_fountain_marker_layer.dart](lib/widgets/map/water_fountain_marker_layer.dart). Shown on explore, route
-  create/search, and live run tracking. The explore/route screens refetch as the user's
-  GPS position moves more than ~800m from the last fetch center (grid-cell cached in the
-  service); the run-tracking screen fetches once at the run's starting position only, to
-  avoid extra network/battery use mid-workout.
+- Water fountain markers (blue drop icon in a white circular badge), sourced live from
+  OpenStreetMap's Overpass API (`amenity=drinking_water` nodes, no API key) via
+  [lib/services/water_fountain_service.dart](lib/services/water_fountain_service.dart) and rendered unconditionally (never
+  conditionally added/removed from `FlutterMap.children`, which otherwise reshuffles
+  sibling layer identity) with [lib/widgets/map/water_fountain_marker_layer.dart](lib/widgets/map/water_fountain_marker_layer.dart) — each
+  `Marker` is keyed by the OSM node id since flutter_map culls off-screen markers every
+  frame and reconciles the rest by list position when unkeyed. Shown on explore, route
+  create/search, and live run tracking, all loaded via `WaterFountainGpsLoader` (also in
+  `water_fountain_service.dart`): fetches near the user's actual GPS position
+  (`fetchNearby`, refetching once it's moved > 800m), not the map viewport. This is
+  deliberately the simpler of two strategies that exist in the file — a viewport-tracking
+  one (`WaterFountainViewportLoader`, panning/zoom-driven, capped query area, zoom cutoff)
+  was tried and is still there but **not wired into any screen**; it kept surfacing new
+  failure modes (tuning the zoom/query-area tradeoff, Overpass's public instance
+  rate-limiting requests, fetches getting permanently stuck after a rate-limited response)
+  faster than they got resolved, so it's parked rather than deleted — the plan is to
+  revisit it, not abandon it. `WaterFountainService`'s own cache (keyed by a snapped grid
+  cell) persists for the whole app session either way. `fetchNearby`/`fetchInBounds`
+  return `null` (not an empty list) on failure, so a failed fetch doesn't get mistaken for
+  "successfully checked, nothing here" — callers should treat `null` as "leave whatever
+  was already showing", not clear to empty. The run-tracking screen fetches once
+  (`fetchNearby`, a fixed 3km radius) at the run's starting position and never refetches,
+  to avoid extra network/battery use mid-workout.
+- **Area claiming**: the `onRunningSessionCreateClaimedAreas` Cloud Function
+  ([functions/index.js](functions/index.js)) triggers on every new `runningSessions` doc and writes one
+  `claimedAreas/{sessionId}_{loopIndex}` doc per closed loop (skipping degenerate ones
+  with < 3 points). This is server-only by design (see "Security & performance" below) —
+  `firestore.rules` denies client `create` on `claimedAreas` entirely, same as
+  `userStats`. It does **not** yet handle a loop overlapping an area someone else already
+  claimed — every closed loop just becomes a new area regardless of overlap; steal/re-time
+  arbitration is still the separate future milestone below.
+- Claimed areas are loaded via [lib/services/claimed_area_repository.dart](lib/services/claimed_area_repository.dart) and rendered
+  with the shared [lib/widgets/map/claimed_areas_layer.dart](lib/widgets/map/claimed_areas_layer.dart) (`ClaimedAreasLayer`) — never a user's raw
+  run/route path, only the claimed-area polygons themselves. Not a live listener: the
+  first fetch reads the whole `claimedAreas` collection, every fetch after that only
+  queries for areas created after the newest one already cached (areas are immutable once
+  written, so this is a sufficient "what's new" check) — since `ClaimedAreaRepository` is
+  a single app-wide singleton, this cache and its incremental top-up are shared across
+  every screen that reads it, not per-screen. Shown on explore, route create/search, and
+  live run tracking:
+  - **Coloring is viewer-relative, computed client-side in `ClaimedAreasLayer`**, not a
+    stored property of the area (there is no `colorHex` field — an earlier per-user hashed
+    palette was removed since it doesn't make sense once color depends on who's looking):
+    the signed-in user's own areas are green (`ClaimedAreasLayer.myColor`, the app's
+    standard accent), every other user's areas are a single flat red
+    (`ClaimedAreasLayer.otherColor`). Explicitly a placeholder 2-tone scheme, expected to
+    change once there's a real design for distinguishing multiple other players.
+  - **Explore (the Area page)** is the only screen with tap-to-view-details, and
+    re-fetches every time it's opened (pushed fresh each visit). Two independent panel
+    toggles filter by ownership of the signed-in user, both on by default: the grid
+    button shows/hides *other* users' territory, the cable button shows/hides the
+    *current* user's own territory.
+  - **Route create/search and run tracking** are display-only — no tap-to-view — loaded
+    once in `initState` with no ownership filter (coloring still applies). Route create
+    specifically can't have it: the map's tap handler already means "drop a route pin",
+    and an area polygon stealing that tap would break placing pins over claimed
+    territory. Run tracking also loads once (like the water fountain fetch next to it)
+    and deliberately does not refresh as the run progresses, to save battery/network
+    mid-workout — the areas shown reflect the world as it was when the run started; a
+    user can't check an area's details mid-run.
+  - On Explore, tapping a polygon opens [lib/widgets/map/area_details_sheet.dart](lib/widgets/map/area_details_sheet.dart)
+    (`showAreaDetailsSheet`/`handleAreaTap` — a standard draggable/dismissible
+    `showModalBottomSheet`) showing the owner's username (looked up live via
+    `ProfileService.fetchUsername`), conquest date, run duration, polygon area (computed
+    client-side via `GeometryUtils.polygonAreaM2`), and average speed. Duration/pace are
+    denormalized onto the `claimedAreas` doc by the claim Cloud Function rather than
+    looked up live, because a user can't read another user's `runningSessions` doc
+    directly (see firestore.rules). Tap detection uses flutter_map's
+    `PolygonLayer.hitNotifier`/`Polygon.hitValue`, checked inside `MapOptions.onTap`.
+- Each `runningSessions` doc records a best-effort `startLocality` — the raw reverse-geocoded
+  place name (e.g. "Seregno") of the run's starting point, via Nominatim in
+  [lib/services/run_session_repository.dart](lib/services/run_session_repository.dart) — and the claim Cloud Function copies it
+  onto the `claimedAreas` docs it creates. This is deliberately just the raw locality, not
+  a "city" grouping: the intended future scoreboard groups nearby towns under a broader
+  city (e.g. Seregno under Milan) using this raw value, but that grouping logic doesn't
+  exist yet and isn't this codebase's concern until the scoreboard is actually built.
+- App-wide GPS position via [lib/services/location_service.dart](lib/services/location_service.dart) (`LocationService`, a
+  singleton started once from `HomeScreen.initState`), so map screens read an
+  already-warm position instead of each independently requesting permission and waiting
+  on a fresh fix — this is why most map pages no longer show a location-loading spinner.
+  Explore/route create/route search all read `LocationService.current` immediately and
+  subscribe to `LocationService.updates` instead of running their own Geolocator stream.
+  Run tracking is the deliberate exception: it still takes its own precise
+  `Geolocator.getCurrentPosition()` fix and gates the pre-run countdown on it, because
+  that fix (with altitude/timestamp `LocationService` doesn't expose) becomes the run's
+  authoritative first breadcrumb point, and starting the countdown before it lands would
+  risk the run's continuous tracking stream recording breadcrumbs before that starting
+  point exists — it only routes permission-checking through `LocationService` (so it's
+  usually pre-granted) and keeps its own dedicated stream for the actual live recording.
 
 **Designed in Firestore rules but NOT yet built in the Flutter app** (i.e. the security
 rules anticipate these collections — `runningSessions`, `claimedAreas`, `userStats`,
 `notifications`, `favoriteRoutes`, `follows` — but there is little/no client code reading
-or writing them yet, except `runningSessions` writes as of the run-tracking screen).
-Treat these as the next major milestones:
-- Writing a `claimedAreas` doc per closed loop (currently `closedLoops` only lands inside
-  the `runningSessions` doc, not as separate `claimedAreas` docs).
+or writing them yet, except `runningSessions` writes as of the run-tracking screen and
+`claimedAreas` writes as of the claim Cloud Function above). Treat these as the next
+major milestones:
 - Stealing / champion re-timing logic (no Cloud Function implements point-awarding yet —
   `runningSessions.pointsEarned` and `profiles.totalPoints` are server-authoritative by
   rule but nothing currently sets them server-side; every session is saved with
-  `pointsEarned: 0`).
+  `pointsEarned: 0`). This also covers what happens when a new closed loop overlaps an
+  existing `claimedAreas` polygon — right now nothing detects or resolves that.
+- The scoreboard itself, and the "broad city" grouping it needs (e.g. treating Seregno as
+  part of Milan) built on top of the raw `startLocality` value described above.
 - Background/lock-screen GPS tracking for live runs (needs a foreground service on
   Android and a background location mode on iOS — deliberately out of scope for the
   first version of the run-tracking screen; flag this if asked to make it production-ready).
@@ -105,7 +195,8 @@ Treat these as the next major milestones:
 - `lib/models/` — plain data classes / UI view-models.
 - `lib/utils/` — pure helper functions (e.g. geometry/area calculations).
 - `functions/` — Firebase Cloud Functions (Node.js), for server-authoritative logic that
-  must not run on the client (points, badge progress, future claim/steal arbitration).
+  must not run on the client (points, badge progress, `claimedAreas` creation, future
+  steal/champion arbitration).
 - `firestore.rules` — the source of truth for what the client is and isn't allowed to
   write; read this before adding any new Firestore read/write path.
 
@@ -115,14 +206,24 @@ See [firestore.rules](firestore.rules) for the authoritative, enforced version o
 
 - `profiles/{uid}` — doc ID = uid. `totalPoints` is server-only (client can never set/
   change it; Cloud Functions use the Admin SDK to bypass rules for this).
+  - `profiles/{uid}/badge_progress/{badgeId}` — self-read-only, seeded by
+    `seedUserProfileAndBadges`; no client write.
+- `badges/{badgeId}` — shared reference data (title/description/image/order); signed-in
+  read, no client write.
 - `nicknames/{nickname}` — uniqueness index; doc ID is the nickname itself, value holds
   the owning `uid`.
 - `routes/{routeId}` — owned by `userId`; geometry (`routePolyline`, `waypoints`,
   `distanceMeters`) is immutable after create, only name/visibility can be updated.
-- `claimedAreas/{areaId}` — doc ID must equal the originating `routeId`; immutable once
-  written (no update, only owner delete).
+- `claimedAreas/{sessionId}_{loopIndex}` — `create`/`update` are both `if false`; only the
+  `onRunningSessionCreateClaimedAreas` Cloud Function (Admin SDK) writes this collection.
+  Fields: `userId`, `sessionId`, `polygon` (GeoPoint array), `startLocality` (nullable),
+  `durationMs`/`avgPaceMinPerKm` (denormalized from the originating `runningSessions` doc
+  — see area-details popup above). No `colorHex` — display color is viewer-relative
+  (mine vs. not), computed client-side, not a property of the area. Owner may still
+  `delete`.
 - `runningSessions/{sessionId}` — created by the client with `pointsEarned == 0`; only a
-  server process may ever change `pointsEarned`.
+  server process may ever change `pointsEarned`. Also carries `closedLoops` (array of
+  `{'points': [...]}` maps) and a best-effort `startLocality` string.
 - `userStats/{uid}` — fully read-only from the client; only Cloud Functions (Admin SDK)
   write it.
 - `favoriteRoutes/{uid_routeId}`, `follows/{followId}`, `notifications/{id}` — mostly
@@ -145,8 +246,9 @@ for convenience, and flag it clearly if a requested change would weaken either.
   size cap, extension allow-list, MIME sniffing from magic bytes, extension/content
   cross-check) — replicate this rigor for any new upload path.
 - Don't add real-time Firestore listeners where a one-time read is sufficient; prefer
-  the cache-and-invalidate pattern used in `RouteRepository` to control read costs and
-  battery/network usage on a run-tracking app where the user may be mid-workout.
+  the cache-and-invalidate pattern used in `RouteRepository`/`ClaimedAreaRepository` to
+  control read costs and battery/network usage on a run-tracking app where the user may
+  be mid-workout.
 - Avoid composite Firestore indexes where client-side sorting of an already-small result
   set is cheaper (see `RouteRepository.fetchUserRoutes`) — but don't over-apply this to
   large collections.
