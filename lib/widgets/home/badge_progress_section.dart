@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../../models/home_badge_ui_model.dart';
 
 class BadgeProgressSection extends StatelessWidget {
@@ -118,10 +119,22 @@ class _BadgeProgressItem extends StatelessWidget {
                                 0.2126, 0.7152, 0.0722, 0, 0,
                                 0, 0, 0, 1, 0,
                               ]),
-                        child: Image.network(
-                          badge.imageUrl,
+                        child: CachedNetworkImage(
+                          imageUrl: badge.imageUrl,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => Container(
+                          placeholder: (context, url) => Container(
+                            color: const Color(0xFFE7EAE2),
+                            alignment: Alignment.center,
+                            child: const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Color(0xFF4D6F79),
+                              ),
+                            ),
+                          ),
+                          errorWidget: (context, url, error) => Container(
                             color: const Color(0xFFE7EAE2),
                             alignment: Alignment.center,
                             child: const Icon(
@@ -130,19 +143,6 @@ class _BadgeProgressItem extends StatelessWidget {
                               color: Color(0xFF7A8477),
                             ),
                           ),
-                          loadingBuilder: (context, child, loadingProgress) {
-                            if (loadingProgress == null) return child;
-                            return const Center(
-                              child: SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Color(0xFF4D6F79),
-                                ),
-                              ),
-                            );
-                          },
                         ),
                       ),
                     ),

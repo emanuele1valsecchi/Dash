@@ -16,6 +16,7 @@ import '../widgets/home/badge_progress_section.dart';
 import '../widgets/home/leaderboard_preview_card.dart';
 import '../widgets/home/start_run_overlay.dart';
 import '../widgets/home/monthly_stats_section.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 class _NoOverscrollBehavior extends ScrollBehavior {
   const _NoOverscrollBehavior();
@@ -84,7 +85,8 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {}
   }
 
-  // Interroga Firestore per aggregare la distanza e tutte le 6 statistiche degli ultimi 30 giorni
+  // Interroga Firestore per calcolare le medie degli allenamenti degli ultimi 30 giorni 
+  // e confrontarle con i record globali (best overall) e con il mese precedente (ultimi 60 giorni).
   Future<void> _loadMonthlyDistance() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
@@ -92,13 +94,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final db = FirebaseFirestore.instance;
 
-      // 1. Eseguiamo due richieste in parallelo: le sessioni degli ultimi 30gg E le statistiche globali (Record)
-      final thirtyDaysAgo = DateTime.now().subtract(const Duration(days: 30));
-      
+      // Andiamo indietro di 60 giorni per poter confrontare le attività con il mese precedente
+      final now = DateTime.now();
+      final thirtyDaysAgo = now.subtract(const Duration(days: 30));
+      final sixtyDaysAgo = now.subtract(const Duration(days: 60));
+
       final results = await Future.wait([
         db.collection('runningSessions')
           .where('userId', isEqualTo: user.uid)
-          .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(thirtyDaysAgo))
+          .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(sixtyDaysAgo))
           .get(),
         db.collection('userStats').doc(user.uid).get(),
       ]);
@@ -106,126 +110,153 @@ class _HomeScreenState extends State<HomeScreen> {
       final querySnapshot = results[0] as QuerySnapshot<Map<String, dynamic>>;
       final statsDoc = results[1] as DocumentSnapshot<Map<String, dynamic>>;
 
-      // --- ESTRAZIONE RECORD ASSOLUTI DAL NUOVO DOC `userStats` ---
+      // Dividiamo i documenti tra gli ultimi 30 giorni e i 30 giorni ancora precedenti
+      final currentMonthDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+      final previousMonthDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+
+      for (var doc in querySnapshot.docs) {
+        final data = doc.data();
+        final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
+        if (createdAt == null) continue;
+
+        if (createdAt.isAfter(thirtyDaysAgo) || createdAt.isAtSameMomentAs(thirtyDaysAgo)) {
+          currentMonthDocs.add(doc);
+        } else {
+          previousMonthDocs.add(doc);
+        }
+      }
+
+      // --- ESTRAZIONE RECORD ASSOLUTI DAL DOC `userStats` ---
       final globalStats = statsDoc.data() ?? {};
       final bestOverall = globalStats['bestOverall'] ?? {};
       
       final bestDistance = (bestOverall['maxDistanceMeters'] as num?)?.toDouble() ?? 0.0;
       final bestDurationMs = (bestOverall['maxDurationMs'] as num?)?.toInt() ?? 0;
       final bestSpeedKmh = (bestOverall['maxSpeedKmh'] as num?)?.toDouble() ?? 0.0;
+      final bestAvgSpeedKmh = (bestOverall['maxAvgSpeedKmh'] as num?)?.toDouble() ?? 0.0;
       final bestCalories = (bestOverall['maxCaloriesBurned'] as num?)?.toDouble() ?? 0.0;
-      final bestLoops = (bestOverall['maxLoopsCompleted'] as num?)?.toInt() ?? 0;
 
-      // --- CALCOLO AGGREGAZIONE ULTIMI 30 GIORNI ---
+      // --- CALCOLO MEDIE DEGLI ULTIMI 30 GIORNI ---
       double totalMeters = 0;
       double totalCalories = 0;
-      int completedActivities = querySnapshot.docs.length;
-      int maxDurationMs = 0;
       int totalDurationMs = 0;
-      double minPace = double.infinity; 
+      double sumMaxSpeedsKmh = 0.0;
 
-      for (var doc in querySnapshot.docs) {
+      final int completedActivities = currentMonthDocs.length;
+      final int previousCompletedActivities = previousMonthDocs.length;
+
+      for (var doc in currentMonthDocs) {
         final data = doc.data();
         
         totalMeters += (data['distanceMeters'] as num?)?.toDouble() ?? 0.0;
         totalCalories += (data['caloriesBurned'] as num?)?.toDouble() ?? 0.0;
-        
-        int duration = (data['durationMs'] as num?)?.toInt() ?? 0;
-        totalDurationMs += duration;
-        if (duration > maxDurationMs) maxDurationMs = duration;
+        totalDurationMs += (data['durationMs'] as num?)?.toInt() ?? 0;
 
         double pace = (data['maxPaceMinPerKm'] as num?)?.toDouble() ?? 0.0;
-        if (pace > 0 && pace < minPace) minPace = pace;
+        if (pace > 0) {
+          sumMaxSpeedsKmh += (60 / pace);
+        }
       }
 
-      // Formattazione Tempo Massimo (30gg)
-      String durationStr = '--';
-      if (maxDurationMs > 0) {
-        Duration d = Duration(milliseconds: maxDurationMs);
-        durationStr = d.inHours > 0 ? '${d.inHours}h ${d.inMinutes.remainder(60)}min' : '${d.inMinutes.remainder(60)} min';
-      }
+      // Calcolo Valori Medi per Singolo Allenamento
+      double avgDistanceMeters = completedActivities > 0 ? totalMeters / completedActivities : 0.0;
+      double avgDurationMs = completedActivities > 0 ? totalDurationMs / completedActivities : 0.0;
+      double avgCalories = completedActivities > 0 ? totalCalories / completedActivities : 0.0;
+      double avgMaxSpeedKmh = completedActivities > 0 ? sumMaxSpeedsKmh / completedActivities : 0.0;
 
-      // Formattazione Velocità Massima (30gg)
-      String maxSpeedStr = '--';
-      double maxSpeedProgress = 0.0;
-      if (minPace != double.infinity && minPace > 0) {
-        double kmh = 60 / minPace;
-        maxSpeedStr = '${kmh.toStringAsFixed(1)} km/h';
-        maxSpeedProgress = (kmh / 20.0).clamp(0.0, 1.0); 
-      }
-
-      // Calcolo Velocità Media (30gg)
-      String avgSpeedStr = '--';
-      double avgSpeedProgress = 0.0;
+      // Velocità Media Complessiva dei 30 giorni
+      double avgSpeed30d = 0.0;
       if (totalDurationMs > 0 && totalMeters > 0) {
         double totalHours = totalDurationMs / 3600000;
-        double avgKmh = (totalMeters / 1000) / totalHours;
-        avgSpeedStr = '${avgKmh.toStringAsFixed(1)} km/h';
-        avgSpeedProgress = (avgKmh / 15.0).clamp(0.0, 1.0); 
+        avgSpeed30d = (totalMeters / 1000) / totalHours;
       }
 
-      // Costruzione dinamica di TUTTE e 6 le metriche integrando i "Best Overall" dal DB
+      // --- FORMATTAZIONE E CALCOLO PROGRESSI ---
+      
+      // 1. Avg Session Time
+      String avgDurationStr = '--';
+      if (avgDurationMs > 0) {
+        Duration d = Duration(milliseconds: avgDurationMs.toInt());
+        avgDurationStr = d.inHours > 0 ? '${d.inHours}h ${d.inMinutes.remainder(60)}m' : '${d.inMinutes.remainder(60)} min';
+      }
+
+      // 2. Avg Max Speed
+      String avgMaxSpeedStr = avgMaxSpeedKmh > 0 ? '${avgMaxSpeedKmh.toStringAsFixed(1)} km/h' : '--';
+
+      // 3. Avg Speed
+      String avgSpeedStr = avgSpeed30d > 0 ? '${avgSpeed30d.toStringAsFixed(1)} km/h' : '--';
+
+      // 4. Avg Distance
+      String avgDistanceStr = avgDistanceMeters >= 1000 ? '${(avgDistanceMeters / 1000).toStringAsFixed(1)} km' : '${avgDistanceMeters.toStringAsFixed(0)} m';
+
+      // 5. Avg Calories
+      String avgCaloriesStr = avgCalories > 0 ? '${avgCalories.toStringAsFixed(0)} kCal' : '--';
+
+      // Progresso Activities (confronto mese corrente vs precedente)
+      double activitiesProgress = 0.0;
+      if (previousCompletedActivities > 0) {
+        activitiesProgress = (completedActivities / previousCompletedActivities).clamp(0.0, 1.0);
+      } else if (completedActivities > 0) {
+        activitiesProgress = 1.0; // Se prima era 0 e ora > 0, 100% di progresso
+      }
+
+      // Costruzione statistiche UI
       final calculatedStats = [
         MonthlyStatData(
-          title: 'Max running\nsession time',
-          value: durationStr,
+          title: 'Average\nsession time',
+          value: avgDurationStr,
           icon: Icons.timer_outlined,
-          progress: (maxDurationMs / 7200000).clamp(0.0, 1.0),
-          bottomText: bestDurationMs > 0 
-              ? 'Best overall: ${Duration(milliseconds: bestDurationMs).inMinutes} min' 
-              : 'No records yet',
+          progress: bestDurationMs > 0 ? (avgDurationMs / bestDurationMs).clamp(0.0, 1.0) : 0.0,
+          bottomText: bestDurationMs > 0 ? 'Best overall: ${Duration(milliseconds: bestDurationMs).inMinutes} min' : 'No records yet',
         ),
         MonthlyStatData(
-          title: 'Max speed\nreached',
-          value: maxSpeedStr,
+          title: 'Average max\nspeed',
+          value: avgMaxSpeedStr,
           icon: Icons.speed_rounded,
-          progress: maxSpeedProgress,
+          progress: bestSpeedKmh > 0 ? (avgMaxSpeedKmh / bestSpeedKmh).clamp(0.0, 1.0) : 0.0,
           bottomText: bestSpeedKmh > 0 ? 'Best overall: ${bestSpeedKmh.toStringAsFixed(1)} km/h' : 'No records yet',
         ),
         MonthlyStatData(
           title: 'Average\nspeed',
           value: avgSpeedStr,
           icon: Icons.shutter_speed_rounded,
-          progress: avgSpeedProgress,
-          bottomText: '-', // O puoi calcolare un all-time average, ma solitamente per l'avg speed non c'è un best overall
+          progress: bestAvgSpeedKmh > 0 ? (avgSpeed30d / bestAvgSpeedKmh).clamp(0.0, 1.0) : 0.0,
+          bottomText: bestAvgSpeedKmh > 0 ? 'Best overall: ${bestAvgSpeedKmh.toStringAsFixed(1)} km/h' : 'No records yet',
         ),
         MonthlyStatData(
-          title: 'Total\ndistance',
-          value: totalMeters >= 1000 
-              ? '${(totalMeters / 1000).toStringAsFixed(1)} km' 
-              : '${totalMeters.toStringAsFixed(0)} m',
+          title: 'Average\ndistance',
+          value: avgDistanceStr,
           icon: Icons.swap_horiz_rounded,
-          progress: (totalMeters / 50000).clamp(0.0, 1.0), 
+          progress: bestDistance > 0 ? (avgDistanceMeters / bestDistance).clamp(0.0, 1.0) : 0.0,
           bottomText: bestDistance > 0 ? 'Best overall: ${(bestDistance/1000).toStringAsFixed(1)} km' : 'No records yet',
         ),
         MonthlyStatData(
           title: 'Completed\nactivities',
           value: '$completedActivities',
           icon: Icons.directions_run_rounded,
-          progress: (completedActivities / 15).clamp(0.0, 1.0),
-          bottomText: bestLoops > 0 ? 'Max loops in one run: $bestLoops' : '-',
+          progress: activitiesProgress,
+          bottomText: 'Previous 30 days: $previousCompletedActivities',
         ),
         MonthlyStatData(
-          title: 'Calories',
-          value: '${totalCalories.toStringAsFixed(0)} kCal',
+          title: 'Average\ncalories',
+          value: avgCaloriesStr,
           icon: Icons.local_fire_department_rounded,
-          progress: (totalCalories / 10000).clamp(0.0, 1.0), 
+          progress: bestCalories > 0 ? (avgCalories / bestCalories).clamp(0.0, 1.0) : 0.0,
           bottomText: bestCalories > 0 ? 'Best overall: ${bestCalories.toStringAsFixed(0)} kCal' : 'No records yet',
         ),
       ];
 
       if (mounted) {
         setState(() {
+          // Manteniamo la somma totale della distanza per il testo "X km ran in the last 30 days" in cima alla Home
           _monthlyKm = totalMeters / 1000;
           _monthlyStats = calculatedStats;
           _isLoadingKm = false;
         });
       }
     } catch (e) {
-      debugPrint('Errore calcolo statistiche mensili: $e');
-      if (mounted) {
-        setState(() => _isLoadingKm = false);
-      }
+      debugPrint('Errore calcolo statistiche: $e');
+      if (mounted) setState(() => _isLoadingKm = false);
     }
   }
 
@@ -333,7 +364,10 @@ class _HomeScreenState extends State<HomeScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Run saved — $km km in $minutes min$loopsText')),
     );
-    _loadMonthlyDistance();
+
+    if (mounted) {
+      _loadMonthlyDistance();
+    }
   }
 
   void _openBadgePopup(HomeBadgeUiModel badge) {
@@ -377,130 +411,135 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Column(
                   children: [
                     Expanded(
-                      child: SingleChildScrollView(
-                        physics: const ClampingScrollPhysics(),
-                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 120),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                const Spacer(),
-                                IconButton(
-                                  onPressed: _openNotifications,
-                                  icon: const Icon(
-                                    Icons.notifications_none_rounded,
-                                    color: Color(0xFF495348),
-                                    size: 28,
+                      child: RefreshIndicator(
+                        color: const Color(0xFF425143),
+                        backgroundColor: const Color(0xFFCAF0B8),
+                        onRefresh: _loadMonthlyDistance,
+                        child: SingleChildScrollView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: const EdgeInsets.fromLTRB(20, 16, 20, 85),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  const Spacer(),
+                                  IconButton(
+                                    onPressed: _openNotifications,
+                                    icon: const Icon(
+                                      Icons.notifications_none_rounded,
+                                      color: Color(0xFF495348),
+                                      size: 28,
+                                    ),
                                   ),
-                                ),
-                                IconButton(
-                                  onPressed: _openHistory,
-                                  icon: const Icon(
-                                    Icons.history_rounded,
-                                    color: Color(0xFF495348),
-                                    size: 28,
+                                  IconButton(
+                                    onPressed: _openHistory,
+                                    icon: const Icon(
+                                      Icons.history_rounded,
+                                      color: Color(0xFF495348),
+                                      size: 28,
+                                    ),
                                   ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              greetingText,
-                              style: const TextStyle(
-                                fontSize: 28,
-                                fontWeight: FontWeight.w500,
-                                color: Color(0xFF2A3028),
+                                ],
                               ),
-                            ),
-                            const SizedBox(height: 12),
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                Text(
-                                  _isLoadingKm 
-                                      ? '-- km' 
-                                      : '${_monthlyKm.toStringAsFixed(1)} km',
-                                  style: const TextStyle(
-                                    fontSize: 28,
-                                    fontWeight: FontWeight.w800,
-                                    color: Color(0xFF1F3020),
-                                  ),
+                              const SizedBox(height: 8),
+                              Text(
+                                greetingText,
+                                style: const TextStyle(
+                                  fontSize: 28,
+                                  fontWeight: FontWeight.w500,
+                                  color: Color(0xFF2A3028),
                                 ),
-                                const SizedBox(width: 10),
-                                const Padding(
-                                  padding: EdgeInsets.only(bottom: 4),
-                                  child: Text(
-                                    'ran in the last 30 days',
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: [
+                                  Text(
+                                    _isLoadingKm 
+                                        ? '-- km' 
+                                        : '${_monthlyKm.toStringAsFixed(1)} km',
+                                    style: const TextStyle(
+                                      fontSize: 28,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF1F3020),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  const Padding(
+                                    padding: EdgeInsets.only(bottom: 4),
+                                    child: Text(
+                                      'ran in the last 30 days',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        color: Color(0xFF5E655C),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 24),
+                              const Row(
+                                children: [
+                                  Icon(
+                                    Icons.bar_chart_rounded,
+                                    color: Color(0xFF4A554A),
+                                    size: 24,
+                                  ),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'Leaderboard preview',
                                     style: TextStyle(
-                                      fontSize: 16,
-                                      color: Color(0xFF5E655C),
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFF394137),
                                     ),
                                   ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 24),
-                            const Row(
-                              children: [
-                                Icon(
-                                  Icons.bar_chart_rounded,
-                                  color: Color(0xFF4A554A),
-                                  size: 24,
-                                ),
-                                SizedBox(width: 8),
-                                Text(
-                                  'Leaderboard preview',
-                                  style: TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w700,
-                                    color: Color(0xFF394137),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 14),
-                            LeaderboardPreviewCard(
-                              data: leaderboardData,
-                              onTap: _openLeaderboard,
-                            ),
-                            const SizedBox(height: 28),
-                            FutureBuilder<List<HomeBadgeUiModel>>(
-                              future: _badgesFuture,
-                              builder: (context, snapshot) {
-                                if (snapshot.connectionState ==
-                                    ConnectionState.waiting) {
-                                  return const Center(
-                                    child: Padding(
-                                      padding: EdgeInsets.all(24),
-                                      child: CircularProgressIndicator(),
-                                    ),
+                                ],
+                              ),
+                              const SizedBox(height: 14),
+                              LeaderboardPreviewCard(
+                                data: leaderboardData,
+                                onTap: _openLeaderboard,
+                              ),
+                              const SizedBox(height: 28),
+                              FutureBuilder<List<HomeBadgeUiModel>>(
+                                future: _badgesFuture,
+                                builder: (context, snapshot) {
+                                  if (snapshot.connectionState ==
+                                      ConnectionState.waiting) {
+                                    return const Center(
+                                      child: Padding(
+                                        padding: EdgeInsets.all(24),
+                                        child: CircularProgressIndicator(),
+                                      ),
+                                    );
+                                  }
+
+                                  if (snapshot.hasError) {
+                                    return Text(
+                                      'Errore nel caricamento badge: ${snapshot.error}',
+                                      style: const TextStyle(color: Colors.red),
+                                    );
+                                  }
+
+                                  final badges = snapshot.data ?? [];
+
+                                  if (badges.isEmpty) {
+                                    return const Text('Nessun badge disponibile');
+                                  }
+
+                                  return BadgeProgressSection(
+                                    badges: badges,
+                                    onBadgeTap: _openBadgePopup,
                                   );
-                                }
-
-                                if (snapshot.hasError) {
-                                  return Text(
-                                    'Errore nel caricamento badge: ${snapshot.error}',
-                                    style: const TextStyle(color: Colors.red),
-                                  );
-                                }
-
-                                final badges = snapshot.data ?? [];
-
-                                if (badges.isEmpty) {
-                                  return const Text('Nessun badge disponibile');
-                                }
-
-                                return BadgeProgressSection(
-                                  badges: badges,
-                                  onBadgeTap: _openBadgePopup,
-                                );
-                              },
-                            ),
-                            const SizedBox(height: 28),
-                            MonthlyStatsSection(stats: _monthlyStats),
-                            const SizedBox(height: 8),
-                          ],
+                                },
+                              ),
+                              const SizedBox(height: 28),
+                              MonthlyStatsSection(stats: _monthlyStats),
+                              const SizedBox(height: 8),
+                            ],
+                          ),
                         ),
                       ),
                     ),
@@ -604,11 +643,22 @@ class _HomeScreenState extends State<HomeScreen> {
                                                   0.2126, 0.7152, 0.0722, 0, 0,
                                                   0, 0, 0, 1, 0,
                                                 ]),
-                                          child: Image.network(
-                                            _selectedBadge!.imageUrl,
-                                            fit: BoxFit.cover,
-                                            errorBuilder: (_, _, _) {
-                                              return Container(
+                                          child: CachedNetworkImage(
+                                              imageUrl: _selectedBadge!.imageUrl,
+                                              fit: BoxFit.cover,
+                                              placeholder: (context, url) => Container(
+                                                color: const Color(0xFFE5E9DF),
+                                                alignment: Alignment.center,
+                                                child: const SizedBox(
+                                                  width: 24,
+                                                  height: 24,
+                                                  child: CircularProgressIndicator(
+                                                    strokeWidth: 2,
+                                                    color: Color(0xFF6F8C63),
+                                                  ),
+                                                ),
+                                              ),
+                                              errorWidget: (context, url, error) => Container(
                                                 color: const Color(0xFFE5E9DF),
                                                 alignment: Alignment.center,
                                                 child: const Icon(
@@ -616,9 +666,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                                   color: Color(0xFF7A8377),
                                                   size: 34,
                                                 ),
-                                              );
-                                            },
-                                          ),
+                                              ),
+                                            ),
                                         );
                                       },
                                     )

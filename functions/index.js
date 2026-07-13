@@ -56,13 +56,11 @@ exports.onRunningSessionCompleted = onDocumentCreated(
     region: 'europe-west1'
   }, 
   async (event) => {
-    // Nella Gen 2 lo snapshot è dentro event.data
     const snapshot = event.data; 
     if (!snapshot) return null;
 
     const sessionData = snapshot.data();
 
-    // Sicurezza: procediamo solo se la sessione esiste ed è effettivamente salvata
     if (!sessionData || sessionData.pointsEarned === undefined) {
       return null;
     }
@@ -71,13 +69,19 @@ exports.onRunningSessionCompleted = onDocumentCreated(
     const db = admin.firestore();
     const statsRef = db.collection('userStats').doc(userId);
 
-    const currentDistance = Number(sessionData.distanceMeters || 0);
-    const currentDuration = Number(sessionData.durationMs || 0);
+    // Dati base
+    const currentDistance = Number(sessionData.distanceMeters || 0); // metri
+    const currentDuration = Number(sessionData.durationMs || 0);     // ms
     const currentCalories = Number(sessionData.caloriesBurned || 0);
     const currentLoops = Number(sessionData.loopsCompleted || 0);
     
+    // Calcoli velocità
     const currentMaxPace = Number(sessionData.maxPaceMinPerKm || 0);
     const currentMaxSpeedKmh = currentMaxPace > 0 ? (60 / currentMaxPace) : 0;
+    
+    // Calcolo Velocità Media della sessione (km/h)
+    const durationHours = currentDuration / 3600000;
+    const currentAvgSpeedKmh = durationHours > 0 ? (currentDistance / 1000) / durationHours : 0;
 
     return db.runTransaction(async (transaction) => {
       const statsDoc = await transaction.get(statsRef);
@@ -88,6 +92,7 @@ exports.onRunningSessionCompleted = onDocumentCreated(
           maxDistanceMeters: currentDistance,
           maxDurationMs: currentDuration,
           maxSpeedKmh: currentMaxSpeedKmh,
+          maxAvgSpeedKmh: currentAvgSpeedKmh, // <--- NUOVO RECORD
           maxCaloriesBurned: currentCalories,
           maxLoopsCompleted: currentLoops
         },
@@ -117,6 +122,7 @@ exports.onRunningSessionCompleted = onDocumentCreated(
           maxDistanceMeters: Math.max(existingBest.maxDistanceMeters || 0, currentDistance),
           maxDurationMs: Math.max(existingBest.maxDurationMs || 0, currentDuration),
           maxSpeedKmh: Math.max(existingBest.maxSpeedKmh || 0, currentMaxSpeedKmh),
+          maxAvgSpeedKmh: Math.max(existingBest.maxAvgSpeedKmh || 0, currentAvgSpeedKmh), // <--- AGGIORNAMENTO
           maxCaloriesBurned: Math.max(existingBest.maxCaloriesBurned || 0, currentCalories),
           maxLoopsCompleted: Math.max(existingBest.maxLoopsCompleted || 0, currentLoops)
         };

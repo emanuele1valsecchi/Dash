@@ -1,7 +1,6 @@
 import 'dart:math' as math;
 import 'package:dash_application/models/home_models.dart';
 import 'package:flutter/material.dart';
-// import '../../models/home_models.dart'; // Assicurati di importare il modello aggiornato
 
 class MonthlyStatsSection extends StatelessWidget {
   final List<MonthlyStatData> stats;
@@ -18,11 +17,11 @@ class MonthlyStatsSection extends StatelessWidget {
       children: [
         const _SectionTitle(
           icon: Icons.insert_chart_outlined_rounded,
-          title: 'Last 30 days statistics', // Titolo aggiornato
+          title: 'Last 30 days statistics',
         ),
         const SizedBox(height: 24),
         SizedBox(
-          height: 210, // Altezza aumentata per far spazio al testo inferiore
+          height: 170,
           child: ListView.separated(
             physics: const ClampingScrollPhysics(),
             scrollDirection: Axis.horizontal,
@@ -46,7 +45,7 @@ class _StatGaugeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 140, // Larghezza fissa per ogni elemento dello scroll
+      width: 140,
       child: Column(
         mainAxisAlignment: MainAxisAlignment.start,
         children: [
@@ -56,17 +55,16 @@ class _StatGaugeCard extends StatelessWidget {
             child: Stack(
               alignment: Alignment.center,
               children: [
-                // Il nostro arco custom
                 CustomPaint(
                   size: const Size(130, 130),
                   painter: _GaugePainter(
-                    progress: data.progress,
+                    // Il progress ora è relativo al record personale (0.0 - 1.0)
+                    progress: data.progress, 
                     strokeWidth: 8.5,
                     trackColor: const Color(0xFFD9DCD4),
                     progressColor: const Color(0xFF425A60),
                   ),
                 ),
-                // Contenuto testuale all'interno dell'arco
                 Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -74,11 +72,7 @@ class _StatGaugeCard extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.center,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(
-                          data.icon,
-                          size: 16,
-                          color: const Color(0xFF5A6B56),
-                        ),
+                        Icon(data.icon, size: 16, color: const Color(0xFF5A6B56)),
                         const SizedBox(width: 4),
                         Flexible(
                           child: Text(
@@ -110,7 +104,6 @@ class _StatGaugeCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
-          // Testo inferiore (Record o Best overall)
           Text(
             data.bottomText,
             textAlign: TextAlign.center,
@@ -157,15 +150,13 @@ class _GaugePainter extends CustomPainter {
       ..strokeWidth = strokeWidth
       ..strokeCap = StrokeCap.round;
 
-    // Angoli per creare l'effetto "contachilometri" aperto in basso
-    const startAngle = math.pi * 0.75; // Parte da in basso a sinistra
-    const sweepAngle = math.pi * 1.5;  // Copre 3/4 del cerchio
+    const startAngle = math.pi * 0.75;
+    const sweepAngle = math.pi * 1.5;
 
-    // Disegna il binario grigio di base
     canvas.drawArc(rect, startAngle, sweepAngle, false, trackPaint);
 
-    // Disegna il progresso se maggiore di zero
     if (progress > 0) {
+      // Garantiamo che il valore rimanga entro i limiti
       final validProgress = progress.clamp(0.0, 1.0);
       canvas.drawArc(rect, startAngle, sweepAngle * validProgress, false, progressPaint);
     }
@@ -181,10 +172,7 @@ class _SectionTitle extends StatelessWidget {
   final IconData icon;
   final String title;
 
-  const _SectionTitle({
-    required this.icon,
-    required this.title,
-  });
+  const _SectionTitle({required this.icon, required this.title});
 
   @override
   Widget build(BuildContext context) {
