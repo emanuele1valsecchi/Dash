@@ -1,17 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../config/map_style.dart';
 import '../models/water_fountain.dart';
+import '../services/claimed_area_repository.dart';
+import '../services/location_service.dart';
 import '../services/water_fountain_service.dart';
+import '../widgets/map/area_details_sheet.dart';
+import '../widgets/map/claimed_areas_layer.dart';
 import '../widgets/map/water_fountain_marker_layer.dart';
 
 class ExplorePage extends StatefulWidget {
@@ -29,20 +32,28 @@ class _ExplorePageState extends State<ExplorePage> {
   LatLng? _currentPosition;
   bool _locationPermissionGranted = false;
   bool _isLoadingLocation = true;
-  StreamSubscription<Position>? _positionStream;
+  StreamSubscription<LatLng>? _positionSub;
 
-  // ── Claimed areas from Firestore ──────────────────────────────────────────
-  StreamSubscription<QuerySnapshot>? _areasSubscription;
-  List<Map<String, dynamic>> _claimedAreas = [];
+  // ── Claimed areas from Firestore ────────────────────────────────────────
+  // Loaded incrementally (not a live listener — see ClaimedAreaRepository)
+  // from every user, then split for rendering by ownership of the signed-in
+  // user. _areaHitNotifier drives tap detection on the polygons themselves.
+  List<ClaimedArea> _allAreas = [];
+  final LayerHitNotifier<String> _areaHitNotifier = ValueNotifier(null);
 
   // ── Water fountains (OpenStreetMap) ─────────────────────────────────────────
-  final WaterFountainService _waterFountainService = WaterFountainService();
+  // Loaded near the user's GPS position rather than tracking the map
+  // viewport — see WaterFountainGpsLoader's doc for why.
+  final WaterFountainGpsLoader _fountainLoader =
+      WaterFountainGpsLoader(WaterFountainService());
   List<WaterFountain> _waterFountains = [];
-  LatLng? _lastFountainFetchCenter;
-  static const double _fountainRefetchThresholdMeters = 800;
 
   // ── Map settings ──────────────────────────────────────────────────────────
-  bool _showAreas = true;
+  // Independent filters over `claimedAreas` by ownership: "other users'
+  // territory" (what's contestable) vs. "my own territory" (already
+  // secured). Both default on, bound to the grid/cable panel buttons.
+  bool _showOtherAreas = true;
+  bool _showMyAreas = true;
 
   // ── Search ────────────────────────────────────────────────────────────────
   bool _isSearching = false;
@@ -55,13 +66,12 @@ class _ExplorePageState extends State<ExplorePage> {
   void initState() {
     super.initState();
     _initLocation();
-    _listenToClaimedAreas();
+    _loadClaimedAreas();
   }
 
   @override
   void dispose() {
-    _positionStream?.cancel();
-    _areasSubscription?.cancel();
+    _positionSub?.cancel();
     _mapController.dispose();
     _searchController.dispose();
     super.dispose();
@@ -69,64 +79,32 @@ class _ExplorePageState extends State<ExplorePage> {
 
   // ── Location helpers ──────────────────────────────────────────────────────
 
+  /// Uses the app-wide [LocationService] instead of requesting a fresh fix
+  /// itself — usually already warm by the time this page opens, since
+  /// `HomeScreen` starts it right after login, so there's nothing to wait on.
   Future<void> _initLocation() async {
-    final granted = await _requestLocationPermission();
-    if (!granted) {
-      setState(() => _isLoadingLocation = false);
-      return;
+    await LocationService.instance.start();
+    if (!mounted) return;
+
+    final cached = LocationService.instance.current;
+    setState(() {
+      _locationPermissionGranted = LocationService.instance.permissionGranted;
+      _currentPosition = cached;
+      _isLoadingLocation = false;
+    });
+    if (cached != null) {
+      _mapController.move(cached, _defaultZoom);
+      _fetchNearbyFountains(cached);
     }
-    setState(() => _locationPermissionGranted = true);
-    await _fetchCurrentLocation();
-    _startLocationUpdates();
-  }
 
-  Future<bool> _requestLocationPermission() async {
-    final status = await Permission.locationWhenInUse.request();
-    return status.isGranted;
-  }
-
-  Future<void> _fetchCurrentLocation() async {
-    try {
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings:
-            const LocationSettings(accuracy: LocationAccuracy.high),
-      );
-      final latLng = LatLng(position.latitude, position.longitude);
-      setState(() {
-        _currentPosition = latLng;
-        _isLoadingLocation = false;
-      });
-      _mapController.move(latLng, _defaultZoom);
-      _maybeFetchNearbyFountains(latLng);
-    } catch (_) {
-      setState(() => _isLoadingLocation = false);
-    }
-  }
-
-  void _startLocationUpdates() {
-    _positionStream = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 5,
-      ),
-    ).listen((pos) {
-      final latLng = LatLng(pos.latitude, pos.longitude);
-      setState(() => _currentPosition = latLng);
-      _maybeFetchNearbyFountains(latLng);
+    _positionSub = LocationService.instance.updates.listen((pos) {
+      setState(() => _currentPosition = pos);
+      _fetchNearbyFountains(pos);
     });
   }
 
-  /// Re-queries Overpass for nearby fountains only once the user has moved
-  /// far enough that the cached radius may no longer cover them — avoids
-  /// hitting the API on every 5m GPS update.
-  void _maybeFetchNearbyFountains(LatLng center) {
-    if (_lastFountainFetchCenter != null &&
-        const Distance()(_lastFountainFetchCenter!, center) <
-            _fountainRefetchThresholdMeters) {
-      return;
-    }
-    _lastFountainFetchCenter = center;
-    _waterFountainService.fetchNearby(center).then((fountains) {
+  void _fetchNearbyFountains(LatLng center) {
+    _fountainLoader.handlePositionChanged(center, (fountains) {
       if (!mounted) return;
       setState(() => _waterFountains = fountains);
     });
@@ -138,30 +116,25 @@ class _ExplorePageState extends State<ExplorePage> {
     }
   }
 
-  // ── Firestore claimed areas ───────────────────────────────────────────────
+  // ── Claimed areas ─────────────────────────────────────────────────────────
 
-  void _listenToClaimedAreas() {
-    _areasSubscription = FirebaseFirestore.instance
-        .collection('claimedAreas')
-        .snapshots()
-        .listen((snapshot) {
-      final areas = snapshot.docs.map((doc) {
-        final data = doc.data();
-        final polygon = (data['polygon'] as List).map((g) {
-          final pt = g as GeoPoint;
-          return LatLng(pt.latitude, pt.longitude);
-        }).toList();
-        return {
-          'polygon': polygon,
-          'colorHex': data['colorHex'] as String? ?? '#1E88E5',
-        };
-      }).toList();
-      setState(() => _claimedAreas = areas);
-    });
+  Future<void> _loadClaimedAreas() async {
+    final areas = await ClaimedAreaRepository.instance.fetchAllAreas();
+    if (!mounted) return;
+    setState(() => _allAreas = areas);
   }
 
-  Color _hexToColor(String hex) =>
-      Color(int.parse(hex.replaceFirst('#', '0xFF')));
+  /// [_allAreas] split by ownership of the signed-in user and filtered by
+  /// the grid/cable toggles — each area is either "mine" or "someone
+  /// else's", never both, so the two toggles cover the whole collection
+  /// between them.
+  List<ClaimedArea> get _visibleAreas {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    return _allAreas.where((area) {
+      final isMine = area.userId == uid;
+      return isMine ? _showMyAreas : _showOtherAreas;
+    }).toList();
+  }
 
   // ── Map controls ──────────────────────────────────────────────────────────
 
@@ -228,8 +201,12 @@ class _ExplorePageState extends State<ExplorePage> {
       options: MapOptions(
         initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
         initialZoom: _defaultZoom,
-        // Dismiss keyboard when the user taps the map
-        onTap: (_, _) => FocusScope.of(context).unfocus(),
+        // Dismiss keyboard when the user taps the map; open the area sheet
+        // if the tap landed on a claimed-area polygon.
+        onTap: (_, _) {
+          FocusScope.of(context).unfocus();
+          handleAreaTap(context, _areaHitNotifier, _visibleAreas);
+        },
       ),
       children: [
         TileLayer(
@@ -237,22 +214,10 @@ class _ExplorePageState extends State<ExplorePage> {
           userAgentPackageName: 'com.dash',
           retinaMode: RetinaMode.isHighDensity(context),
         ),
-        // Claimed areas polygons (hidden when _showAreas is false)
-        if (_claimedAreas.isNotEmpty && _showAreas)
-          PolygonLayer(
-            polygons: _claimedAreas.map((area) {
-              final points = area['polygon'] as List<LatLng>;
-              final color = _hexToColor(area['colorHex'] as String);
-              return Polygon(
-                points: points,
-                color: color.withValues(alpha: 0.25),
-                borderColor: color.withValues(alpha: 0.8),
-                borderStrokeWidth: 2.0,
-              );
-            }).toList(),
-          ),
-        if (_waterFountains.isNotEmpty)
-          WaterFountainMarkerLayer(fountains: _waterFountains),
+        // Claimed areas — filtered by the grid ("other users'") and cable
+        // ("my own") panel toggles.
+        ClaimedAreasLayer(areas: _visibleAreas, hitNotifier: _areaHitNotifier),
+        WaterFountainMarkerLayer(fountains: _waterFountains),
         if (_currentPosition != null)
           MarkerLayer(
             markers: [
@@ -385,19 +350,20 @@ class _ExplorePageState extends State<ExplorePage> {
                   position: _PanelPosition.top,
                 ),
                 _PanelDivider(),
-                // 3.2 Grid — reserved for future feature
+                // 3.2 Grid — toggle other users' claimed territory
                 _PanelButton(
                   icon: Icons.grid_on_outlined,
-                  onTap: () {},
+                  onTap: () =>
+                      setState(() => _showOtherAreas = !_showOtherAreas),
+                  active: _showOtherAreas,
                   position: _PanelPosition.middle,
                 ),
                 _PanelDivider(),
-                // 3.3 Toggle claimed-area polygons visibility
-                // TODO: no-op until claimedAreas are populated in Firestore
+                // 3.3 Toggle my own claimed territory
                 _PanelButton(
                   icon: Icons.cable_outlined,
-                  onTap: () => setState(() => _showAreas = !_showAreas),
-                  active: _showAreas,
+                  onTap: () => setState(() => _showMyAreas = !_showMyAreas),
+                  active: _showMyAreas,
                   position: _PanelPosition.bottom,
                 ),
               ],

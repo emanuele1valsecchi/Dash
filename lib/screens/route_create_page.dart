@@ -3,17 +3,18 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import '../config/map_style.dart';
 import '../models/water_fountain.dart';
+import '../services/claimed_area_repository.dart';
+import '../services/location_service.dart';
 import '../services/route_repository.dart';
 import '../services/routing_service.dart';
 import '../services/water_fountain_service.dart';
 import '../utils/geometry_utils.dart';
+import '../widgets/map/claimed_areas_layer.dart';
 import '../widgets/map/water_fountain_marker_layer.dart';
 
 // ── History snapshot ───────────────────────────────────────────────────────────
@@ -62,13 +63,17 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
   final MapController _mapController = MapController();
   LatLng? _currentPosition;
   bool _isLoadingLocation = true;
-  StreamSubscription<Position>? _positionStream;
+  StreamSubscription<LatLng>? _positionSub;
 
   // ── Water fountains (OpenStreetMap) ─────────────────────────────────────────
-  final WaterFountainService _waterFountainService = WaterFountainService();
+  // Loaded near the user's GPS position rather than tracking the map
+  // viewport — see WaterFountainGpsLoader's doc for why.
+  final WaterFountainGpsLoader _fountainLoader =
+      WaterFountainGpsLoader(WaterFountainService());
   List<WaterFountain> _waterFountains = [];
-  LatLng? _lastFountainFetchCenter;
-  static const double _fountainRefetchThresholdMeters = 800;
+
+  // ── Claimed areas (display only — tapping the map drops a pin here) ──────
+  List<ClaimedArea> _allAreas = [];
 
   // ── Sheet ─────────────────────────────────────────────────────────────────
   final DraggableScrollableController _sheetController =
@@ -125,11 +130,18 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
   void initState() {
     super.initState();
     _initLocation();
+    _loadClaimedAreas();
+  }
+
+  Future<void> _loadClaimedAreas() async {
+    final areas = await ClaimedAreaRepository.instance.fetchAllAreas();
+    if (!mounted) return;
+    setState(() => _allAreas = areas);
   }
 
   @override
   void dispose() {
-    _positionStream?.cancel();
+    _positionSub?.cancel();
     _mapController.dispose();
     _sheetController.dispose();
     _trackNameCtrl.dispose();
@@ -138,48 +150,31 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
 
   // ── Location ──────────────────────────────────────────────────────────────
 
+  /// Uses the app-wide [LocationService] instead of requesting a fresh fix
+  /// itself — usually already warm by the time this page opens, since
+  /// `HomeScreen` starts it right after login, so there's nothing to wait on.
   Future<void> _initLocation() async {
-    final status = await Permission.locationWhenInUse.request();
-    if (!status.isGranted) {
-      setState(() => _isLoadingLocation = false);
-      return;
+    await LocationService.instance.start();
+    if (!mounted) return;
+
+    final cached = LocationService.instance.current;
+    setState(() {
+      _currentPosition = cached;
+      _isLoadingLocation = false;
+    });
+    if (cached != null) {
+      _mapController.move(cached, _defaultZoom);
+      _fetchNearbyFountains(cached);
     }
-    try {
-      final pos = await Geolocator.getCurrentPosition(
-        locationSettings:
-            const LocationSettings(accuracy: LocationAccuracy.high),
-      );
-      final ll = LatLng(pos.latitude, pos.longitude);
-      setState(() {
-        _currentPosition = ll;
-        _isLoadingLocation = false;
-      });
-      _mapController.move(ll, _defaultZoom);
-      _maybeFetchNearbyFountains(ll);
-    } catch (_) {
-      setState(() => _isLoadingLocation = false);
-    }
-    _positionStream = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high, distanceFilter: 5),
-    ).listen((p) {
-      final ll = LatLng(p.latitude, p.longitude);
-      setState(() => _currentPosition = ll);
-      _maybeFetchNearbyFountains(ll);
+
+    _positionSub = LocationService.instance.updates.listen((pos) {
+      setState(() => _currentPosition = pos);
+      _fetchNearbyFountains(pos);
     });
   }
 
-  /// Re-queries Overpass for nearby fountains only once the user has moved
-  /// far enough that the cached radius may no longer cover them — avoids
-  /// hitting the API on every 5m GPS update.
-  void _maybeFetchNearbyFountains(LatLng center) {
-    if (_lastFountainFetchCenter != null &&
-        const Distance()(_lastFountainFetchCenter!, center) <
-            _fountainRefetchThresholdMeters) {
-      return;
-    }
-    _lastFountainFetchCenter = center;
-    _waterFountainService.fetchNearby(center).then((fountains) {
+  void _fetchNearbyFountains(LatLng center) {
+    _fountainLoader.handlePositionChanged(center, (fountains) {
       if (!mounted) return;
       setState(() => _waterFountains = fountains);
     });
@@ -581,6 +576,10 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
           retinaMode: RetinaMode.isHighDensity(context),
         ),
 
+        // ── Claimed areas (display only — no hitNotifier, so tapping one
+        // still drops a route pin rather than opening its details) ────────
+        ClaimedAreasLayer(areas: _allAreas),
+
         // ── Loop fill (below route lines) ─────────────────────────────────
         if (_loopPolygon.length >= 3)
           PolygonLayer(
@@ -622,8 +621,7 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
           ),
 
         // ── Water fountains ──────────────────────────────────────────────
-        if (_waterFountains.isNotEmpty)
-          WaterFountainMarkerLayer(fountains: _waterFountains),
+        WaterFountainMarkerLayer(fountains: _waterFountains),
 
         // ── GPS dot ───────────────────────────────────────────────────────
         if (_currentPosition != null)

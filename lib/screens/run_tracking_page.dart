@@ -11,9 +11,12 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../config/map_style.dart';
 import '../models/water_fountain.dart';
+import '../services/claimed_area_repository.dart';
+import '../services/location_service.dart';
 import '../services/run_session_repository.dart';
 import '../services/water_fountain_service.dart';
 import '../utils/geometry_utils.dart';
+import '../widgets/map/claimed_areas_layer.dart';
 import '../widgets/map/water_fountain_marker_layer.dart';
 import 'test_run_creator_page.dart';
 
@@ -90,6 +93,12 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   // run progresses, to avoid extra network/battery use mid-workout.
   final WaterFountainService _waterFountainService = WaterFountainService();
   List<WaterFountain> _waterFountains = [];
+
+  // ── Claimed areas (display only — no tap-to-view while running) ─────────
+  // Fetched once when the screen opens — like fountains above, kept at
+  // whatever the world looked like when the run started rather than
+  // refreshed live, to save battery/network mid-workout.
+  List<ClaimedArea> _allAreas = [];
 
   // ── Dot smoothing ─────────────────────────────────────────────────────────
   //
@@ -227,6 +236,13 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     super.initState();
     _dotTicker = createTicker(_onDotTick)..start();
     _initLocation();
+    _loadClaimedAreas();
+  }
+
+  Future<void> _loadClaimedAreas() async {
+    final areas = await ClaimedAreaRepository.instance.fetchAllAreas();
+    if (!mounted) return;
+    setState(() => _allAreas = areas);
   }
 
   @override
@@ -241,9 +257,20 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
   // ── Location & tracking ──────────────────────────────────────────────────
 
+  /// Routes permission through the app-wide [LocationService] rather than
+  /// requesting it fresh — by the time a run starts, `HomeScreen` has
+  /// usually already requested it and kept GPS warm, so this resolves
+  /// immediately instead of prompting again. Deliberately still takes its
+  /// own precise fix below (not [LocationService.current]) and gates
+  /// [_startCountdown] on it: that fix becomes the run's first breadcrumb
+  /// point (with altitude/timestamp `LocationService` doesn't expose), and
+  /// starting the countdown before it lands would risk the run's own
+  /// continuous stream ([_startPositionStream], via [_beginRun]) recording
+  /// breadcrumbs before the authoritative starting point exists.
   Future<void> _initLocation() async {
-    final status = await Permission.locationWhenInUse.request();
-    if (!status.isGranted) {
+    await LocationService.instance.start();
+    if (!mounted) return;
+    if (!LocationService.instance.permissionGranted) {
       setState(() {
         _isLoadingLocation = false;
         _permissionDenied = true;
@@ -265,7 +292,9 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
         _isLoadingLocation = false;
       });
       _waterFountainService.fetchNearby(ll).then((fountains) {
-        if (!mounted) return;
+        // null means the fetch failed (e.g. rate-limited) — leave whatever
+        // was already showing rather than clearing it to empty.
+        if (!mounted || fountains == null) return;
         setState(() => _waterFountains = fountains);
       });
     } catch (_) {
@@ -1223,7 +1252,12 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           retinaMode: RetinaMode.isHighDensity(context),
         ),
 
-        // ── Claimed loop fills ───────────────────────────────────────────
+        // ── Claimed areas (as of when this run started — not refreshed
+        // live, to save battery/network mid-workout; display only, no
+        // tap-to-view while running) ────────────────────────────────────
+        ClaimedAreasLayer(areas: _allAreas),
+
+        // ── Claimed loop fills (this run's own in-progress loops) ────────
         if (_closedLoops.isNotEmpty)
           PolygonLayer(
             polygons: _closedLoops
@@ -1249,8 +1283,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           ),
 
         // ── Water fountains ────────────────────────────────────────────
-        if (_waterFountains.isNotEmpty)
-          WaterFountainMarkerLayer(fountains: _waterFountains),
+        WaterFountainMarkerLayer(fountains: _waterFountains),
 
         // ── Runner position ────────────────────────────────────────────
         if ((_displayedPosition ?? _currentPosition) != null)

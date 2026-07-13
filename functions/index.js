@@ -134,3 +134,60 @@ exports.onRunningSessionCompleted = onDocumentCreated(
     });
   }
 );
+
+// 3. CLAIM DELLE AREE (loop chiusi -> claimedAreas)
+//
+// Un'area viene creata per ogni loop chiuso della sessione, con ID
+// deterministico `${sessionId}_${loopIndex}`. L'ownership deve essere
+// assegnata lato server (Admin SDK) e non dal client: firestore.rules nega
+// `create` su claimedAreas per lo stesso motivo per cui nega i write su
+// userStats.
+//
+// NON gestisce ancora furti/ri-cronometraggio di un'area già rivendicata da
+// un altro utente (vedi CLAUDE.md, "Stealing / champion re-timing logic" —
+// prossima milestone): ogni loop chiuso genera semplicemente una nuova area,
+// anche se si sovrappone a una già esistente.
+//
+// Nota: niente più colorHex qui — il colore ("mie" vs "altrui") è relativo a
+// chi guarda la mappa, quindi è calcolato lato client (ClaimedAreasLayer),
+// non una proprietà fissa dell'area.
+exports.onRunningSessionCreateClaimedAreas = onDocumentCreated(
+  {
+    document: 'runningSessions/{sessionId}',
+    region: 'europe-west1'
+  },
+  async (event) => {
+    const snapshot = event.data;
+    if (!snapshot) return null;
+
+    const sessionData = snapshot.data();
+    const closedLoops = sessionData.closedLoops;
+    if (!Array.isArray(closedLoops) || closedLoops.length === 0) return null;
+
+    const userId = sessionData.userId;
+    const sessionId = event.params.sessionId;
+    const db = admin.firestore();
+    const batch = db.batch();
+
+    closedLoops.forEach((loop, index) => {
+      const points = loop && loop.points;
+      if (!Array.isArray(points) || points.length < 3) return;
+
+      const areaRef = db.collection('claimedAreas').doc(`${sessionId}_${index}`);
+      batch.set(areaRef, {
+        userId: userId,
+        sessionId: sessionId,
+        polygon: points,
+        startLocality: sessionData.startLocality || null,
+        // Copied from the session rather than left for the client to look up:
+        // a user can't read another user's runningSessions doc (see
+        // firestore.rules), so the area-details popup needs these here.
+        durationMs: sessionData.durationMs || 0,
+        avgPaceMinPerKm: sessionData.avgPaceMinPerKm || null,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    });
+
+    return batch.commit();
+  }
+);

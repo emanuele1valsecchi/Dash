@@ -4,7 +4,9 @@ import 'package:flutter_map/flutter_map.dart';
 import '../../models/water_fountain.dart';
 
 /// Blue drinking-water markers, mirroring how Strava surfaces water-fountain
-/// POIs on its map.
+/// POIs on its map. A solid white badge behind the icon (rather than a blur
+/// filter) keeps rendering cheap and the icon unambiguously blue against any
+/// basemap tile underneath it.
 class WaterFountainMarkerLayer extends StatelessWidget {
   final List<WaterFountain> fountains;
 
@@ -18,14 +20,27 @@ class WaterFountainMarkerLayer extends StatelessWidget {
       markers: fountains
           .map(
             (f) => Marker(
+              // flutter_map culls off-screen markers every frame; without a
+              // stable key here, panning can re-associate a Positioned with
+              // the wrong fountain and leave a stale marker on screen.
+              key: ValueKey(f.id),
               point: f.position,
-              width: 26,
-              height: 26,
-              child: const Icon(
-                Icons.water_drop_rounded,
-                color: _iconColor,
-                size: 24,
-                shadows: [Shadow(color: Colors.black38, blurRadius: 3)],
+              width: 24,
+              height: 24,
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(color: Colors.black26, blurRadius: 2),
+                  ],
+                ),
+                padding: const EdgeInsets.all(3),
+                child: const Icon(
+                  Icons.water_drop_rounded,
+                  color: _iconColor,
+                  size: 16,
+                ),
               ),
             ),
           )
