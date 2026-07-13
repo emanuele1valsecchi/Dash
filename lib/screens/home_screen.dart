@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:dash_application/screens/calendar_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/home_models.dart';
@@ -326,7 +327,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _openLeaderboard() {}
   void _openNotifications() {}
-  void _openHistory() {}
+  void _openHistory() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const CalendarScreen()),
+    );
+  }
 
   void _searchRoute() {
     setState(() => _showRunOverlay = false);

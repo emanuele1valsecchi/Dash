@@ -39,18 +39,36 @@ class BadgeProgressSection extends StatelessWidget {
         const SizedBox(height: 16),
         SizedBox(
           height: 185,
-          child: ListView.separated(
-            physics: const ClampingScrollPhysics(),
-            scrollDirection: Axis.horizontal,
-            itemCount: badges.length,
-            separatorBuilder: (_, _) => const SizedBox(width: 18),
-            itemBuilder: (context, index) {
-              final badge = badges[index];
-              return _BadgeProgressItem(
-                badge: badge,
-                onTap: onBadgeTap,
-              );
+          child: ShaderMask(
+            shaderCallback: (Rect bounds) {
+              return const LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [
+                  Colors.transparent, // 1. Sfuma in entrata a sinistra
+                  Colors.white,       // 2. Diventa solido
+                  Colors.white,       // 3. Resta solido
+                  Colors.transparent, // 4. Sfuma in uscita a destra
+                ],
+                // I valori indicano le percentuali (0.0 = 0%, 1.0 = 100%)
+                // Qui la sfumatura dura solo per il 5% a sinistra e il 5% a destra
+                stops: [0.0, 0.03, 0.97, 1.0], 
+              ).createShader(bounds);
             },
+            blendMode: BlendMode.dstIn,
+            child: ListView.separated(
+              physics: const ClampingScrollPhysics(),
+              scrollDirection: Axis.horizontal,
+              itemCount: badges.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 18),
+              itemBuilder: (context, index) {
+                final badge = badges[index];
+                return _BadgeProgressItem(
+                  badge: badge,
+                  onTap: onBadgeTap,
+                );
+              },
+            ),
           ),
         ),
       ],
