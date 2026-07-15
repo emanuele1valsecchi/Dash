@@ -90,9 +90,16 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
   // ── Water fountains (OpenStreetMap) ─────────────────────────────────────────
   // Fetched once at the runner's starting position — not refreshed as the
-  // run progresses, to avoid extra network/battery use mid-workout.
-  final WaterFountainService _waterFountainService = WaterFountainService();
+  // run progresses, to avoid extra network/battery use mid-workout. Panning
+  // is disabled on this screen's map (see MapOptions.interactionOptions
+  // below), so unlike the other 3 map screens there's no viewport-fetch to
+  // wire up here — only the zoom-visibility half of the fountain UX applies.
+  final WaterFountainService _waterFountainService = WaterFountainService.instance;
   List<WaterFountain> _waterFountains = [];
+  // Starts true since _defaultZoom (18.0) is always well above
+  // WaterFountainMarkerLayer.minZoomToShow; kept in sync by
+  // _handleMapPositionChanged as the user pinch-zooms.
+  bool _fountainsVisible = true;
 
   // ── Claimed areas (display only — no tap-to-view while running) ─────────
   // Fetched once when the screen opens — like fountains above, kept at
@@ -309,6 +316,18 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     _hasAltitudeSample = true;
     if (altitude < _minAltitude) _minAltitude = altitude;
     if (altitude > _maxAltitude) _maxAltitude = altitude;
+  }
+
+  /// Wired to `MapOptions.onPositionChanged`, purely to keep
+  /// [_fountainsVisible] in sync with the zoom threshold as the user
+  /// pinch-zooms (panning is disabled on this screen, so there's no
+  /// viewport-fetch trigger here, unlike the other 3 map screens). Only
+  /// `setState`s on an actual threshold crossing, not every zoom frame.
+  void _handleMapPositionChanged(MapCamera camera, bool hasGesture) {
+    final visible = camera.zoom >= WaterFountainMarkerLayer.minZoomToShow;
+    if (visible != _fountainsVisible) {
+      setState(() => _fountainsVisible = visible);
+    }
   }
 
   // ── Pre-run countdown ─────────────────────────────────────────────────────
@@ -1244,6 +1263,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
         interactionOptions: const InteractionOptions(
           flags: InteractiveFlag.pinchZoom | InteractiveFlag.doubleTapZoom,
         ),
+        onPositionChanged: _handleMapPositionChanged,
       ),
       children: [
         TileLayer(
@@ -1283,7 +1303,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           ),
 
         // ── Water fountains ────────────────────────────────────────────
-        WaterFountainMarkerLayer(fountains: _waterFountains),
+        WaterFountainMarkerLayer(fountains: _waterFountains, visible: _fountainsVisible),
 
         // ── Runner position ────────────────────────────────────────────
         if ((_displayedPosition ?? _currentPosition) != null)

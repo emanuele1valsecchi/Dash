@@ -9,13 +9,10 @@ import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../config/map_style.dart';
-import '../models/water_fountain.dart';
 import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
-import '../services/water_fountain_service.dart';
 import '../widgets/map/area_details_sheet.dart';
 import '../widgets/map/claimed_areas_layer.dart';
-import '../widgets/map/water_fountain_marker_layer.dart';
 
 class ExplorePage extends StatefulWidget {
   const ExplorePage({super.key});
@@ -40,13 +37,6 @@ class _ExplorePageState extends State<ExplorePage> {
   // user. _areaHitNotifier drives tap detection on the polygons themselves.
   List<ClaimedArea> _allAreas = [];
   final LayerHitNotifier<String> _areaHitNotifier = ValueNotifier(null);
-
-  // ── Water fountains (OpenStreetMap) ─────────────────────────────────────────
-  // Loaded near the user's GPS position rather than tracking the map
-  // viewport — see WaterFountainGpsLoader's doc for why.
-  final WaterFountainGpsLoader _fountainLoader =
-      WaterFountainGpsLoader(WaterFountainService());
-  List<WaterFountain> _waterFountains = [];
 
   // ── Map settings ──────────────────────────────────────────────────────────
   // Independent filters over `claimedAreas` by ownership: "other users'
@@ -94,19 +84,10 @@ class _ExplorePageState extends State<ExplorePage> {
     });
     if (cached != null) {
       _mapController.move(cached, _defaultZoom);
-      _fetchNearbyFountains(cached);
     }
 
     _positionSub = LocationService.instance.updates.listen((pos) {
       setState(() => _currentPosition = pos);
-      _fetchNearbyFountains(pos);
-    });
-  }
-
-  void _fetchNearbyFountains(LatLng center) {
-    _fountainLoader.handlePositionChanged(center, (fountains) {
-      if (!mounted) return;
-      setState(() => _waterFountains = fountains);
     });
   }
 
@@ -217,7 +198,6 @@ class _ExplorePageState extends State<ExplorePage> {
         // Claimed areas — filtered by the grid ("other users'") and cable
         // ("my own") panel toggles.
         ClaimedAreasLayer(areas: _visibleAreas, hitNotifier: _areaHitNotifier),
-        WaterFountainMarkerLayer(fountains: _waterFountains),
         if (_currentPosition != null)
           MarkerLayer(
             markers: [

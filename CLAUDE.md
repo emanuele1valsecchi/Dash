@@ -64,27 +64,43 @@ Keep this list current — update it whenever a feature moves between these buck
   there is now only one map style, no picker.
 - Water fountain markers (blue drop icon in a white circular badge), sourced live from
   OpenStreetMap's Overpass API (`amenity=drinking_water` nodes, no API key) via
-  [lib/services/water_fountain_service.dart](lib/services/water_fountain_service.dart) and rendered unconditionally (never
-  conditionally added/removed from `FlutterMap.children`, which otherwise reshuffles
-  sibling layer identity) with [lib/widgets/map/water_fountain_marker_layer.dart](lib/widgets/map/water_fountain_marker_layer.dart) — each
-  `Marker` is keyed by the OSM node id since flutter_map culls off-screen markers every
-  frame and reconciles the rest by list position when unkeyed. Shown on explore, route
-  create/search, and live run tracking, all loaded via `WaterFountainGpsLoader` (also in
-  `water_fountain_service.dart`): fetches near the user's actual GPS position
-  (`fetchNearby`, refetching once it's moved > 800m), not the map viewport. This is
-  deliberately the simpler of two strategies that exist in the file — a viewport-tracking
-  one (`WaterFountainViewportLoader`, panning/zoom-driven, capped query area, zoom cutoff)
-  was tried and is still there but **not wired into any screen**; it kept surfacing new
-  failure modes (tuning the zoom/query-area tradeoff, Overpass's public instance
-  rate-limiting requests, fetches getting permanently stuck after a rate-limited response)
-  faster than they got resolved, so it's parked rather than deleted — the plan is to
-  revisit it, not abandon it. `WaterFountainService`'s own cache (keyed by a snapped grid
-  cell) persists for the whole app session either way. `fetchNearby`/`fetchInBounds`
-  return `null` (not an empty list) on failure, so a failed fetch doesn't get mistaken for
-  "successfully checked, nothing here" — callers should treat `null` as "leave whatever
-  was already showing", not clear to empty. The run-tracking screen fetches once
-  (`fetchNearby`, a fixed 3km radius) at the run's starting position and never refetches,
-  to avoid extra network/battery use mid-workout.
+  [lib/services/water_fountain_service.dart](lib/services/water_fountain_service.dart) and rendered with
+  [lib/widgets/map/water_fountain_marker_layer.dart](lib/widgets/map/water_fountain_marker_layer.dart) — each `Marker` is keyed by the OSM
+  node id since flutter_map culls off-screen markers every frame and reconciles the rest by
+  list position when unkeyed. **Shown only on live run tracking** ([lib/screens/run_tracking_page.dart](lib/screens/run_tracking_page.dart)),
+  not on explore/route create/route search. It used to be shown on all four, with two
+  different loading strategies tried on the browsing screens (GPS-position-based, then later
+  also map-camera/pan-based) — both were removed, not just tuned, after panning around to
+  casually browse the map kept growing the cache and sending a steady stream of Overpass
+  requests unrelated to anything running-related. Revisit fountains-on-the-browsing-screens
+  as a deliberately-scoped feature later if wanted; don't re-add it by just wiring the
+  existing service back into those screens as-is. `WaterFountainService` is an app-wide
+  singleton (`WaterFountainService.instance`, same pattern as `LocationService`) — mainly so
+  a runner who repeatedly starts from the same spot benefits from the cache across separate
+  runs — and is seeded from/persisted to disk via `shared_preferences` (a versioned
+  `water_fountain_cache_v1` blob, 30-day TTL, capped at 150 entries, cache key snapped to a
+  ~2km grid — deliberately close to `fetchNearby`'s own 3km query radius, so two starting
+  points a kilometre or two apart still hit the same cache entry), so a previously-used
+  starting point loads instantly even on a fresh app cold start, not just within a session —
+  `HomeScreen.initState` calls `WaterFountainService.instance.warmUp()` alongside
+  `LocationService.instance.start()` so the disk read happens in parallel with GPS
+  acquisition. Concurrent requests for the same area are coalesced (an in-flight-request map
+  keyed the same way as the cache, evicted the instant each request settles either way) so a
+  burst of near-simultaneous callers can't each fire their own duplicate Overpass request.
+  `fetchNearby` returns `null` (not an empty list) on failure, so a failed fetch doesn't get
+  mistaken for "successfully checked, nothing here" — callers should treat `null` as "leave
+  whatever was already showing", not clear to empty. Run tracking calls it once, at the run's
+  starting position, and never refetches (its map also has panning disabled entirely — only
+  pinch/double-tap zoom), to avoid extra network/battery use mid-workout. Whether the
+  fetched fountains are actually drawn is a separate, zoom-gated decision made by
+  `WaterFountainMarkerLayer` from an explicit `visible` flag the screen computes in a
+  `MapOptions.onPositionChanged` handler (`camera.zoom >= WaterFountainMarkerLayer.minZoomToShow`,
+  currently `13.0`, a ~5km-wide viewport) and passes down — deliberately not the widget
+  reading flutter_map's ambient `MapCamera.of(context)` itself, which turned out not to
+  reliably trigger a rebuild in practice despite matching flutter_map's own internal usage
+  pattern. Only `setState`s when the visibility flag actually flips (not on every pan/zoom
+  frame). No re-fetch on a zoom-driven visibility change either way — it's a pure redraw, so
+  zooming back in shows already-loaded markers instantly.
 - **Area claiming**: the `onRunningSessionCreateClaimedAreas` Cloud Function
   ([functions/index.js](functions/index.js)) triggers on every new `runningSessions` doc and writes one
   `claimedAreas/{sessionId}_{loopIndex}` doc per closed loop (skipping degenerate ones
