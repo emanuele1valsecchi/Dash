@@ -59,6 +59,7 @@ dependencies:
   http: ^1.6.0
   cached_network_image: ^3.4.1
   table_calendar: ^3.2.0
+  shared_preferences: ^2.5.5
 
   # Meta / Facebook
   #flutter_facebook_auth: ^7.1.1

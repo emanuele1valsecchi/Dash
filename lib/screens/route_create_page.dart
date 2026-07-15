@@ -7,15 +7,12 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
 import '../config/map_style.dart';
-import '../models/water_fountain.dart';
 import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
 import '../services/route_repository.dart';
 import '../services/routing_service.dart';
-import '../services/water_fountain_service.dart';
 import '../utils/geometry_utils.dart';
 import '../widgets/map/claimed_areas_layer.dart';
-import '../widgets/map/water_fountain_marker_layer.dart';
 
 // ── History snapshot ───────────────────────────────────────────────────────────
 
@@ -64,13 +61,6 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
   LatLng? _currentPosition;
   bool _isLoadingLocation = true;
   StreamSubscription<LatLng>? _positionSub;
-
-  // ── Water fountains (OpenStreetMap) ─────────────────────────────────────────
-  // Loaded near the user's GPS position rather than tracking the map
-  // viewport — see WaterFountainGpsLoader's doc for why.
-  final WaterFountainGpsLoader _fountainLoader =
-      WaterFountainGpsLoader(WaterFountainService());
-  List<WaterFountain> _waterFountains = [];
 
   // ── Claimed areas (display only — tapping the map drops a pin here) ──────
   List<ClaimedArea> _allAreas = [];
@@ -164,19 +154,10 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
     });
     if (cached != null) {
       _mapController.move(cached, _defaultZoom);
-      _fetchNearbyFountains(cached);
     }
 
     _positionSub = LocationService.instance.updates.listen((pos) {
       setState(() => _currentPosition = pos);
-      _fetchNearbyFountains(pos);
-    });
-  }
-
-  void _fetchNearbyFountains(LatLng center) {
-    _fountainLoader.handlePositionChanged(center, (fountains) {
-      if (!mounted) return;
-      setState(() => _waterFountains = fountains);
     });
   }
 
@@ -620,8 +601,6 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
             ],
           ),
 
-        // ── Water fountains ──────────────────────────────────────────────
-        WaterFountainMarkerLayer(fountains: _waterFountains),
 
         // ── GPS dot ───────────────────────────────────────────────────────
         if (_currentPosition != null)

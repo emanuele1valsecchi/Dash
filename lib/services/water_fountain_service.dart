@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter_map/flutter_map.dart' show LatLngBounds, MapCamera;
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/water_fountain.dart';
 
@@ -11,35 +11,91 @@ import '../models/water_fountain.dart';
 /// Overpass API (`amenity=drinking_water` nodes) — the same free, keyless
 /// data source the app's OSM-based routing/search already relies on.
 ///
-/// In-memory cached by a fine lat/lon grid cell — just enough to absorb
-/// floating-point/pixel jitter between near-identical repeat queries, not to
-/// meaningfully expand the queried area (see [WaterFountainViewportLoader]
-/// for the thing that actually controls how much area gets queried). Once an
-/// area has been fetched successfully it stays cached for the rest of the
-/// app session — returning to it later (even after the layer's been hidden
-/// by zooming out) is instant, no re-fetch.
+/// Deliberately used from **only one screen**, [RunTrackingPage], via
+/// [fetchNearby] once at a run's starting position — not from the map
+/// browsing screens (explore, route create, route search). An earlier
+/// version also loaded fountains on those screens, tracking the map camera
+/// as the user panned around; that turned into exactly the problem this
+/// service's caching exists to avoid — casually browsing the map across many
+/// areas kept the in-memory/disk cache growing and sent a steady stream of
+/// Overpass requests just from looking around, not from anything
+/// running-related. Removed rather than tuned further. Revisit
+/// fountains-while-browsing as a deliberate, separately-scoped feature if
+/// it's wanted again, rather than re-enabling this code path as-is.
+///
+/// A single app-wide instance ([instance]), mirroring `LocationService`'s
+/// singleton pattern — mainly so a runner who repeatedly starts from the
+/// same spot (very common) benefits from the cache across separate runs, not
+/// just within one. The cache is also seeded from disk (see [warmUp]) so it
+/// survives an app restart too — revisiting a previously-seen starting
+/// point is instant even on a cold start, not just within a session.
+///
+/// Zoom has nothing to do with fetching here — [RunTrackingPage] fetches
+/// once per run, unconditionally, regardless of what zoom the map is at.
+/// Whether the fetched fountains are actually *drawn* is a separate, purely
+/// client-side decision made by `WaterFountainMarkerLayer` from an explicit
+/// zoom flag the screen passes it — "always loaded, just hidden below a
+/// zoom threshold."
 class WaterFountainService {
+  static final WaterFountainService instance = WaterFountainService._();
+  WaterFountainService._();
+
   static const String _overpassUrl = 'https://overpass-api.de/api/interpreter';
 
-  /// Below this zoom level the viewport is too large for a fountain layer to
-  /// stay fast — the query area (and Overpass's own processing time over it)
-  /// grows with it, and so does the marker count `MarkerLayer` has to lay
-  /// out every frame. ~1.5-2km wide at this zoom, which is "near what I'm
-  /// looking at", not "the whole city".
-  static const double minZoomToLoad = 10.0;
+  /// ~2km grid, deliberately close to the default [fetchNearby] query radius
+  /// (3km) rather than tight enough to only dedupe GPS jitter. A cache *key*
+  /// this coarse relative to the query radius is what makes "come back to an
+  /// area you already viewed" actually hit the cache: two query centers a
+  /// kilometre or two apart already return near-identical fountain sets (their
+  /// 3km-radius circles overlap heavily), so snapping them to the same grid
+  /// cell trades a little positional precision for reliably avoiding a
+  /// pointless repeat Overpass round-trip. A ~200m grid was tried first and
+  /// was too fine for this: panning back to roughly the same neighbourhood
+  /// almost never lands in the exact same tiny cell as before, so it missed
+  /// the cache and re-fetched from scratch nearly every time.
+  static const double _gridDegrees = 0.02;
 
-  /// ~200m grid — fine enough that the snapped/expanded query area barely
-  /// grows past what was actually asked for, coarse enough to still dedupe
-  /// near-identical repeat queries.
-  static const double _gridDegrees = 0.002;
+  static const String _diskCacheKey = 'water_fountain_cache_v1';
 
-  final Map<String, List<WaterFountain>> _cache = {};
+  /// Fountains are static infrastructure — this is a hedge against drift
+  /// (a fountain removed/moved in OSM) rather than an expectation that
+  /// they change often. Only checked when loading from disk; an entry that
+  /// crosses this age while resident in a long-lived in-memory session isn't
+  /// evicted mid-session, which is fine at realistic app-session lengths.
+  static const Duration _diskCacheTtl = Duration(days: 30);
 
-  /// Fetches fountains within [radiusMeters] of [center] — for a single
-  /// point-in-time lookup (e.g. the run-tracking screen's starting position,
-  /// which deliberately fetches once and doesn't track the viewport, so the
-  /// radius needs to be generous enough to cover a run that wanders from the
-  /// start point without ever re-fetching).
+  /// Caps the persisted blob's worst-case size (Overpass responses are
+  /// themselves capped at 300 fountains each — see [_doQuery]) rather than
+  /// letting it grow unboundedly as a user visits more areas over time.
+  /// Eviction is by oldest [_CacheEntry.fetchedAt] first.
+  static const int _maxCachedEntries = 150;
+
+  final Map<String, _CacheEntry> _cache = {};
+
+  /// Coalesces concurrent requests for the same [cacheKey] into a single
+  /// HTTP call — without this, several GPS ticks arriving before the first
+  /// request resolves would each fire their own Overpass request. Entries
+  /// are removed the instant their request settles (success *or* failure,
+  /// since [_doQuery] resolves to `null` on failure rather than throwing) —
+  /// leaving a completed future mapped here would permanently block retries
+  /// for that key.
+  final Map<String, Future<List<WaterFountain>?>> _inFlight = {};
+
+  Future<void>? _warmUpFuture;
+
+  /// Loads the on-disk cache into memory, if present. Safe to call multiple
+  /// times (memoized) and not required — [fetchNearby] awaits it internally
+  /// regardless. Calling it early (e.g. from `HomeScreen`, alongside
+  /// `LocationService.instance.start()`) just lets the disk read happen in
+  /// parallel with GPS acquisition instead of only starting on the first
+  /// fountain fetch.
+  Future<void> warmUp() => _warmUpFuture ??= _loadFromDisk();
+
+  /// Fetches fountains within [radiusMeters] of [center] — a single
+  /// point-in-time lookup, called once at the run-tracking screen's starting
+  /// position and never again for that run, so the radius needs to be
+  /// generous enough to cover a run that wanders from the start point
+  /// without ever re-fetching.
   ///
   /// Returns `null` on failure (network error, timeout, rate-limited, etc.)
   /// — distinct from a successful fetch that just found nothing, so callers
@@ -56,30 +112,28 @@ class WaterFountainService {
     );
   }
 
-  /// Fetches fountains within the given map viewport. [bounds] is snapped
-  /// outward to the nearest (fine) grid cell purely to stabilize the cache
-  /// key — how much area actually gets queried is controlled by the caller
-  /// (see [WaterFountainViewportLoader]'s padding), not by this snap.
-  ///
-  /// Returns `null` on failure — see [fetchNearby].
-  Future<List<WaterFountain>?> fetchInBounds(LatLngBounds bounds) {
-    final south = (bounds.south / _gridDegrees).floor() * _gridDegrees;
-    final west = (bounds.west / _gridDegrees).floor() * _gridDegrees;
-    final north = (bounds.north / _gridDegrees).ceil() * _gridDegrees;
-    final east = (bounds.east / _gridDegrees).ceil() * _gridDegrees;
-    return _query(
-      '$south,$west,$north,$east',
-      'bbox:$south,$west,$north,$east',
-    );
-  }
-
   Future<List<WaterFountain>?> _query(
     String overpassFilter,
     String cacheKey,
   ) async {
-    final cached = _cache[cacheKey];
-    if (cached != null) return cached;
+    await warmUp();
 
+    final cached = _cache[cacheKey];
+    if (cached != null) return cached.fountains;
+
+    final pending = _inFlight[cacheKey];
+    if (pending != null) return pending;
+
+    final future = _doQuery(overpassFilter, cacheKey);
+    _inFlight[cacheKey] = future;
+    unawaited(future.whenComplete(() => _inFlight.remove(cacheKey)));
+    return future;
+  }
+
+  Future<List<WaterFountain>?> _doQuery(
+    String overpassFilter,
+    String cacheKey,
+  ) async {
     // Capped output: a defensive ceiling against pathologically dense areas
     // (e.g. a big park's worth of drinking fountains) blowing past a
     // reasonable marker count regardless of how tight the query area is.
@@ -118,7 +172,8 @@ class WaterFountainService {
           .whereType<WaterFountain>()
           .toList();
 
-      _cache[cacheKey] = fountains;
+      _cache[cacheKey] = _CacheEntry(fetchedAt: DateTime.now(), fountains: fountains);
+      unawaited(_persistCache());
       return fountains;
     } catch (_) {
       // Network error, timeout, or a non-JSON (e.g. Overpass's HTML error
@@ -128,165 +183,63 @@ class WaterFountainService {
   }
 
   double _snap(double v) => (v / _gridDegrees).round() * _gridDegrees;
+
+  // ── Disk cache ────────────────────────────────────────────────────────────
+
+  Future<void> _loadFromDisk() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_diskCacheKey);
+      if (raw == null) return;
+
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      final cutoff = DateTime.now().subtract(_diskCacheTtl);
+      decoded.forEach((key, value) {
+        final entry = value as Map<String, dynamic>;
+        final fetchedAtMs = entry['t'] as int?;
+        final rawFountains = entry['f'] as List<dynamic>?;
+        if (fetchedAtMs == null || rawFountains == null) return;
+
+        final fetchedAt = DateTime.fromMillisecondsSinceEpoch(fetchedAtMs);
+        if (fetchedAt.isBefore(cutoff)) return;
+
+        final fountains = rawFountains
+            .map((f) => WaterFountain.fromJson(f as Map<String, dynamic>))
+            .whereType<WaterFountain>()
+            .toList();
+        _cache[key] = _CacheEntry(fetchedAt: fetchedAt, fountains: fountains);
+      });
+    } catch (_) {
+      // Corrupt/unreadable cache — start cold rather than crash; the next
+      // successful fetch overwrites it with a well-formed blob.
+    }
+  }
+
+  Future<void> _persistCache() async {
+    try {
+      final entries = _cache.entries.toList()
+        ..sort((a, b) => b.value.fetchedAt.compareTo(a.value.fetchedAt));
+      final capped = entries.take(_maxCachedEntries);
+
+      final encoded = <String, dynamic>{
+        for (final e in capped)
+          e.key: {
+            't': e.value.fetchedAt.millisecondsSinceEpoch,
+            'f': e.value.fountains.map((f) => f.toJson()).toList(),
+          },
+      };
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_diskCacheKey, jsonEncode(encoded));
+    } catch (_) {
+      // Best-effort — losing this write just means a future cold start
+      // re-fetches this area instead of reading it from disk.
+    }
+  }
 }
 
-/// Fetches fountains near a fixed real-world point (typically the user's GPS
-/// position) rather than tracking the map viewport. This is the current,
-/// active loading strategy for explore/route create/route search — simpler
-/// and more reliable than viewport tracking turned out to be in practice
-/// (see [WaterFountainViewportLoader]'s doc for the specific failure modes
-/// that kept surfacing: tuning the zoom/query-area tradeoff, Overpass
-/// rate-limiting, stuck-forever state). The tradeoff accepted for now:
-/// fountains only ever reflect where the user physically is, not wherever
-/// they've panned the map to — revisit viewport-based loading once it's
-/// worth the added complexity again.
-///
-/// Only refetches once the GPS position has moved more than
-/// [refetchThresholdMeters], so a stream of GPS fixes a few metres apart
-/// doesn't each trigger a new Overpass request.
-class WaterFountainGpsLoader {
-  WaterFountainGpsLoader(this._service);
-
-  final WaterFountainService _service;
-  LatLng? _lastFetchCenter;
-
-  static const double refetchThresholdMeters = 800;
-
-  /// Call whenever the current position updates (initial fix, and every
-  /// subsequent GPS update). Invokes [onResult] only when a fetch actually
-  /// happens and succeeds.
-  void handlePositionChanged(
-    LatLng center,
-    void Function(List<WaterFountain> fountains) onResult,
-  ) {
-    final last = _lastFetchCenter;
-    if (last != null &&
-        const Distance()(last, center) < refetchThresholdMeters) {
-      return;
-    }
-
-    _service.fetchNearby(center).then((fountains) {
-      // Failed (network error / rate-limited) — leave _lastFetchCenter
-      // alone (rather than committing this center as "done") so the next
-      // GPS update, even a small one, naturally retries instead of getting
-      // permanently stuck with nothing loaded.
-      if (fountains == null) return;
-      _lastFetchCenter = center;
-      onResult(fountains);
-    });
-  }
-}
-
-/// Caches viewport-based fountain lookups for a single map screen — wraps a
-/// [WaterFountainService] with the "what's currently on screen" policy so
-/// screens don't each reimplement it.
-///
-/// **Not currently wired into any screen** — parked after repeated tuning
-/// attempts (query-area size, zoom cutoff, Overpass rate-limiting/stuck
-/// state) kept surfacing new problems faster than they got resolved; see
-/// [WaterFountainGpsLoader], the simpler strategy currently in use instead.
-/// Kept here rather than deleted since the plan is to revisit it later, not
-/// abandon it.
-///
-/// Four things this guards against:
-///  - Too much area per query: below [WaterFountainService.minZoomToLoad]
-///    fountains aren't fetched or shown at all (zoomed out to city/region
-///    scale, "every fountain in view" is both slow to query and too dense to
-///    render), and even at valid zoom levels the padded query area is kept
-///    modest (see [_paddingFactor]) rather than many screen-widths wide —
-///    both the Overpass round-trip and `MarkerLayer`'s per-frame layout cost
-///    scale with query area, which is what made this feel slow before.
-///  - Re-fetching on every pan/zoom event: a fetch only fires once the
-///    visible viewport is no longer covered by the last *successfully*
-///    fetched (padded) area, so most panning shows already-loaded markers
-///    instantly instead of clearing and waiting on a new request — and
-///    revisiting anywhere already covered this session (even after zooming
-///    out past the layer's visibility threshold and back in) is instant too,
-///    since [WaterFountainService]'s own cache never gets cleared.
-///  - A failed fetch getting permanently "stuck": the covered area is only
-///    marked as such *after* a fetch actually succeeds. Earlier this was set
-///    optimistically before the request resolved, so a single rate-limited
-///    or dropped request (Overpass's public instance rate-limits fairly
-///    readily) would permanently mark that area as "loaded" with nothing to
-///    show, and no further pan/zoom event would ever retry it — the only way
-///    out was leaving and re-entering the screen, which threw the whole
-///    loader away. A failed fetch now retries itself once, shortly after.
-///  - Stale, out-of-order responses: if a slower request resolves after a
-///    newer one (e.g. a fast pan fires two fetches back to back), the older
-///    result is discarded instead of overwriting the newer markers — without
-///    this, fountains could flicker away as an outdated response lands.
-class WaterFountainViewportLoader {
-  WaterFountainViewportLoader(this._service);
-
-  final WaterFountainService _service;
-  LatLngBounds? _fetchedBounds;
-  int _requestId = 0;
-
-  /// How far beyond the visible viewport to fetch, as a multiple of the
-  /// viewport's own width/height — e.g. 0.5 fetches a 2x2 area centred on
-  /// what's visible: a "slightly bigger radius" buffer so panning a modest
-  /// amount doesn't need a new network request, without ballooning the
-  /// query (and marker count) far past what's actually being looked at.
-  static const double _paddingFactor = 0.5;
-
-  /// Call from `MapOptions.onPositionChanged` (and once from `onMapReady`
-  /// for the initial view). Invokes [onResult] with the fountains for the
-  /// padded area around [camera] whenever a fetch is actually needed.
-  void handlePositionChanged(
-    MapCamera camera,
-    void Function(List<WaterFountain> fountains) onResult,
-  ) {
-    if (camera.zoom < WaterFountainService.minZoomToLoad) {
-      if (_fetchedBounds != null) {
-        _fetchedBounds = null;
-        _requestId++;
-        onResult(const []);
-      }
-      return;
-    }
-
-    if (_fetchedBounds?.containsBounds(camera.visibleBounds) ?? false) {
-      return;
-    }
-
-    _fetch(camera, onResult, retryOnFailure: true);
-  }
-
-  void _fetch(
-    MapCamera camera,
-    void Function(List<WaterFountain> fountains) onResult, {
-    required bool retryOnFailure,
-  }) {
-    final padded = _pad(camera.visibleBounds);
-    final requestId = ++_requestId;
-    _service.fetchInBounds(padded).then((fountains) {
-      if (requestId != _requestId) return; // superseded by a newer request
-
-      if (fountains == null) {
-        // Failed (network error / rate-limited) — don't mark this area as
-        // covered, so a real pan/zoom will naturally retry it; also give it
-        // one unprompted retry shortly, in case the user's just sitting
-        // still looking at an empty map.
-        if (retryOnFailure) {
-          Timer(const Duration(seconds: 3), () {
-            if (requestId != _requestId) return;
-            _fetch(camera, onResult, retryOnFailure: false);
-          });
-        }
-        return;
-      }
-
-      _fetchedBounds = padded;
-      onResult(fountains);
-    });
-  }
-
-  LatLngBounds _pad(LatLngBounds bounds) {
-    final latPad = (bounds.north - bounds.south) * _paddingFactor;
-    final lonPad = (bounds.east - bounds.west) * _paddingFactor;
-    return LatLngBounds(
-      LatLng(bounds.south - latPad, bounds.west - lonPad),
-      LatLng(bounds.north + latPad, bounds.east + lonPad),
-    );
-  }
+class _CacheEntry {
+  final DateTime fetchedAt;
+  final List<WaterFountain> fountains;
+  const _CacheEntry({required this.fetchedAt, required this.fountains});
 }

@@ -9,6 +9,7 @@ import '../models/home_badge_ui_model.dart';
 import '../services/badge_service.dart';
 import '../services/location_service.dart';
 import '../services/storage_service.dart';
+import '../services/water_fountain_service.dart';
 import 'explore_page.dart';
 import 'route_create_page.dart';
 import 'route_search_page.dart';
@@ -67,6 +68,10 @@ class _HomeScreenState extends State<HomeScreen> {
     // screen, so map pages read an already-warm position instead of each
     // separately requesting permission and waiting on a fresh fix.
     LocationService.instance.start();
+    // Same idea for the water-fountain disk cache: read it now, in parallel
+    // with GPS acquisition, instead of only starting on the first fountain
+    // fetch a map screen makes.
+    WaterFountainService.instance.warmUp();
   }
 
   Future<void> _loadNickname() async {
