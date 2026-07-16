@@ -4,7 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
-// Assicurati che questo import sia corretto per il tuo progetto
+import 'session_detail_screen.dart';
 import '../config/map_style.dart';
 
 class CalendarScreen extends StatefulWidget {
@@ -230,14 +230,45 @@ class _CalendarScreenState extends State<CalendarScreen> {
                               final durationMs = (session['durationMs'] as num?)?.toInt() ?? 0;
                               final loopsCompleted = (session['loopsCompleted'] as num?)?.toInt() ?? 0;
                               
+                              final routePolyline = _extractPolyline(session);
+
                               return Padding(
                                 padding: const EdgeInsets.only(bottom: 16.0),
-                                child: SessionCard(
-                                  name: name,
-                                  distanceKm: distanceMeters / 1000,
-                                  timeMin: (durationMs / 60000).round(),
-                                  isLoop: loopsCompleted > 0,
-                                  routePolyline: _extractPolyline(session),
+                                child: GestureDetector(
+                                  // Questo forza la hitbox a coprire l'intero perimetro della card
+                                  behavior: HitTestBehavior.opaque, 
+                                  onTap: () {
+                                    // Sostituiamo MaterialPageRoute con PageRouteBuilder per l'animazione custom
+                                    Navigator.push(
+                                      context,
+                                      PageRouteBuilder(
+                                        pageBuilder: (context, animation, secondaryAnimation) => SessionDetailScreen(
+                                          sessionData: session,
+                                          routePolyline: routePolyline,
+                                        ),
+                                        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+                                          // Impostiamo l'inizio dell'animazione (dal basso verso l'alto)
+                                          const begin = Offset(0.0, 1.0);
+                                          const end = Offset.zero;
+                                          const curve = Curves.easeInOutQuart;
+
+                                          var tween = Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
+
+                                          return SlideTransition(
+                                            position: animation.drive(tween),
+                                            child: child,
+                                          );
+                                        },
+                                      ),
+                                    );
+                                  },
+                                  child: SessionCard(
+                                    name: name,
+                                    distanceKm: distanceMeters / 1000,
+                                    timeMin: (durationMs / 60000).round(),
+                                    isLoop: loopsCompleted > 0,
+                                    routePolyline: routePolyline,
+                                  ),
                                 ),
                               );
                             },
