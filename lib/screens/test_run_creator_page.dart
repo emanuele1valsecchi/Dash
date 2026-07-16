@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -8,9 +9,12 @@ import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../config/map_style.dart';
+import '../services/claimed_area_repository.dart';
 import '../services/routing_service.dart';
 import '../services/run_session_repository.dart';
 import '../utils/geometry_utils.dart';
+import '../widgets/map/area_visibility_toggle.dart';
+import '../widgets/map/claimed_areas_layer.dart';
 
 /// Dev-only tool: build a fake run by placing pins — routed the same way as
 /// the real route builder — and manually setting its duration, then publish
@@ -49,6 +53,19 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
   LatLng? _currentPosition;
   bool _isLoadingLocation = true;
   StreamSubscription<Position>? _positionStream;
+
+  // ── Claimed areas (display only) ─────────────────────────────────────────
+  List<ClaimedArea> _allAreas = [];
+  bool _showOtherAreas = true;
+  bool _showMyAreas = true;
+
+  List<ClaimedArea> get _visibleAreas {
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
+    return _allAreas.where((area) {
+      final isMine = area.userId == myUid;
+      return isMine ? _showMyAreas : _showOtherAreas;
+    }).toList();
+  }
 
   // ── Sheet ─────────────────────────────────────────────────────────────────
   final DraggableScrollableController _sheetController = DraggableScrollableController();
@@ -92,6 +109,13 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
   void initState() {
     super.initState();
     _initLocation();
+    _loadClaimedAreas();
+  }
+
+  Future<void> _loadClaimedAreas() async {
+    final areas = await ClaimedAreaRepository.instance.fetchAllAreas();
+    if (!mounted) return;
+    setState(() => _allAreas = areas);
   }
 
   @override
@@ -465,6 +489,10 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
           userAgentPackageName: 'com.dash',
           retinaMode: RetinaMode.isHighDensity(context),
         ),
+
+        // ── Claimed areas (display only — no tap-to-view here) ─────────────
+        ClaimedAreasLayer(areas: _visibleAreas),
+
         if (_loopPolygon.length >= 3)
           PolygonLayer(
             polygons: [
@@ -575,6 +603,13 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
           ),
           const SizedBox(height: 8),
           _RoundMapButton(icon: Icons.my_location, tooltip: 'My location', onTap: _centerOnUser),
+          const SizedBox(height: 8),
+          AreaVisibilityToggle(
+            showOtherAreas: _showOtherAreas,
+            showMyAreas: _showMyAreas,
+            onShowOtherAreasChanged: (v) => setState(() => _showOtherAreas = v),
+            onShowMyAreasChanged: (v) => setState(() => _showMyAreas = v),
+          ),
         ],
       ),
     );

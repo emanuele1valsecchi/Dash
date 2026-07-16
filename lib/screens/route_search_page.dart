@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
@@ -11,6 +12,7 @@ import '../config/map_style.dart';
 import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
 import '../services/routing_service.dart';
+import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
 
 // ── Data models ────────────────────────────────────────────────────────────────
@@ -58,6 +60,16 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
 
   // ── Claimed areas (display only — no tap-to-view here; see explore_page) ──
   List<ClaimedArea> _allAreas = [];
+  bool _showOtherAreas = true;
+  bool _showMyAreas = true;
+
+  List<ClaimedArea> get _visibleAreas {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    return _allAreas.where((area) {
+      final isMine = area.userId == uid;
+      return isMine ? _showMyAreas : _showOtherAreas;
+    }).toList();
+  }
 
   // ── Bottom sheet ──────────────────────────────────────────────────────────
   final DraggableScrollableController _sheetController =
@@ -485,6 +497,13 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
             tooltip: 'My location',
             onTap: _centerOnUser,
           ),
+          const SizedBox(height: 8),
+          AreaVisibilityToggle(
+            showOtherAreas: _showOtherAreas,
+            showMyAreas: _showMyAreas,
+            onShowOtherAreasChanged: (v) => setState(() => _showOtherAreas = v),
+            onShowMyAreasChanged: (v) => setState(() => _showMyAreas = v),
+          ),
         ],
       ),
     );
@@ -551,7 +570,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
         ),
 
         // ── Claimed areas (display only) ────────────────────────────────
-        ClaimedAreasLayer(areas: _allAreas),
+        ClaimedAreasLayer(areas: _visibleAreas),
 
         // ── Dimmed non-selected routes (rendered first, below) ────────────
         if (_foundRoutes.isNotEmpty && hasSelection)
