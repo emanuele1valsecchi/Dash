@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -16,6 +17,7 @@ import '../services/location_service.dart';
 import '../services/run_session_repository.dart';
 import '../services/water_fountain_service.dart';
 import '../utils/geometry_utils.dart';
+import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
 import '../widgets/map/water_fountain_marker_layer.dart';
 import 'test_run_creator_page.dart';
@@ -106,6 +108,16 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   // whatever the world looked like when the run started rather than
   // refreshed live, to save battery/network mid-workout.
   List<ClaimedArea> _allAreas = [];
+  bool _showOtherAreas = true;
+  bool _showMyAreas = true;
+
+  List<ClaimedArea> get _visibleAreas {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    return _allAreas.where((area) {
+      final isMine = area.userId == uid;
+      return isMine ? _showMyAreas : _showOtherAreas;
+    }).toList();
+  }
 
   // ── Dot smoothing ─────────────────────────────────────────────────────────
   //
@@ -1245,6 +1257,16 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           ),
         ),
         Positioned(
+          right: 16,
+          bottom: 164,
+          child: AreaVisibilityToggle(
+            showOtherAreas: _showOtherAreas,
+            showMyAreas: _showMyAreas,
+            onShowOtherAreasChanged: (v) => setState(() => _showOtherAreas = v),
+            onShowMyAreasChanged: (v) => setState(() => _showMyAreas = v),
+          ),
+        ),
+        Positioned(
           left: 24,
           right: 24,
           bottom: 16,
@@ -1275,7 +1297,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
         // ── Claimed areas (as of when this run started — not refreshed
         // live, to save battery/network mid-workout; display only, no
         // tap-to-view while running) ────────────────────────────────────
-        ClaimedAreasLayer(areas: _allAreas),
+        ClaimedAreasLayer(areas: _visibleAreas),
 
         // ── Claimed loop fills (this run's own in-progress loops) ────────
         if (_closedLoops.isNotEmpty)

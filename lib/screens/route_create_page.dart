@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
@@ -12,6 +13,7 @@ import '../services/location_service.dart';
 import '../services/route_repository.dart';
 import '../services/routing_service.dart';
 import '../utils/geometry_utils.dart';
+import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
 
 // ── History snapshot ───────────────────────────────────────────────────────────
@@ -64,6 +66,16 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
 
   // ── Claimed areas (display only — tapping the map drops a pin here) ──────
   List<ClaimedArea> _allAreas = [];
+  bool _showOtherAreas = true;
+  bool _showMyAreas = true;
+
+  List<ClaimedArea> get _visibleAreas {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    return _allAreas.where((area) {
+      final isMine = area.userId == uid;
+      return isMine ? _showMyAreas : _showOtherAreas;
+    }).toList();
+  }
 
   // ── Sheet ─────────────────────────────────────────────────────────────────
   final DraggableScrollableController _sheetController =
@@ -463,6 +475,13 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
             tooltip: 'My location',
             onTap: _centerOnUser,
           ),
+          const SizedBox(height: 8),
+          AreaVisibilityToggle(
+            showOtherAreas: _showOtherAreas,
+            showMyAreas: _showMyAreas,
+            onShowOtherAreasChanged: (v) => setState(() => _showOtherAreas = v),
+            onShowMyAreasChanged: (v) => setState(() => _showMyAreas = v),
+          ),
         ],
       ),
     );
@@ -559,7 +578,7 @@ class _RouteCreatePageState extends State<RouteCreatePage> {
 
         // ── Claimed areas (display only — no hitNotifier, so tapping one
         // still drops a route pin rather than opening its details) ────────
-        ClaimedAreasLayer(areas: _allAreas),
+        ClaimedAreasLayer(areas: _visibleAreas),
 
         // ── Loop fill (below route lines) ─────────────────────────────────
         if (_loopPolygon.length >= 3)

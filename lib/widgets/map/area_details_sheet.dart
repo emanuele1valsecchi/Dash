@@ -4,7 +4,6 @@ import 'package:flutter_map/flutter_map.dart';
 
 import '../../services/claimed_area_repository.dart';
 import '../../services/profile_service.dart';
-import '../../utils/geometry_utils.dart';
 import 'claimed_areas_layer.dart';
 
 /// Opens [AreaDetailsSheet] for the area with the given id, if it's still in
@@ -28,6 +27,10 @@ void showAreaDetailsSheet(
   showModalBottomSheet(
     context: context,
     backgroundColor: Colors.white,
+    // The contribution list below is unbounded-ish (capped at 10, but that
+    // can still be taller than half the screen) — scrollable content needs
+    // isScrollControlled so the sheet isn't clipped to a fixed fraction.
+    isScrollControlled: true,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
@@ -53,6 +56,24 @@ bool handleAreaTap(
   return true;
 }
 
+const _months = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
+
+String _formatDate(DateTime date) =>
+    '${_months[date.month - 1]} ${date.day}, ${date.year}';
+
+String _formatDuration(int ms) {
+  final totalSeconds = ms ~/ 1000;
+  final h = totalSeconds ~/ 3600;
+  final m = (totalSeconds % 3600) ~/ 60;
+  final s = totalSeconds % 60;
+  if (h > 0) return '${h}h ${m}m';
+  if (m > 0) return '${m}m ${s}s';
+  return '${s}s';
+}
+
 /// Bottom sheet shown when a claimed-area polygon is tapped on the map.
 /// Meant to be shown via `showModalBottomSheet`, which already supports
 /// dragging it down or tapping outside it to dismiss — no custom gesture
@@ -70,124 +91,93 @@ class _AreaDetailsSheetState extends State<AreaDetailsSheet> {
   late final Future<String?> _usernameFuture =
       ProfileService().fetchUsername(widget.area.userId);
 
-  static const _months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-
   @override
   Widget build(BuildContext context) {
     final area = widget.area;
-    final areaM2 = GeometryUtils.polygonAreaM2(area.polygon);
-    final avgSpeedKmh = (area.avgPaceMinPerKm != null && area.avgPaceMinPerKm! > 0)
-        ? 60 / area.avgPaceMinPerKm!
-        : null;
 
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(2),
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 18),
-            Row(
-              children: [
-                Container(
-                  width: 14,
-                  height: 14,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: area.userId == FirebaseAuth.instance.currentUser?.uid
-                        ? ClaimedAreasLayer.myColor
-                        : ClaimedAreasLayer.otherColor,
+              const SizedBox(height: 18),
+              Row(
+                children: [
+                  Container(
+                    width: 14,
+                    height: 14,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: area.userId == FirebaseAuth.instance.currentUser?.uid
+                          ? ClaimedAreasLayer.myColor
+                          : ClaimedAreasLayer.otherColor,
+                    ),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: FutureBuilder<String?>(
-                    future: _usernameFuture,
-                    builder: (context, snapshot) {
-                      final username = snapshot.data;
-                      final label = username ??
-                          (snapshot.connectionState == ConnectionState.waiting
-                              ? 'Loading…'
-                              : 'Unknown runner');
-                      return Text(
-                        label,
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w800,
-                          color: Color(0xFF1F3020),
-                        ),
-                      );
-                    },
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: FutureBuilder<String?>(
+                      future: _usernameFuture,
+                      builder: (context, snapshot) {
+                        final username = snapshot.data;
+                        final label = username ??
+                            (snapshot.connectionState == ConnectionState.waiting
+                                ? 'Loading…'
+                                : 'Unknown runner');
+                        return Text(
+                          label,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF1F3020),
+                          ),
+                        );
+                      },
+                    ),
                   ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Conquered ${_formatDate(area.createdAt)}',
+                style: const TextStyle(fontSize: 13, color: Color(0xFF5E655C)),
+              ),
+              const SizedBox(height: 20),
+              _Stat(
+                icon: Icons.square_foot_outlined,
+                label: 'Total area',
+                value: '${area.totalAreaM2.round()} m²',
+              ),
+              const SizedBox(height: 20),
+              Text(
+                area.contributions.length == 1
+                    ? 'Built from 1 run'
+                    : 'Built from ${area.contributions.length} runs',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF1F3020),
                 ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Conquered ${_formatDate(area.createdAt)}',
-              style: const TextStyle(fontSize: 13, color: Color(0xFF5E655C)),
-            ),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: _Stat(
-                    icon: Icons.timer_outlined,
-                    label: 'Time',
-                    value: _formatDuration(area.durationMs),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _Stat(
-                    icon: Icons.square_foot_outlined,
-                    label: 'Area',
-                    value: '${areaM2.round()} m²',
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _Stat(
-                    icon: Icons.speed_outlined,
-                    label: 'Avg speed',
-                    value: avgSpeedKmh != null
-                        ? '${avgSpeedKmh.toStringAsFixed(1)} km/h'
-                        : '—',
-                  ),
-                ),
-              ],
-            ),
-          ],
+              ),
+              const SizedBox(height: 8),
+              for (final c in area.contributions) _ContributionRow(contribution: c),
+            ],
+          ),
         ),
       ),
     );
-  }
-
-  String _formatDate(DateTime date) =>
-      '${_months[date.month - 1]} ${date.day}, ${date.year}';
-
-  String _formatDuration(int ms) {
-    final totalSeconds = ms ~/ 1000;
-    final h = totalSeconds ~/ 3600;
-    final m = (totalSeconds % 3600) ~/ 60;
-    final s = totalSeconds % 60;
-    if (h > 0) return '${h}h ${m}m';
-    if (m > 0) return '${m}m ${s}s';
-    return '${s}s';
   }
 }
 
@@ -206,11 +196,10 @@ class _Stat extends StatelessWidget {
         color: const Color(0xFFF0F2EB),
         borderRadius: BorderRadius.circular(16),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
           Icon(icon, size: 20, color: const Color(0xFF4A8C52)),
-          const SizedBox(height: 8),
+          const SizedBox(width: 10),
           Text(
             value,
             style: const TextStyle(
@@ -219,10 +208,63 @@ class _Stat extends StatelessWidget {
               color: Color(0xFF1F3020),
             ),
           ),
-          const SizedBox(height: 2),
+          const SizedBox(width: 8),
           Text(
             label,
             style: const TextStyle(fontSize: 12, color: Color(0xFF5E655C)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One row in the "built from N runs" list — a single past run that
+/// contributed ground to this area, shown so the user can recognise (and,
+/// once route-saving from other users' sessions exists, re-run) it.
+class _ContributionRow extends StatelessWidget {
+  final AreaContribution contribution;
+
+  const _ContributionRow({required this.contribution});
+
+  @override
+  Widget build(BuildContext context) {
+    final pace = contribution.avgPaceMinPerKm;
+    final avgSpeedKmh = (pace != null && pace > 0) ? 60 / pace : null;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF0F2EB),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.directions_run_rounded, size: 18, color: Color(0xFF4A8C52)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _formatDate(contribution.conquestDate),
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1F3020),
+              ),
+            ),
+          ),
+          Text(
+            _formatDuration(contribution.durationMs),
+            style: const TextStyle(fontSize: 13, color: Color(0xFF5E655C)),
+          ),
+          const SizedBox(width: 12),
+          SizedBox(
+            width: 62,
+            child: Text(
+              avgSpeedKmh != null ? '${avgSpeedKmh.toStringAsFixed(1)} km/h' : '—',
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 13, color: Color(0xFF5E655C)),
+            ),
           ),
         ],
       ),

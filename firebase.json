@@ -18,7 +18,8 @@
         ".git",
         "firebase-debug.log",
         "firebase-debug.*.log",
-        "*.local"
+        "*.local",
+        "_verify_*.js"
       ]
     }
   ]

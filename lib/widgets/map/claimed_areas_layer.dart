@@ -34,15 +34,22 @@ class ClaimedAreasLayer extends StatelessWidget {
     final myUid = FirebaseAuth.instance.currentUser?.uid;
     return PolygonLayer<String>(
       hitNotifier: hitNotifier,
-      polygons: areas.map((area) {
+      // An area can be more than one disconnected piece (a steal that cuts
+      // straight through leaves two remaining fragments) — each piece
+      // becomes its own Polygon, but all share the same hitValue, so
+      // tapping any fragment opens the same area's details.
+      polygons: areas.expand((area) {
         final color = area.userId == myUid ? myColor : otherColor;
-        return Polygon<String>(
-          points: area.polygon,
-          color: color.withValues(alpha: 0.25),
-          borderColor: color.withValues(alpha: 0.8),
-          borderStrokeWidth: 2.0,
-          hitValue: area.id,
-        );
+        return area.polygons.map((piece) {
+          return Polygon<String>(
+            points: piece.outer,
+            holePointsList: piece.holes.isEmpty ? null : piece.holes,
+            color: color.withValues(alpha: 0.25),
+            borderColor: color.withValues(alpha: 0.8),
+            borderStrokeWidth: 2.0,
+            hitValue: area.id,
+          );
+        });
       }).toList(),
     );
   }
