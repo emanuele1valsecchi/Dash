@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 
 import '../config/map_style.dart';
+import '../services/cached_tile_provider.dart';
 import '../services/route_repository.dart';
 
 class TempProfilePage extends StatefulWidget {
@@ -163,6 +164,7 @@ class _TempProfilePageState extends State<TempProfilePage> {
                       urlTemplate: MapStyle.terrainTileUrl,
                       userAgentPackageName: 'com.dash',
                       retinaMode: RetinaMode.isHighDensity(context),
+                      tileProvider: CachedTileProvider.instance,
                     ),
                     PolylineLayer(
                       polylines: [

@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash_application/screens/calendar_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:latlong2/latlong.dart';
 import '../models/home_models.dart';
 import '../models/home_badge_ui_model.dart';
 import '../services/badge_service.dart';
@@ -350,17 +351,26 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _createRoute() {
+  Future<void> _createRoute() async {
     setState(() => _showRunOverlay = false);
-    Navigator.of(context).push(
+    final runRoute = await Navigator.of(context).push<List<LatLng>>(
       MaterialPageRoute(builder: (_) => const RouteCreatePage()),
     );
+    if (runRoute != null && mounted) {
+      await _pushRunTracking(plannedRoute: runRoute);
+    }
   }
 
   Future<void> _startRunNow() async {
     setState(() => _showRunOverlay = false);
+    await _pushRunTracking();
+  }
+
+  Future<void> _pushRunTracking({List<LatLng>? plannedRoute}) async {
     final summary = await Navigator.of(context).push<RunSummary>(
-      MaterialPageRoute(builder: (_) => const RunTrackingPage()),
+      MaterialPageRoute(
+        builder: (_) => RunTrackingPage(plannedRoute: plannedRoute),
+      ),
     );
     if (summary == null || !mounted) return;
 

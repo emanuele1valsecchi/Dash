@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../config/map_style.dart';
+import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
 import '../services/routing_service.dart';
 import '../services/run_session_repository.dart';
@@ -488,6 +489,7 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
           urlTemplate: MapStyle.terrainTileUrl,
           userAgentPackageName: 'com.dash',
           retinaMode: RetinaMode.isHighDensity(context),
+          tileProvider: CachedTileProvider.instance,
         ),
 
         // ── Claimed areas (display only — no tap-to-view here) ─────────────
