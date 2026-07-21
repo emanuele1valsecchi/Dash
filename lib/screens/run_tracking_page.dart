@@ -12,6 +12,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../config/map_style.dart';
 import '../models/water_fountain.dart';
+import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
 import '../services/run_session_repository.dart';
@@ -51,7 +52,12 @@ class RunSummary {
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 class RunTrackingPage extends StatefulWidget {
-  const RunTrackingPage({super.key});
+  const RunTrackingPage({super.key, this.plannedRoute});
+
+  /// Optional route to display as a thin static guide line, when the user
+  /// chose "Save route and Run" from route creation. Purely visual — this
+  /// screen doesn't track on/off-route state or reroute if the user strays.
+  final List<LatLng>? plannedRoute;
 
   @override
   State<RunTrackingPage> createState() => _RunTrackingPageState();
@@ -62,6 +68,13 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   final MapController _mapController = MapController();
   static const double _defaultZoom = 18.0;
   bool _isMapExpanded = false;
+
+  /// Separate controller for the small live map preview shown in
+  /// [_buildStatsView] (see [_buildMapPreviewCard]) — a distinct [FlutterMap]
+  /// from the expanded one, so it needs its own controller; recentered from
+  /// [_onDotTick] whenever the expanded map isn't the one on screen.
+  final MapController _previewMapController = MapController();
+  static const double _previewZoom = 16.0;
 
   /// Whether the map is auto-recentering on the runner. Turned off by the
   /// "see whole path" button so the overview it animates to doesn't get
@@ -248,12 +261,21 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// distance/pace/loop-closure — none of that math is affected by this.
   final List<LatLng> _trailPoints = [];
 
+  /// [RunTrackingPage.plannedRoute] run through [GeometryUtils.smoothPolyline]
+  /// once at startup — purely a rendering concern, so the raw
+  /// `widget.plannedRoute` (same start/end points either way) is still what
+  /// distance/proximity checks use.
+  List<LatLng>? _smoothedPlannedRoute;
+
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   @override
   void initState() {
     super.initState();
     _dotTicker = createTicker(_onDotTick)..start();
+    final route = widget.plannedRoute;
+    _smoothedPlannedRoute =
+        (route != null && route.length >= 3) ? GeometryUtils.smoothPolyline(route) : route;
     _initLocation();
     _loadClaimedAreas();
   }
@@ -271,6 +293,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     _countdownTimer?.cancel();
     _dotTicker.dispose();
     _mapController.dispose();
+    _previewMapController.dispose();
     super.dispose();
   }
 
@@ -320,7 +343,63 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
       setState(() => _isLoadingLocation = false);
     }
 
+    if (!await _confirmStartProximity()) {
+      if (mounted) Navigator.of(context).pop();
+      return;
+    }
+
     _startCountdown();
+  }
+
+  /// If a [RunTrackingPage.plannedRoute] is set and the runner's current fix
+  /// is far from its start, ask before proceeding rather than silently
+  /// starting a run far from where it was planned. Returns true when it's
+  /// fine to proceed (no planned route, already close enough, or the user
+  /// chose to continue anyway).
+  Future<bool> _confirmStartProximity() async {
+    final route = widget.plannedRoute;
+    if (route == null || route.isEmpty || _currentPosition == null) {
+      return true;
+    }
+    const dist = Distance();
+    final startDistance = dist(_currentPosition!, route.first);
+    if (startDistance <= _maxStartDistanceMeters) return true;
+
+    final proceed = await _showConfirmDialog(
+      title: 'Far from route start',
+      message: "You're about ${startDistance.round()}m from the start of "
+          'this route. Continue anyway?',
+      confirmLabel: 'Continue',
+      destructive: false,
+    );
+    return proceed == true;
+  }
+
+  /// Beyond this distance from the route's start, draw [_startConnectorLine]
+  /// so the runner can see which way to head — much smaller than
+  /// [_maxStartDistanceMeters] (which only gates the one-time warning
+  /// dialog), so the line stays a lightweight visual aid at everyday
+  /// distances and only disappears once the runner has actually arrived.
+  static const double _startConnectorMinDistanceMeters = 15.0;
+
+  /// A thin dashed straight line from the runner to the planned route's
+  /// start, shown whenever they're not already there. Deliberately just a
+  /// straight "as the crow flies" line, not a routed path — no live
+  /// rerouting/navigation is built for this, per the off-route decision (see
+  /// RunTrackingPage.plannedRoute doc).
+  Polyline? get _startConnectorLine {
+    final route = widget.plannedRoute;
+    final pos = _displayedPosition ?? _currentPosition;
+    if (route == null || route.isEmpty || pos == null) return null;
+    final startDistance = const Distance()(pos, route.first);
+    if (startDistance < _startConnectorMinDistanceMeters) return null;
+
+    return Polyline(
+      points: [pos, route.first],
+      color: Colors.blue.withValues(alpha: 0.6),
+      strokeWidth: 2.0,
+      pattern: StrokePattern.dashed(segments: const [8, 6]),
+    );
   }
 
   void _recordAltitude(double altitude) {
@@ -413,6 +492,10 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   // value; once a Settings page exists, wire a "Battery saver" toggle to
   // switch between the two instead of hardcoding one.
   static const int _distanceFilterMeters = 2;
+
+  /// Beyond this distance from a [RunTrackingPage.plannedRoute]'s start, warn
+  /// the user before starting the run instead of silently proceeding.
+  static const double _maxStartDistanceMeters = 150.0;
 
   void _startPositionStream() {
     _positionSub = Geolocator.getPositionStream(
@@ -542,6 +625,12 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
         _mapController.moveAndRotate(newDisplayed, _mapController.camera.zoom, -(newHeading ?? 0));
       } catch (_) {
         // Map not attached yet — next tick will re-attempt.
+      }
+    } else if (!_isMapExpanded) {
+      try {
+        _previewMapController.move(newDisplayed, _previewZoom);
+      } catch (_) {
+        // Preview map not mounted (e.g. during countdown) — next tick retries.
       }
     }
   }
@@ -1126,7 +1215,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                 const SizedBox(height: 18),
                 _LoopIndicator(loopsCompleted: _loopsCompleted),
                 const SizedBox(height: 18),
-                _MapPreviewButton(onTap: _toggleMapExpanded),
+                _buildMapPreviewCard(),
               ],
             ),
           ),
@@ -1276,6 +1365,102 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     );
   }
 
+  /// Small live map card shown in [_buildStatsView] in place of a static
+  /// "view map" button — a separate, non-interactive [FlutterMap] (its own
+  /// [_previewMapController], recentered from [_onDotTick]) that mirrors the
+  /// runner's live position and route so there's something to actually see
+  /// before tapping through to [_buildExpandedMapView].
+  Widget _buildMapPreviewCard() {
+    final center = _displayedPosition ?? _currentPosition;
+    if (center == null) return const SizedBox.shrink();
+    final connector = _startConnectorLine;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: SizedBox(
+        height: 160,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            FlutterMap(
+              mapController: _previewMapController,
+              options: MapOptions(
+                initialCenter: center,
+                initialZoom: _previewZoom,
+                interactionOptions: const InteractionOptions(flags: InteractiveFlag.none),
+                // Tap detection is independent of the pan/zoom flags above,
+                // so this fires even with interactions fully disabled —
+                // matches the existing onTap pattern used for map taps
+                // elsewhere (e.g. RouteCreatePage's pin-drop handler).
+                onTap: (_, _) => _toggleMapExpanded(),
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: MapStyle.terrainTileUrl,
+                  userAgentPackageName: 'com.dash',
+                  retinaMode: RetinaMode.isHighDensity(context),
+                  tileProvider: CachedTileProvider.instance,
+                ),
+                if (_smoothedPlannedRoute != null && _smoothedPlannedRoute!.length >= 2)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: _smoothedPlannedRoute!,
+                        color: const Color(0xFF2E7D32).withValues(alpha: 0.55),
+                        strokeWidth: 2.5,
+                      ),
+                    ],
+                  ),
+                if (connector != null) PolylineLayer(polylines: [connector]),
+                if (_trailPoints.length >= 2)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(points: _trailPoints, color: const Color(0xFF4A8C52), strokeWidth: 4.0),
+                    ],
+                  ),
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: center,
+                      width: 36,
+                      height: 36,
+                      child: Transform.scale(scale: 0.6, child: const _RunnerLocationDot()),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            Positioned(
+              right: 10,
+              bottom: 10,
+              child: IgnorePointer(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.open_in_full_rounded, size: 14, color: Color(0xFF4A8C52)),
+                      SizedBox(width: 6),
+                      Text(
+                        'Expand',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF425143)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildMap() {
     return FlutterMap(
       mapController: _mapController,
@@ -1292,6 +1477,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           urlTemplate: MapStyle.terrainTileUrl,
           userAgentPackageName: 'com.dash',
           retinaMode: RetinaMode.isHighDensity(context),
+          tileProvider: CachedTileProvider.instance,
         ),
 
         // ── Claimed areas (as of when this run started — not refreshed
@@ -1311,6 +1497,24 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                     ))
                 .toList(),
           ),
+
+        // ── Planned-route guide line (static — no on/off-route tracking or
+        // rerouting, see RunTrackingPage.plannedRoute) ──────────────────
+        if (_smoothedPlannedRoute != null && _smoothedPlannedRoute!.length >= 2)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: _smoothedPlannedRoute!,
+                color: const Color(0xFF2E7D32).withValues(alpha: 0.55),
+                strokeWidth: 3.0,
+              ),
+            ],
+          ),
+
+        // ── Dashed connector from the runner to the route's start, while
+        // they're still far enough from it to be useful ─────────────────
+        if (_startConnectorLine case final connector?)
+          PolylineLayer(polylines: [connector]),
 
         // ── Breadcrumb trail (paint left behind the runner) ──────────────
         if (_trailPoints.length >= 2)
@@ -1425,43 +1629,6 @@ class _LoopIndicator extends StatelessWidget {
               style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: fg),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-// ── Map preview button ───────────────────────────────────────────────────────
-
-class _MapPreviewButton extends StatelessWidget {
-  final VoidCallback onTap;
-
-  const _MapPreviewButton({required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(18),
-      elevation: 1,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: onTap,
-        child: const Padding(
-          padding: EdgeInsets.symmetric(vertical: 14, horizontal: 18),
-          child: Row(
-            children: [
-              Icon(Icons.map_rounded, color: Color(0xFF4A8C52), size: 22),
-              SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  'View live map',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF425143)),
-                ),
-              ),
-              Icon(Icons.chevron_right_rounded, color: Color(0xFF9AA294)),
-            ],
-          ),
         ),
       ),
     );

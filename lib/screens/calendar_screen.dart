@@ -6,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'session_detail_screen.dart';
 import '../config/map_style.dart';
+import '../services/cached_tile_provider.dart';
 
 class CalendarScreen extends StatefulWidget {
   const CalendarScreen({super.key});
@@ -337,9 +338,10 @@ class SessionCard extends StatelessWidget {
                   ),
                   children: [
                     TileLayer(
-                      urlTemplate: MapStyle.terrainTileUrl, 
+                      urlTemplate: MapStyle.terrainTileUrl,
                       userAgentPackageName: 'com.dash',
                       retinaMode: RetinaMode.isHighDensity(context),
+                      tileProvider: CachedTileProvider.instance,
                     ),
                     PolylineLayer(
                       polylines: [

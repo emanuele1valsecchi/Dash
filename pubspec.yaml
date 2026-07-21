@@ -58,6 +58,9 @@ dependencies:
   geolocator: ^13.0.2
   http: ^1.6.0
   cached_network_image: ^3.4.1
+  # Already resolved transitively via cached_network_image; declared directly
+  # since CachedTileProvider (map tile disk caching) now uses it as well.
+  flutter_cache_manager: ^3.4.1
   table_calendar: ^3.2.0
   shared_preferences: ^2.5.5
 

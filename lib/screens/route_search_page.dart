@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
 import '../config/map_style.dart';
+import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
 import '../services/routing_service.dart';
@@ -567,6 +568,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
           urlTemplate: MapStyle.terrainTileUrl,
           userAgentPackageName: 'com.dash',
           retinaMode: RetinaMode.isHighDensity(context),
+          tileProvider: CachedTileProvider.instance,
         ),
 
         // ── Claimed areas (display only) ────────────────────────────────

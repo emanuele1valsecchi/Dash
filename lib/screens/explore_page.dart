@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../config/map_style.dart';
+import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
 import '../widgets/map/area_details_sheet.dart';
@@ -194,6 +195,7 @@ class _ExplorePageState extends State<ExplorePage> {
           urlTemplate: MapStyle.terrainTileUrl,
           userAgentPackageName: 'com.dash',
           retinaMode: RetinaMode.isHighDensity(context),
+          tileProvider: CachedTileProvider.instance,
         ),
         // Claimed areas — filtered by the grid ("other users'") and cable
         // ("my own") panel toggles.
@@ -317,7 +319,10 @@ class _ExplorePageState extends State<ExplorePage> {
               borderRadius: BorderRadius.circular(12),
               boxShadow: const [
                 BoxShadow(
-                    color: Colors.black26, blurRadius: 6, offset: Offset(0, 2)),
+                  color: Colors.black26,
+                  blurRadius: 6,
+                  offset: Offset(0, 2),
+                ),
               ],
             ),
             child: Column(
