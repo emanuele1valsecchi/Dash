@@ -68,6 +68,19 @@ class GeometryUtils {
     return (area / 2).abs();
   }
 
+  /// Formats an area in square metres as a string in km² — always, never
+  /// m² or hectares, so every area shown anywhere in the app (loop-closure
+  /// banners, claimed-area details, run results) uses one consistent unit.
+  /// Decimal precision scales with magnitude rather than staying fixed at 2
+  /// places, since a fixed 2 decimals would round most ordinary loop sizes
+  /// (a few hundred to a few thousand m²) straight down to "0.00 km²".
+  static String formatAreaKm2(double areaM2) {
+    final km2 = areaM2 / 1000000;
+    if (km2 >= 1) return '${km2.toStringAsFixed(2)} km²';
+    if (km2 >= 0.01) return '${km2.toStringAsFixed(3)} km²';
+    return '${km2.toStringAsFixed(4)} km²';
+  }
+
   /// Scans a live GPS breadcrumb trail for a point that closes a loop with
   /// the trail's current tip.
   ///

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -29,21 +30,32 @@ class TestRunCreatorPage extends StatefulWidget {
   State<TestRunCreatorPage> createState() => _TestRunCreatorPageState();
 }
 
+enum _Tool { pinDrop, freeDraw }
+
 // ── History snapshot ───────────────────────────────────────────────────────────
 
 class _RunSnapshot {
   final List<LatLng> waypoints;
   final List<RouteSegment> segments;
-  final bool isLoopClosed;
-  final List<LatLng> loopPolygon;
-  final double loopAreaM2;
+
+  /// Every loop closed so far — plural, since a test run can close more
+  /// than one separate area (see `_activeLoopStartSegment`).
+  final List<List<LatLng>> loopPolygons;
+  final List<double> loopAreasM2;
+  final int activeLoopStartSegment;
+
+  /// How many *leading* waypoints came from the most recent freehand-draw
+  /// conversion (0 if built purely by tapping pins) — see
+  /// `_isHiddenWaypoint`.
+  final int drawnPointsCount;
 
   _RunSnapshot({
     required this.waypoints,
     required this.segments,
-    this.isLoopClosed = false,
-    this.loopPolygon = const [],
-    this.loopAreaM2 = 0.0,
+    this.loopPolygons = const [],
+    this.loopAreasM2 = const [],
+    this.activeLoopStartSegment = 0,
+    this.drawnPointsCount = 0,
   });
 }
 
@@ -78,17 +90,63 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
   bool _isRouting = false;
 
   // ── Loop state ────────────────────────────────────────────────────────────
-  bool _isLoopClosed = false;
-  List<LatLng> _loopPolygon = [];
-  double _loopAreaM2 = 0.0;
+  // Plural: placing more pins after a loop closes is allowed, and each
+  // closure is kept rather than overwritten, so a single test run can claim
+  // several separate areas (mirrors RouteCreatePage).
+  List<List<LatLng>> _loopPolygons = [];
+  List<double> _loopAreasM2 = [];
+
+  /// Index into [_segments]/[_waypoints] (kept in lockstep at
+  /// `segments.length == waypoints.length - 1`) where the *current*,
+  /// not-yet-closed loop starts. See RouteCreatePage's field of the same
+  /// name for the full rationale — scopes self-intersection/snap-to-waypoint
+  /// checks so a new segment can't get matched against an already-finalised
+  /// loop's own geometry.
+  int _activeLoopStartSegment = 0;
 
   // ── Undo / redo ───────────────────────────────────────────────────────────
   final List<_RunSnapshot> _history = [_RunSnapshot(waypoints: [], segments: [])];
   int _historyIndex = 0;
-  bool get _canUndo => _historyIndex > 0 && !_isRouting;
-  bool get _canRedo => _historyIndex < _history.length - 1 && !_isRouting;
+
+  // Also blocked while converting a drawn stroke — see
+  // `_isConvertingDrawing`'s doc comment (mirrors RouteCreatePage).
+  bool get _canUndo =>
+      _historyIndex > 0 && !_isRouting && !_isConvertingDrawing;
+  bool get _canRedo =>
+      _historyIndex < _history.length - 1 &&
+      !_isRouting &&
+      !_isConvertingDrawing;
 
   bool _isDeleteMode = false;
+
+  // ── Tools ─────────────────────────────────────────────────────────────────
+  _Tool _activeTool = _Tool.pinDrop;
+
+  // ── Freehand drawing (mirrors RouteCreatePage) ────────────────────────────
+  // One-shot: only usable to lay down the very first shape on an empty run,
+  // never to append a second drawn stroke onto an already-drawn (or
+  // already-pinned) one.
+
+  /// Raw finger path for the current in-progress stroke — live visual
+  /// feedback only; the converted route is built from a downsampled copy.
+  final List<LatLng> _drawnPoints = [];
+
+  /// True only while a just-finished stroke is being converted into routed
+  /// waypoints — guards against starting a second stroke mid-conversion.
+  bool _isConvertingDrawing = false;
+
+  /// How many leading waypoints came from the last draw conversion — see
+  /// `_RunSnapshot.drawnPointsCount`. Reset to 0 by anything that breaks the
+  /// assumption that this prefix is still exactly what drawing produced.
+  int _drawnPointsCount = 0;
+
+  /// A waypoint drawn as part of a freehand stroke, other than its very
+  /// first or last point, is never rendered as a pin — see RouteCreatePage's
+  /// `_isHiddenWaypoint` for the full rationale.
+  bool _isHiddenWaypoint(int index) =>
+      _drawnPointsCount > 2 && index > 0 && index < _drawnPointsCount - 1;
+
+  bool get _canUseDrawTool => _waypoints.isEmpty;
 
   // ── Form ──────────────────────────────────────────────────────────────────
   final TextEditingController _nameCtrl = TextEditingController();
@@ -98,6 +156,7 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
   // ── Derived stats ─────────────────────────────────────────────────────────
   double get _totalDistanceKm => _segments.fold(0.0, (s, seg) => s + seg.distanceMeters) / 1000;
   double get _estimatedCalories => _totalDistanceKm * 70.0;
+  double get _totalLoopAreaM2 => _loopAreasM2.fold(0.0, (a, b) => a + b);
 
   // ── Constants ─────────────────────────────────────────────────────────────
   static const double _defaultZoom = 15.0;
@@ -162,9 +221,10 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
     _history.add(_RunSnapshot(
       waypoints: List<LatLng>.from(_waypoints),
       segments: List<RouteSegment>.from(_segments),
-      isLoopClosed: _isLoopClosed,
-      loopPolygon: List<LatLng>.from(_loopPolygon),
-      loopAreaM2: _loopAreaM2,
+      loopPolygons: _loopPolygons.map(List<LatLng>.from).toList(),
+      loopAreasM2: List<double>.from(_loopAreasM2),
+      activeLoopStartSegment: _activeLoopStartSegment,
+      drawnPointsCount: _drawnPointsCount,
     ));
     _historyIndex++;
   }
@@ -173,9 +233,10 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
     setState(() {
       _waypoints = List<LatLng>.from(snap.waypoints);
       _segments = List<RouteSegment>.from(snap.segments);
-      _isLoopClosed = snap.isLoopClosed;
-      _loopPolygon = List<LatLng>.from(snap.loopPolygon);
-      _loopAreaM2 = snap.loopAreaM2;
+      _loopPolygons = snap.loopPolygons.map(List<LatLng>.from).toList();
+      _loopAreasM2 = List<double>.from(snap.loopAreasM2);
+      _activeLoopStartSegment = snap.activeLoopStartSegment;
+      _drawnPointsCount = snap.drawnPointsCount;
     });
   }
 
@@ -194,10 +255,22 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
   // ── Map tap entry point ───────────────────────────────────────────────────
 
   Future<void> _onMapTap(LatLng tapPoint) async {
-    if (_isRouting || _isDeleteMode || _isLoopClosed) return;
+    // A closed loop no longer blocks placing more pins — a test run can
+    // close as many separate areas as needed (see `_activeLoopStartSegment`).
+    if (_isRouting || _isDeleteMode) return;
 
+    if (_activeTool == _Tool.freeDraw) {
+      // Drawing is a press-and-drag gesture handled separately (see
+      // `_buildDrawGestureOverlay`/`_onDrawPanStart` etc.) — a plain tap
+      // while the tool is selected does nothing.
+      return;
+    }
+
+    // Only snap to waypoints in the *current*, not-yet-closed loop — see
+    // RouteCreatePage's `_onMapTap` for why snapping into an already-closed
+    // loop would produce a polygon spanning both.
     if (_waypoints.length >= 2) {
-      for (int i = 0; i < _waypoints.length - 1; i++) {
+      for (int i = _activeLoopStartSegment; i < _waypoints.length - 1; i++) {
         if (const Distance()(_waypoints[i], tapPoint) <= _snapThresholdMeters) {
           await _routeAndCloseAtWaypoint(i);
           return;
@@ -205,17 +278,26 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
       }
     }
 
-    final prev = _waypoints.isNotEmpty ? _waypoints.last : null;
-    setState(() => _waypoints.add(tapPoint));
+    await _extendRouteTo(tapPoint);
+    if (!mounted) return;
+    _pushHistory();
+  }
 
-    if (prev == null) {
-      _pushHistory();
-      return;
-    }
+  /// Adds [point] as the next waypoint — routing from the current route tip
+  /// (if any) to it, and checking whether the new segment closes a loop —
+  /// without pushing undo/redo history (`_onMapTap` pushes it once right
+  /// after). A drawn stroke does *not* go through this — see
+  /// `_convertDrawingToRoute`, which needs retry/skip-ahead behaviour this
+  /// straight-to-fallback version doesn't have.
+  Future<void> _extendRouteTo(LatLng point) async {
+    final prev = _waypoints.isNotEmpty ? _waypoints.last : null;
+    setState(() => _waypoints.add(point));
+
+    if (prev == null) return; // first pin — nothing to route yet
 
     setState(() => _isRouting = true);
-    final seg = await RoutingService.fetchRoute(prev, tapPoint) ??
-        RoutingService.straightLine(prev, tapPoint);
+    final seg = await RoutingService.fetchRoute(prev, point) ??
+        RoutingService.straightLine(prev, point);
 
     if (!mounted) return;
     setState(() {
@@ -224,6 +306,172 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
     });
 
     _checkSelfIntersection();
+  }
+
+  // ── Freehand drawing (mirrors RouteCreatePage) ────────────────────────────
+
+  void _onDrawPanStart(DragStartDetails details) {
+    if (!_canUseDrawTool || _isConvertingDrawing) return;
+    setState(() {
+      _drawnPoints
+        ..clear()
+        ..add(_mapController.camera.offsetToCrs(details.localPosition));
+    });
+  }
+
+  void _onDrawPanUpdate(DragUpdateDetails details) {
+    if (!_canUseDrawTool || _isConvertingDrawing || _drawnPoints.isEmpty) {
+      return;
+    }
+    setState(() {
+      _drawnPoints.add(
+        _mapController.camera.offsetToCrs(details.localPosition),
+      );
+    });
+  }
+
+  Future<void> _onDrawPanEnd(DragEndDetails details) async {
+    if (!_canUseDrawTool || _isConvertingDrawing || _drawnPoints.isEmpty) {
+      return;
+    }
+    final rawPoints = List<LatLng>.from(_drawnPoints);
+    setState(() {
+      _drawnPoints.clear();
+      _isConvertingDrawing = true;
+    });
+
+    await _convertDrawingToRoute(rawPoints);
+
+    if (!mounted) return;
+    setState(() {
+      _isConvertingDrawing = false;
+      // Only actually switch tools if the stroke produced a route — a too-
+      // short/jittery gesture is silently rejected by `_sampleDrawnPath`,
+      // leaving the canvas untouched, so let the user just try drawing
+      // again without reselecting the tool. Draw is one-shot
+      // (`_canUseDrawTool`), so once it *did* produce a route, switch back
+      // to Pin automatically.
+      if (_waypoints.isNotEmpty) _activeTool = _Tool.pinDrop;
+    });
+  }
+
+  // Kept modest — see RouteCreatePage's `_maxDrawSamples` for the full
+  // rationale (a shared, rate-limited ORS key means fewer requests per
+  // drawn route matters more than tight shape fidelity).
+  static const int _maxDrawSamples = 15;
+  static const double _minDrawSampleSpacingMeters = 40;
+  static const double _minDrawPathLengthMeters = 20;
+
+  /// Downsamples a raw finger path to a manageable number of waypoints —
+  /// see RouteCreatePage's `_sampleDrawnPath` for the full rationale.
+  List<LatLng> _sampleDrawnPath(List<LatLng> raw) {
+    if (raw.length < 2) return const [];
+    const dist = Distance();
+
+    double totalLength = 0;
+    for (int i = 1; i < raw.length; i++) {
+      totalLength += dist(raw[i - 1], raw[i]);
+    }
+    if (totalLength < _minDrawPathLengthMeters) return const [];
+
+    final spacing = math.max(
+      _minDrawSampleSpacingMeters,
+      totalLength / _maxDrawSamples,
+    );
+
+    final sampled = <LatLng>[raw.first];
+    double accumulated = 0;
+    for (int i = 1; i < raw.length; i++) {
+      accumulated += dist(raw[i - 1], raw[i]);
+      if (accumulated >= spacing) {
+        sampled.add(raw[i]);
+        accumulated = 0;
+      }
+    }
+    if (sampled.last != raw.last) sampled.add(raw.last);
+    return sampled;
+  }
+
+  /// Retries a single failed road-snap request before giving up on it — see
+  /// RouteCreatePage's `_fetchRoadRouteWithRetry` for the full rationale.
+  /// Never retries a 429 specifically.
+  static const int _drawRouteMaxRetries = 1;
+
+  /// If a hop still fails after retries, how many additional samples ahead
+  /// to try reaching in one longer hop before giving up on it — see
+  /// RouteCreatePage's `_drawRouteMaxSkipAhead` (kept small so a struggling
+  /// hop doesn't itself amplify request volume into more throttling).
+  static const int _drawRouteMaxSkipAhead = 2;
+
+  Future<RouteSegment?> _fetchRoadRouteWithRetry(LatLng from, LatLng to) async {
+    for (int attempt = 0; ; attempt++) {
+      final seg = await RoutingService.fetchRoute(
+        from,
+        to,
+        throwOnRateLimit: true,
+      );
+      if (seg != null || attempt >= _drawRouteMaxRetries) return seg;
+      await Future.delayed(const Duration(milliseconds: 350));
+    }
+  }
+
+  /// Converts a finished freehand stroke into an actual routed sequence of
+  /// waypoints — see RouteCreatePage's `_convertDrawingToRoute` for the full
+  /// rationale (retry + reach-further-ahead instead of falling back to a
+  /// raw straight line the moment one hop fails, so the drawn route stays
+  /// road-snapped even where the finger path itself wandered off any real
+  /// path). Pushes undo/redo history once for the whole conversion, not
+  /// once per sampled point.
+  Future<void> _convertDrawingToRoute(List<LatLng> rawPoints) async {
+    final sampled = _sampleDrawnPath(rawPoints);
+    if (sampled.length < 2) return;
+
+    setState(() {
+      _isRouting = true;
+      _waypoints.add(sampled.first);
+    });
+
+    int i = 1;
+    while (i < sampled.length) {
+      if (!mounted) return;
+
+      RouteSegment? seg;
+      int target = i;
+      int skipped = 0;
+      while (true) {
+        try {
+          seg = await _fetchRoadRouteWithRetry(_waypoints.last, sampled[target]);
+        } on RoutingRateLimitedException {
+          // Actively throttled — don't reach further ahead into the same
+          // wall. Accept a straight line for this hop only and let the
+          // next one try fresh.
+          seg = null;
+          break;
+        }
+        if (seg != null) break;
+        if (skipped >= _drawRouteMaxSkipAhead || target == sampled.length - 1) {
+          break;
+        }
+        skipped++;
+        target++;
+      }
+      if (!mounted) return;
+
+      seg ??= RoutingService.straightLine(_waypoints.last, sampled[target]);
+
+      setState(() {
+        _waypoints.add(sampled[target]);
+        _segments.add(seg!);
+      });
+      _checkSelfIntersection();
+      i = target + 1;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isRouting = false;
+      _drawnPointsCount = _waypoints.length;
+    });
     _pushHistory();
   }
 
@@ -248,12 +496,14 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
   // ── Self-intersection detection (mirrors RouteCreatePage) ────────────────
 
   void _checkSelfIntersection() {
-    if (_segments.length < 2) return;
+    // Scoped to segments added since the last loop closed — see
+    // RouteCreatePage's `_checkSelfIntersection` for the full rationale.
+    if (_segments.length - _activeLoopStartSegment < 2) return;
 
     final newPoly = _segments.last.polyline;
     final prevCount = _segments.length - 1;
 
-    for (int si = 0; si < prevCount; si++) {
+    for (int si = _activeLoopStartSegment; si < prevCount; si++) {
       final existPoly = _segments[si].polyline;
       final isAdjacent = si == prevCount - 1;
 
@@ -334,21 +584,29 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
     final area = GeometryUtils.polygonAreaM2(polygon);
     if (area < _minLoopAreaM2) return;
     setState(() {
-      _loopPolygon = polygon;
-      _loopAreaM2 = area;
-      _isLoopClosed = true;
+      _loopPolygons = [..._loopPolygons, polygon];
+      _loopAreasM2 = [..._loopAreasM2, area];
+      _activeLoopStartSegment = _segments.length;
     });
   }
 
   // ── Pin deletion ──────────────────────────────────────────────────────────
 
   Future<void> _deletePin(int index) async {
-    if (_isRouting) return;
+    // `_isRouting` alone isn't enough while a drawn stroke is converting —
+    // it flickers false between that conversion's sequential fetches.
+    if (_isRouting || _isConvertingDrawing) return;
 
+    // Deleting any pin breaks the current topology — clear every loop
+    // closed so far and restart loop-detection from scratch. Also un-hides
+    // any drawn-segment interior points, since indices shifting under a
+    // deletion means "the first N waypoints came from drawing" is no
+    // longer a safe assumption to render off of.
     setState(() {
-      _isLoopClosed = false;
-      _loopPolygon = [];
-      _loopAreaM2 = 0.0;
+      _loopPolygons = [];
+      _loopAreasM2 = [];
+      _activeLoopStartSegment = 0;
+      _drawnPointsCount = 0;
     });
 
     final newWaypoints = List<LatLng>.from(_waypoints);
@@ -441,9 +699,9 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
         maxPaceMinPerKm: avgPace,
         caloriesBurned: _estimatedCalories,
         elevationDifferenceMeters: 0.0,
-        loopsCompleted: _isLoopClosed ? 1 : 0,
+        loopsCompleted: _loopPolygons.length,
         path: poly,
-        closedLoops: _isLoopClosed ? [_loopPolygon] : [],
+        closedLoops: _loopPolygons,
       );
       if (!mounted) return;
       await showRunResultsDialog(
@@ -476,6 +734,11 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
       body: Stack(
         children: [
           _buildMap(),
+          // Sits directly above the map (so it can capture the drawing
+          // gesture) but below the sheet/buttons/top bar (so those still
+          // get their own taps first via normal Z-order hit-testing).
+          if (_activeTool == _Tool.freeDraw && _canUseDrawTool)
+            _buildDrawGestureOverlay(),
           if (_isLoadingLocation) _buildLoadingOverlay(),
           SafeArea(child: _buildTopBar()),
           _buildSheet(),
@@ -488,11 +751,23 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
   // ── Map ───────────────────────────────────────────────────────────────────
 
   Widget _buildMap() {
+    // Pan is disabled for the duration of Draw mode (pinch-zoom/rotate stay
+    // on) — see RouteCreatePage's `_buildMap` for the full rationale: a
+    // single-finger drag needs to mean "draw a shape", not "pan the map",
+    // and the drawing gesture is captured by a separate overlay instead of
+    // fighting flutter_map's own pan recognizer for the same gesture.
+    final drawModeActive = _activeTool == _Tool.freeDraw && _canUseDrawTool;
+
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
         initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
         initialZoom: _defaultZoom,
+        interactionOptions: InteractionOptions(
+          flags: drawModeActive
+              ? InteractiveFlag.pinchZoom | InteractiveFlag.rotate
+              : InteractiveFlag.all,
+        ),
         onTap: (_, point) => _onMapTap(point),
       ),
       children: [
@@ -506,15 +781,16 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
         // ── Claimed areas (display only — no tap-to-view here) ─────────────
         ClaimedAreasLayer(areas: _visibleAreas),
 
-        if (_loopPolygon.length >= 3)
+        if (_loopPolygons.isNotEmpty)
           PolygonLayer(
             polygons: [
-              Polygon(
-                points: _loopPolygon,
-                color: const Color(0xFF4A8C52).withValues(alpha: 0.15),
-                borderColor: const Color(0xFF4A8C52).withValues(alpha: 0.55),
-                borderStrokeWidth: 2.0,
-              ),
+              for (final loop in _loopPolygons)
+                Polygon(
+                  points: loop,
+                  color: const Color(0xFF4A8C52).withValues(alpha: 0.15),
+                  borderColor: const Color(0xFF4A8C52).withValues(alpha: 0.55),
+                  borderStrokeWidth: 2.0,
+                ),
             ],
           ),
         if (_segments.isNotEmpty)
@@ -533,29 +809,63 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
               ),
             ],
           ),
+        // ── Live freehand-drawing trail (raw finger path, not yet
+        // road-snapped) ────────────────────────────────────────────────
+        if (_drawnPoints.length >= 2)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: _drawnPoints,
+                color: const Color(0xFF4A8C52).withValues(alpha: 0.6),
+                strokeWidth: 3.0,
+                pattern: StrokePattern.dashed(segments: const [6, 6]),
+              ),
+            ],
+          ),
         if (_currentPosition != null)
           MarkerLayer(
             markers: [
               Marker(point: _currentPosition!, width: 60, height: 60, child: const _LocationDot()),
             ],
           ),
+        // Interior points of a drawn segment are excluded here — see
+        // `_isHiddenWaypoint` — so a drawn shape only ever shows a start
+        // and finish pin, never one per road-snap sample.
         if (_waypoints.isNotEmpty)
           MarkerLayer(
-            markers: _waypoints.asMap().entries.map((e) {
-              final idx = e.key;
-              return Marker(
-                point: e.value,
-                width: 36,
-                height: 36,
-                child: _PinMarker(
-                  index: idx,
-                  isDeleteMode: _isDeleteMode,
-                  onTap: _isDeleteMode ? () => _deletePin(idx) : null,
-                ),
-              );
-            }).toList(),
+            markers: _waypoints
+                .asMap()
+                .entries
+                .where((e) => !_isHiddenWaypoint(e.key))
+                .map((e) {
+                  final idx = e.key;
+                  return Marker(
+                    point: e.value,
+                    width: 36,
+                    height: 36,
+                    child: _PinMarker(
+                      index: idx,
+                      isDeleteMode: _isDeleteMode,
+                      onTap: _isDeleteMode ? () => _deletePin(idx) : null,
+                    ),
+                  );
+                })
+                .toList(),
           ),
       ],
+    );
+  }
+
+  /// Captures the freehand-drawing gesture — see RouteCreatePage's
+  /// `_buildDrawGestureOverlay` for the full rationale.
+  Widget _buildDrawGestureOverlay() {
+    return Positioned.fill(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: _onDrawPanStart,
+        onPanUpdate: _onDrawPanUpdate,
+        onPanEnd: _onDrawPanEnd,
+      ),
     );
   }
 
@@ -666,6 +976,20 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
                     onTap:
                         _waypoints.isNotEmpty ? () => setState(() => _isDeleteMode = !_isDeleteMode) : null,
                   ),
+                  const SizedBox(width: 6),
+                  _ToolButton(
+                    icon: Icons.edit_outlined,
+                    label: 'Draw',
+                    active: _activeTool == _Tool.freeDraw && !_isDeleteMode,
+                    // One-shot — only usable to lay down the very first
+                    // shape on an empty run (see `_canUseDrawTool`).
+                    onTap: _canUseDrawTool
+                        ? () => setState(() {
+                            _activeTool = _Tool.freeDraw;
+                            _isDeleteMode = false;
+                          })
+                        : null,
+                  ),
                   if (_isRouting) ...[
                     const SizedBox(width: 8),
                     const SizedBox(
@@ -737,7 +1061,11 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
                       Expanded(
                         flex: 2,
                         child: ElevatedButton.icon(
-                          onPressed: (_waypoints.length >= 2 && _manualMinutes != null && !_isPublishing)
+                          onPressed:
+                              (_waypoints.length >= 2 &&
+                                  _manualMinutes != null &&
+                                  !_isPublishing &&
+                                  !_isConvertingDrawing)
                               ? _publish
                               : null,
                           icon: _isPublishing
@@ -799,9 +1127,12 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
             _MiniStat(icon: Icons.local_fire_department_outlined, label: 'Calories', value: calLabel),
           ],
         ),
-        if (_isLoopClosed) ...[
+        if (_loopPolygons.isNotEmpty) ...[
           const SizedBox(height: 8),
-          _LoopAreaBanner(areaM2: _loopAreaM2),
+          _LoopAreaBanner(
+            areaM2: _totalLoopAreaM2,
+            loopCount: _loopPolygons.length,
+          ),
         ],
       ],
     );
@@ -938,16 +1269,22 @@ class _SetTimeDialogState extends State<_SetTimeDialog> {
 
 class _LoopAreaBanner extends StatelessWidget {
   final double areaM2;
-  const _LoopAreaBanner({required this.areaM2});
 
-  String get _areaLabel {
-    if (areaM2 >= 1000000) return '${(areaM2 / 1000000).toStringAsFixed(2)} km²';
-    if (areaM2 >= 10000) return '${(areaM2 / 10000).toStringAsFixed(2)} ha';
-    return '${areaM2.round()} m²';
-  }
+  /// How many separate loops have been closed so far — a test run isn't
+  /// limited to just one, so the label/total reflect all of them combined.
+  final int loopCount;
+
+  const _LoopAreaBanner({required this.areaM2, required this.loopCount});
+
+  String get _areaLabel => GeometryUtils.formatAreaKm2(areaM2);
 
   @override
   Widget build(BuildContext context) {
+    final label = loopCount > 1
+        ? '$loopCount circuits closed!'
+        : 'Circuit closed!';
+    final areaLabelPrefix = loopCount > 1 ? 'Total area' : 'Area';
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
@@ -959,15 +1296,15 @@ class _LoopAreaBanner extends StatelessWidget {
         children: [
           const Icon(Icons.check_circle_outline_rounded, size: 18, color: Color(0xFF2E7D32)),
           const SizedBox(width: 8),
-          const Text(
-            'Circuit closed!',
-            style: TextStyle(color: Color(0xFF2E7D32), fontWeight: FontWeight.w600, fontSize: 13),
+          Text(
+            label,
+            style: const TextStyle(color: Color(0xFF2E7D32), fontWeight: FontWeight.w600, fontSize: 13),
           ),
           const Spacer(),
           const Icon(Icons.crop_free_rounded, size: 16, color: Color(0xFF4A8C52)),
           const SizedBox(width: 6),
           Text(
-            'Area: $_areaLabel',
+            '$areaLabelPrefix: $_areaLabel',
             style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: Color(0xFF2E7D32)),
           ),
         ],

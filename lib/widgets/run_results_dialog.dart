@@ -7,6 +7,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
+import '../utils/geometry_utils.dart';
 
 /// Shows the post-run results popup: stats already known client-side appear
 /// immediately, while XP/territory — written asynchronously by
@@ -124,7 +125,7 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
 
   String get _elevationLabel => '${widget.elevationDifferenceMeters.round()} m';
 
-  String _areaLabel(double areaM2) => '${(areaM2 / 1000000).toStringAsFixed(2)} km²';
+  String _areaLabel(double areaM2) => GeometryUtils.formatAreaKm2(areaM2);
 
   @override
   Widget build(BuildContext context) {

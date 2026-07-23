@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
@@ -8,6 +9,17 @@ class RouteSegment {
   final double distanceMeters;
 
   const RouteSegment({required this.polyline, required this.distanceMeters});
+}
+
+/// Thrown by [RoutingService.fetchRoute] instead of returning null when
+/// [RoutingService.fetchRoute]'s `throwOnRateLimit` is set and ORS responds
+/// 429 — callers that chain many sequential requests (freehand-draw
+/// conversion) need to tell "the API is rejecting us right now, don't
+/// retry" apart from an ordinary one-off failure, since retrying or
+/// reaching for an alternate route during an active rate-limit window just
+/// burns more of the shared quota for no better a result.
+class RoutingRateLimitedException implements Exception {
+  const RoutingRateLimitedException();
 }
 
 /// Calls the OpenRouteService foot-walking endpoint and returns a road-snapped
@@ -24,8 +36,14 @@ class RoutingService {
   static const String _baseUrl =
       'https://api.openrouteservice.org/v2/directions/foot-walking';
 
+  /// [throwOnRateLimit] makes an HTTP 429 throw [RoutingRateLimitedException]
+  /// instead of just returning null — off by default so existing callers
+  /// (single-tap pin placement, pin deletion, snap-to-close) keep their
+  /// original "null on any failure" contract. Only freehand-draw conversion
+  /// opts in, since it's the one caller that chains many sequential requests
+  /// and needs to react to active throttling instead of retrying into it.
   static Future<RouteSegment?> fetchRoute(
-      LatLng origin, LatLng destination) async {
+      LatLng origin, LatLng destination, {bool throwOnRateLimit = false}) async {
     // ORS GET endpoint: start and end are longitude,latitude (GeoJSON order).
     final uri = Uri.parse(
       '$_baseUrl'
@@ -38,7 +56,17 @@ class RoutingService {
       final response =
           await http.get(uri).timeout(const Duration(seconds: 10));
 
-      if (response.statusCode != 200) return null;
+      if (response.statusCode != 200) {
+        debugPrint(
+          'RoutingService.fetchRoute: HTTP ${response.statusCode} for '
+          '(${origin.latitude},${origin.longitude}) -> '
+          '(${destination.latitude},${destination.longitude})',
+        );
+        if (throwOnRateLimit && response.statusCode == 429) {
+          throw const RoutingRateLimitedException();
+        }
+        return null;
+      }
 
       // ORS returns a GeoJSON FeatureCollection.
       // Structure:
@@ -65,7 +93,14 @@ class RoutingService {
           .toList();
 
       return RouteSegment(polyline: polyline, distanceMeters: distance);
-    } catch (_) {
+    } on RoutingRateLimitedException {
+      rethrow;
+    } catch (e) {
+      debugPrint(
+        'RoutingService.fetchRoute: $e for '
+        '(${origin.latitude},${origin.longitude}) -> '
+        '(${destination.latitude},${destination.longitude})',
+      );
       return null;
     }
   }

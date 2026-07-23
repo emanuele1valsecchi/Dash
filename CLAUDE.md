@@ -27,7 +27,105 @@ Keep this list current — update it whenever a feature moves between these buck
 - Email/password + Google Sign-In auth ([lib/services/auth_service.dart](lib/services/auth_service.dart)), session persisted via `FirebaseAuth.authStateChanges` so the user isn't asked to log in every launch ([lib/main.dart](lib/main.dart)).
 - Onboarding, registration, profile setup flow ([lib/screens/onboarding_screen.dart](lib/screens/onboarding_screen.dart), [lib/screens/user_setup_screen.dart](lib/screens/user_setup_screen.dart)).
 - Map exploration page ([lib/screens/explore_page.dart](lib/screens/explore_page.dart)).
-- Route planning: pin-dropping or free-draw on the map, road-snapped via OpenRouteService, with distance/time/calorie estimation, undo/redo history, loop-area detection ([lib/screens/route_create_page.dart](lib/screens/route_create_page.dart), [lib/services/routing_service.dart](lib/services/routing_service.dart), [lib/utils/geometry_utils.dart](lib/utils/geometry_utils.dart)).
+- Route planning: pin-dropping (tap the map) or freehand drawing (press-and-drag a
+  finger across the map) on the map, road-snapped via OpenRouteService, with
+  distance/time/calorie estimation and undo/redo history
+  ([lib/screens/route_create_page.dart](lib/screens/route_create_page.dart), [lib/services/routing_service.dart](lib/services/routing_service.dart), [lib/utils/geometry_utils.dart](lib/utils/geometry_utils.dart)). A route
+  isn't limited to a single closed loop — placing more pins (or, previously, hitting a
+  block) after one closes now continues the route, and each additional loop the path
+  goes on to close is kept, not overwritten (`_loopPolygons`/`_loopAreasM2`, both lists);
+  self-intersection/snap-to-waypoint checks are scoped to only the segments added since
+  the last loop closed (`_activeLoopStartSegment`), so a new segment can't get matched
+  against an already-finalised loop's own geometry. Deleting any pin still conservatively
+  clears every loop closed so far, rather than trying to work out which ones a given
+  deletion actually invalidated. Freehand drawing is one-shot per route — only usable
+  while it's completely empty, never to append a second stroke onto an already-drawn (or
+  already-pinned) route — and works by disabling the map's own pan interaction for the
+  duration (a transparent `GestureDetector` overlay captures the stroke instead, since a
+  single-finger drag would otherwise just pan the map) and, once released, downsampling
+  the raw finger path (one point per pixel of movement) to a manageable number of
+  waypoints (`_sampleDrawnPath`). Converting those samples into a route (`_convertDrawingToRoute`)
+  does *not* reuse the plain tap-to-place pipeline's routing call — a bare
+  `RoutingService.fetchRoute` failure there falls back to an unsnapped straight line, which
+  is exactly what let a drawn route visibly cut across buildings/fields when one of the many
+  chained ORS calls a drawing produces (up to `_maxDrawSamples`) hit a timeout/rate-limit.
+  Instead each hop retries once (`_fetchRoadRouteWithRetry`) and, if still unreachable,
+  reaches progressively further ahead past the problem sample — up to `_drawRouteMaxSkipAhead`
+  (2) — so the route can go around whatever the sample landed on/in while staying a real,
+  road-snapped ORS route the whole way; a raw straight line is only ever used as the very
+  last resort for one unavoidable hop. This retry/skip-ahead itself costs extra requests per
+  struggling hop, which turned out to matter: `RoutingService.fetchRoute`'s hardcoded ORS key
+  (already flagged as shared/insecure, see "Known security debt" below) is also
+  rate-limited, and the retry logic originally amplified that badly — a single bad hop could
+  fire up to `(1 + _drawRouteMaxRetries) * (1 + _drawRouteMaxSkipAhead)` requests trying to
+  recover it, which compounds fast once *any* hop hiccups and was the likely cause of drawn
+  routes degrading noticeably (far fewer real waypoints, much sparser/less accurate) on
+  repeated back-to-back draws in testing, after an initial clean one. `RoutingService.fetchRoute`
+  now takes a `throwOnRateLimit` flag (only `_convertDrawingToRoute` opts in) that throws
+  `RoutingRateLimitedException` on an HTTP 429 specifically, distinct from any other failure —
+  the draw conversion catches it and stops probing immediately for that hop (accepting a
+  straight line right away instead of retrying/reaching further into an active rate-limit
+  window) while still trying the *next* hop fresh, rather than burning more of the shared quota
+  chasing a wall that isn't going away in the next second. `_maxDrawSamples`/
+  `_minDrawSampleSpacingMeters` were also lowered (30→15 samples, 25m→40m spacing) purely to
+  cut the base request count per drawn route — fewer requests per drawing reduces exposure to
+  any throttling regardless of cause. All failures (including 429s) are now logged via
+  `debugPrint` in `RoutingService.fetchRoute` so a recurrence can be diagnosed from real
+  status codes instead of guessing. A drawn shape closes loops (including several, if it
+  crosses itself more than once) the same way a tapped-out one does, and the whole
+  conversion is a single undo step, not one per sampled point. Only the start and finish
+  waypoint of a drawn segment render a pin marker — every interior sample point is still a
+  real waypoint (routing/undo/loop-detection all still see it) but is deliberately not drawn,
+  since the individual sample points aren't independently meaningful or user-placed the way a
+  tapped pin is (`_isHiddenWaypoint`, driven by `_drawnPointsCount`, which is reset to 0 by
+  anything — clearing, deleting a pin — that invalidates "the first N waypoints are exactly
+  what drawing produced"). **Known limitation**: this is retry/reach-ahead tuning on top of
+  point-to-point routing, not true map-matching — if two consecutive samples end up on
+  opposite sides of a large obstacle with no reasonably short walkable connection, ORS may
+  produce a long real detour (correct, but visually surprising) rather than a shortcut, and a
+  region with no network connectivity (or one that's genuinely rate-limited for a sustained
+  stretch) to fall back on will still end up with straight-line hops. All area displays
+  app-wide (loop-closure banners, claimed-area details, run results)
+  show km² consistently, with decimal precision scaling by magnitude
+  (`GeometryUtils.formatAreaKm2`) rather than switching between m²/ha/km² by size.
+- Place search on the route-creation map's top bar: while the field is focused, the
+  whole page becomes a full-screen white takeover (map/sheet/buttons all covered) with
+  the results list filling the remaining space, rather than a small dropdown — all
+  search state (controller, focus, debounce, fetch/rank logic) lives directly on
+  `_RouteCreatePageState` rather than a separate widget, since the results list is a
+  `Stack` sibling of the search field, not a descendant of it. Two sources are merged:
+  Nominatim (primary, fast — results show the instant they arrive) and an Overpass POI
+  fallback for informally-named places Nominatim's address search misses (e.g. "Edificio
+  25 Polimi"), only queried when Nominatim returns fewer than 3 results, and treated as a
+  **non-blocking** background enhancement — the public Overpass instance measured
+  anywhere from ~7s-504 to 37s for the same shape of query, so nothing waits on it.
+  Results are re-ranked client-side by a strict lexicographic sort — text-match quality,
+  then a coarse tier of Nominatim's own `importance`, then proximity, each only a
+  tiebreaker for the one before it — not a weighted sum, which failed on real cases (a
+  village named "Londo" outranking London on text match; London, Ontario outranking
+  London, England on a summed score). Selecting a result flies the camera there
+  (`_flyTo`, see below) and also drops a pin at that spot via the same `_onMapTap` pin
+  logic a real map tap would use.
+- Two camera animations shared by the route-creation map: `_flyTo` (search-result
+  selection and the "my location" button) does a proportional "zoom out, pan, zoom back
+  in" flourish for search selection (`CameraFit.coordinates` sizes the dip to how far
+  apart the two points actually are, floored at a minimum zoom so a transatlantic search
+  doesn't dip to a near-whole-Earth view), or a direct pan/zoom with no dip for "my
+  location" (returning to a known nearby point doesn't need the flourish, and skipping it
+  also cuts the burst of intermediate-zoom-level tile requests that were tripping Jawg's
+  rate limit). `_animateRotationTo` (the compass/"reset north" button) smoothly rotates
+  along whichever direction is shorter instead of snapping instantly, touching only
+  rotation, never zoom/pan.
+- Map tiles are cached to disk app-wide via `CachedTileProvider`
+  ([lib/services/cached_tile_provider.dart](lib/services/cached_tile_provider.dart)), shared by every screen's `TileLayer`
+  (`tileProvider: CachedTileProvider.instance`) — flutter_map's default tile provider only
+  caches decoded images in memory for the process's lifetime, so every fresh app launch
+  (and, since each map screen builds its own `FlutterMap`, every navigation between them)
+  was re-fetching tiles from Jawg that had already just been downloaded, counting against
+  its request-rate limit. Built on `cached_network_image`/`flutter_cache_manager` (already
+  dependencies, used elsewhere for profile/badge images) rather than a new dependency, with
+  its own dedicated cache (not the shared `DefaultCacheManager`) since tiles are far more
+  numerous/smaller/longer-lived than those images.
 - Route search/discovery by parameters ([lib/screens/route_search_page.dart](lib/screens/route_search_page.dart)).
 - Saving/listing/deleting routes in Firestore, with a client-side cache ([lib/services/route_repository.dart](lib/services/route_repository.dart)).
 - Profile picture upload with strict validation (size/extension/MIME/magic-byte sniffing) to Firebase Storage ([lib/services/image_upload_service.dart](lib/services/image_upload_service.dart)).
@@ -49,6 +147,15 @@ Keep this list current — update it whenever a feature moves between these buck
   Save (persists via `RunSessionRepository` to `runningSessions`, see below) or Discard
   (re-confirms, then nothing is written). The screen only tracks in the foreground — no
   background/lock-screen GPS service is configured.
+- Dev-only test run creator, reached from the run-tracking countdown screen
+  ([lib/screens/test_run_creator_page.dart](lib/screens/test_run_creator_page.dart)) — builds a fake run by placing pins (routed
+  the same way as route creation) plus a manually-entered duration, then publishes
+  straight into `runningSessions`, so the area-claiming logic can be tested against
+  specific loop shapes without physically running them. Mirrors route creation's
+  pin-drop/freehand-drawing/multi-loop behaviour exactly (both screens' loop-detection
+  and drawing code are near-identical on purpose — see the route-planning bullet above),
+  including sending every closed loop to `RunSessionRepository.saveSession`'s
+  `closedLoops` list, not just one.
 - `runningSessions` persistence via [lib/services/run_session_repository.dart](lib/services/run_session_repository.dart) — the collection
   Firestore rules already anticipated (see Data model below). Deliberately a separate
   collection/repository from `routes`/`RouteRepository`: a `routes` doc is a *planned*
@@ -429,6 +536,11 @@ for convenience, and flag it clearly if a requested change would weaken either.
   trivially extractable. It should be moved behind a backend proxy (e.g. a Cloud
   Function) or at minimum loaded from a non-committed config/secret store with key
   restrictions on the ORS side. Don't copy this pattern for any new third-party API key.
+  This isn't just an exposure risk — it's a single shared quota (2000 requests/day on the
+  free tier, confirmed live via the `X-Ratelimit-*` response headers) that every developer
+  and every install of the app draws from together, and freehand drawing can chain 15+
+  sequential requests per stroke (see the route-planning bullet above). Expect this to get
+  worse, not better, as more of the app leans on `RoutingService`.
 - `MapStyle` hardcodes the Jawg access token the same way ([lib/config/map_style.dart](lib/config/map_style.dart)) —
   same debt as the ORS key above. At minimum, restrict the token by app bundle
   id/domain in the Jawg dashboard; longer term, move both this and the ORS key to a

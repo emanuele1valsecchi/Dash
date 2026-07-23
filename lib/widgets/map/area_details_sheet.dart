@@ -4,6 +4,7 @@ import 'package:flutter_map/flutter_map.dart';
 
 import '../../services/claimed_area_repository.dart';
 import '../../services/profile_service.dart';
+import '../../utils/geometry_utils.dart';
 import 'claimed_areas_layer.dart';
 
 /// Opens [AreaDetailsSheet] for the area with the given id, if it's still in
@@ -158,7 +159,7 @@ class _AreaDetailsSheetState extends State<AreaDetailsSheet> {
               _Stat(
                 icon: Icons.square_foot_outlined,
                 label: 'Total area',
-                value: '${area.totalAreaM2.round()} m²',
+                value: GeometryUtils.formatAreaKm2(area.totalAreaM2),
               ),
               const SizedBox(height: 20),
               Text(
