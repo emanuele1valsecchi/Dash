@@ -25,16 +25,25 @@ import '../widgets/map/claimed_areas_layer.dart';
 class _RouteSnapshot {
   final List<LatLng> waypoints;
   final List<RouteSegment> segments;
-  final bool isLoopClosed;
-  final List<LatLng> loopPolygon;
-  final double loopAreaM2;
+
+  /// Every loop closed so far — plural, since a route can close more than
+  /// one separate area (see `_activeLoopStartSegment`).
+  final List<List<LatLng>> loopPolygons;
+  final List<double> loopAreasM2;
+  final int activeLoopStartSegment;
+
+  /// How many *leading* waypoints came from the most recent freehand-draw
+  /// conversion (0 if the route was built purely by tapping pins). Used only
+  /// to decide which pin markers to hide — see `_isHiddenWaypoint`.
+  final int drawnPointsCount;
 
   _RouteSnapshot({
     required this.waypoints,
     required this.segments,
-    this.isLoopClosed = false,
-    this.loopPolygon = const [],
-    this.loopAreaM2 = 0.0,
+    this.loopPolygons = const [],
+    this.loopAreasM2 = const [],
+    this.activeLoopStartSegment = 0,
+    this.drawnPointsCount = 0,
   });
 }
 
@@ -130,9 +139,23 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   bool _isRouting = false;
 
   // ── Loop state ────────────────────────────────────────────────────────────
-  bool _isLoopClosed = false;
-  List<LatLng> _loopPolygon = [];
-  double _loopAreaM2 = 0.0;
+  // Plural: placing more pins after a loop closes is allowed, and each
+  // closure is kept rather than overwritten, so a single route can claim
+  // several separate areas.
+  List<List<LatLng>> _loopPolygons = [];
+  List<double> _loopAreasM2 = [];
+
+  /// Index into [_segments] (equivalently, into [_waypoints] — the two stay
+  /// in lockstep at `segments.length == waypoints.length - 1`) where the
+  /// *current*, not-yet-closed loop starts. Self-intersection checks and
+  /// snap-to-waypoint closing both only look at segments/waypoints from
+  /// here onward, so a new segment can't get spuriously matched against an
+  /// already-finalised loop's own geometry — which would otherwise either
+  /// wrongly re-close it or produce a polygon that spans across two
+  /// unrelated loops. Reset to 0 whenever all loops are cleared (pin
+  /// deletion, Cancel), and advanced to `_segments.length` every time a
+  /// loop successfully closes (see `_finaliseLoop`).
+  int _activeLoopStartSegment = 0;
 
   // ── Undo / redo ───────────────────────────────────────────────────────────
   final List<_RouteSnapshot> _history = [
@@ -140,12 +163,57 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   ];
   int _historyIndex = 0;
 
-  bool get _canUndo => _historyIndex > 0 && !_isRouting;
-  bool get _canRedo => _historyIndex < _history.length - 1 && !_isRouting;
+  // Also blocked while converting a drawn stroke: that conversion only
+  // pushes history once at the very end (see `_convertDrawingToRoute`), so
+  // `_isRouting` alone flickers false between its sequential fetches — if
+  // history already had entries to step through (e.g. pins were deleted
+  // back down to empty, then a shape drawn from there), undo/redo could
+  // otherwise fire concurrently with the still-in-progress conversion.
+  bool get _canUndo =>
+      _historyIndex > 0 && !_isRouting && !_isConvertingDrawing;
+  bool get _canRedo =>
+      _historyIndex < _history.length - 1 &&
+      !_isRouting &&
+      !_isConvertingDrawing;
 
   // ── Tools ─────────────────────────────────────────────────────────────────
   _Tool _activeTool = _Tool.pinDrop;
   bool _isDeleteMode = false;
+
+  // ── Freehand drawing ──────────────────────────────────────────────────────
+  // Deliberately one-shot: only usable to lay down the very first shape on
+  // an empty route (see `_canUseDrawTool`), never to append a second drawn
+  // stroke onto an already-drawn (or already-pinned) route. Extending
+  // afterward is done with the Pin tool, same as any other route.
+
+  /// Raw finger path for the *current* in-progress stroke — cleared once it
+  /// ends and gets converted (or discarded, if too short to count as a real
+  /// shape). Purely for live visual feedback; the converted route is built
+  /// from a downsampled copy, not this list directly.
+  final List<LatLng> _drawnPoints = [];
+
+  /// True only while a just-finished stroke is being converted into routed
+  /// waypoints (a handful of sequential network calls) — guards against
+  /// starting a second stroke mid-conversion. Distinct from `_isRouting`,
+  /// which toggles per individual segment fetch within that conversion.
+  bool _isConvertingDrawing = false;
+
+  /// How many leading waypoints came from the last draw conversion — see
+  /// `_RouteSnapshot.drawnPointsCount`. Reset to 0 by anything that breaks
+  /// the assumption that this prefix is still exactly what drawing produced
+  /// (clearing, deleting a pin).
+  int _drawnPointsCount = 0;
+
+  /// A waypoint drawn as part of a freehand stroke, other than its very
+  /// first or last point, is never rendered as a pin — the user only wants
+  /// to see a start/finish marker and a line for a drawn shape, not one pin
+  /// per road-snap sample (see `_convertDrawingToRoute`). The point itself
+  /// stays in `_waypoints` (still needed for routing/undo), only the marker
+  /// is skipped.
+  bool _isHiddenWaypoint(int index) =>
+      _drawnPointsCount > 2 && index > 0 && index < _drawnPointsCount - 1;
+
+  bool get _canUseDrawTool => _waypoints.isEmpty;
 
   // ── Form ──────────────────────────────────────────────────────────────────
   final TextEditingController _trackNameCtrl = TextEditingController();
@@ -162,6 +230,7 @@ class _RouteCreatePageState extends State<RouteCreatePage>
       _segments.fold(0.0, (s, seg) => s + seg.distanceMeters) / 1000;
   double get _estimatedTimeMin => _totalDistanceKm * 9.0;
   double get _estimatedCalories => _totalDistanceKm * 70.0;
+  double get _totalLoopAreaM2 => _loopAreasM2.fold(0.0, (a, b) => a + b);
 
   // ── Constants ─────────────────────────────────────────────────────────────
 
@@ -243,9 +312,10 @@ class _RouteCreatePageState extends State<RouteCreatePage>
       _RouteSnapshot(
         waypoints: List<LatLng>.from(_waypoints),
         segments: List<RouteSegment>.from(_segments),
-        isLoopClosed: _isLoopClosed,
-        loopPolygon: List<LatLng>.from(_loopPolygon),
-        loopAreaM2: _loopAreaM2,
+        loopPolygons: _loopPolygons.map(List<LatLng>.from).toList(),
+        loopAreasM2: List<double>.from(_loopAreasM2),
+        activeLoopStartSegment: _activeLoopStartSegment,
+        drawnPointsCount: _drawnPointsCount,
       ),
     );
     _historyIndex++;
@@ -255,9 +325,10 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     setState(() {
       _waypoints = List<LatLng>.from(snap.waypoints);
       _segments = List<RouteSegment>.from(snap.segments);
-      _isLoopClosed = snap.isLoopClosed;
-      _loopPolygon = List<LatLng>.from(snap.loopPolygon);
-      _loopAreaM2 = snap.loopAreaM2;
+      _loopPolygons = snap.loopPolygons.map(List<LatLng>.from).toList();
+      _loopAreasM2 = List<double>.from(snap.loopAreasM2);
+      _activeLoopStartSegment = snap.activeLoopStartSegment;
+      _drawnPointsCount = snap.drawnPointsCount;
     });
   }
 
@@ -280,18 +351,25 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     // keyboard regardless of whether this tap goes on to place a pin.
     FocusScope.of(context).unfocus();
 
-    // Block new pins while routing, in delete mode, or after the loop is closed.
-    if (_isRouting || _isDeleteMode || _isLoopClosed) return;
+    // Block new pins while routing or in delete mode — a closed loop no
+    // longer blocks placing more (see `_activeLoopStartSegment`): a route
+    // can close as many separate areas as the user wants to draw.
+    if (_isRouting || _isDeleteMode) return;
 
     if (_activeTool == _Tool.freeDraw) {
-      // TODO: implement freehand drawing (sample gesture points as waypoints)
+      // Drawing is a press-and-drag gesture handled separately (see
+      // `_buildDrawGestureOverlay`/`_onDrawPanStart` etc.) — a plain tap
+      // while the tool is selected does nothing.
       return;
     }
 
     // ── Snap to an existing waypoint if close enough ───────────────────────
-    // Check all already-placed waypoints except the current route tip.
+    // Only waypoints that are part of the *current*, not-yet-closed loop —
+    // snapping back into an earlier, already-closed loop would produce a
+    // polygon spanning both, since `_polygonFromWaypointIndex` just walks
+    // segments from that index to the tip.
     if (_waypoints.length >= 2) {
-      for (int i = 0; i < _waypoints.length - 1; i++) {
+      for (int i = _activeLoopStartSegment; i < _waypoints.length - 1; i++) {
         if (const Distance()(_waypoints[i], tapPoint) <= _snapThresholdMeters) {
           await _routeAndCloseAtWaypoint(i);
           return;
@@ -300,18 +378,27 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     }
 
     // ── Normal pin drop ───────────────────────────────────────────────────
-    final prev = _waypoints.isNotEmpty ? _waypoints.last : null;
-    setState(() => _waypoints.add(tapPoint));
+    await _extendRouteTo(tapPoint);
+    if (!mounted) return;
+    _pushHistory();
+  }
 
-    if (prev == null) {
-      _pushHistory(); // first pin — nothing to route
-      return;
-    }
+  /// Adds [point] as the next waypoint — routing from the current route tip
+  /// (if any) to it, and checking whether the new segment closes a loop —
+  /// without pushing undo/redo history (`_onMapTap` pushes it once right
+  /// after). A drawn stroke does *not* go through this — see
+  /// `_convertDrawingToRoute`, which needs retry/skip-ahead behaviour this
+  /// straight-to-fallback version doesn't have.
+  Future<void> _extendRouteTo(LatLng point) async {
+    final prev = _waypoints.isNotEmpty ? _waypoints.last : null;
+    setState(() => _waypoints.add(point));
+
+    if (prev == null) return; // first pin — nothing to route yet
 
     setState(() => _isRouting = true);
     final seg =
-        await RoutingService.fetchRoute(prev, tapPoint) ??
-        RoutingService.straightLine(prev, tapPoint);
+        await RoutingService.fetchRoute(prev, point) ??
+        RoutingService.straightLine(prev, point);
 
     if (!mounted) return;
     setState(() {
@@ -321,7 +408,6 @@ class _RouteCreatePageState extends State<RouteCreatePage>
 
     // Check whether the new segment creates a self-intersection / loop.
     _checkSelfIntersection();
-    _pushHistory();
   }
 
   // ── Snap-to-waypoint loop close ───────────────────────────────────────────
@@ -349,6 +435,229 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     _pushHistory();
   }
 
+  // ── Freehand drawing ──────────────────────────────────────────────────────
+  //
+  // Captured as a raw press-and-drag gesture over the map (see
+  // `_buildDrawGestureOverlay`), not through `MapOptions.onTap` — dragging a
+  // finger across the map would otherwise just pan it, so the map's own pan
+  // interaction is disabled for the duration (see `_buildMap`) and this
+  // overlay captures the stroke instead.
+
+  void _onDrawPanStart(DragStartDetails details) {
+    if (!_canUseDrawTool || _isConvertingDrawing) return;
+    setState(() {
+      _drawnPoints
+        ..clear()
+        ..add(_mapController.camera.offsetToCrs(details.localPosition));
+    });
+  }
+
+  void _onDrawPanUpdate(DragUpdateDetails details) {
+    if (!_canUseDrawTool || _isConvertingDrawing || _drawnPoints.isEmpty) {
+      return;
+    }
+    setState(() {
+      _drawnPoints.add(
+        _mapController.camera.offsetToCrs(details.localPosition),
+      );
+    });
+  }
+
+  Future<void> _onDrawPanEnd(DragEndDetails details) async {
+    if (!_canUseDrawTool || _isConvertingDrawing || _drawnPoints.isEmpty) {
+      return;
+    }
+    final rawPoints = List<LatLng>.from(_drawnPoints);
+    setState(() {
+      _drawnPoints.clear();
+      _isConvertingDrawing = true;
+    });
+
+    await _convertDrawingToRoute(rawPoints);
+
+    if (!mounted) return;
+    setState(() {
+      _isConvertingDrawing = false;
+      // Only actually switch tools if the stroke produced a route — a too-
+      // short/jittery gesture is silently rejected by `_sampleDrawnPath`
+      // (see `_minDrawPathLengthMeters`), leaving the canvas untouched, so
+      // let the user just try drawing again without reselecting the tool.
+      // Draw is one-shot (`_canUseDrawTool`), so once it *did* produce a
+      // route, switch back to Pin automatically rather than leaving Draw
+      // visually selected but now disabled.
+      if (_waypoints.isNotEmpty) _activeTool = _Tool.pinDrop;
+    });
+  }
+
+  /// Roughly how many road-snap requests a single drawn stroke should cost
+  /// — bounds worst-case latency for a large/detailed drawing regardless of
+  /// how long the raw finger path is. Kept modest (rather than higher, for
+  /// tighter shape fidelity) because ORS's free-tier key is shared across
+  /// the whole app/dev team — drawing several routes back-to-back chains
+  /// enough sequential requests on its own that a lower per-drawing budget
+  /// meaningfully cuts how often any throttling gets hit at all, and how
+  /// bad it looks if it does (see `_drawRouteMaxSkipAhead`).
+  static const int _maxDrawSamples = 15;
+
+  /// Never sample closer together than this, even for a tiny drawing —
+  /// avoids wasting routing calls on jitter within a small scribble.
+  static const double _minDrawSampleSpacingMeters = 40;
+
+  /// Below this total drawn length, the gesture is treated as an accidental
+  /// tap/jitter rather than a real shape and produces no waypoints at all.
+  static const double _minDrawPathLengthMeters = 20;
+
+  /// Downsamples a raw finger path (one point per pixel of movement, easily
+  /// hundreds of points) to a manageable number of waypoints — one road-snap
+  /// request per consecutive pair would otherwise be excessive both in API
+  /// calls and latency. Spacing adapts to the drawn path's own length so a
+  /// small scribble and a sprawling shape both land near `_maxDrawSamples`
+  /// points, never below `_minDrawSampleSpacingMeters` apart.
+  List<LatLng> _sampleDrawnPath(List<LatLng> raw) {
+    if (raw.length < 2) return const [];
+    const dist = Distance();
+
+    double totalLength = 0;
+    for (int i = 1; i < raw.length; i++) {
+      totalLength += dist(raw[i - 1], raw[i]);
+    }
+    if (totalLength < _minDrawPathLengthMeters) return const [];
+
+    final spacing = math.max(
+      _minDrawSampleSpacingMeters,
+      totalLength / _maxDrawSamples,
+    );
+
+    final sampled = <LatLng>[raw.first];
+    double accumulated = 0;
+    for (int i = 1; i < raw.length; i++) {
+      accumulated += dist(raw[i - 1], raw[i]);
+      if (accumulated >= spacing) {
+        sampled.add(raw[i]);
+        accumulated = 0;
+      }
+    }
+    if (sampled.last != raw.last) sampled.add(raw.last);
+    return sampled;
+  }
+
+  /// Retries a single failed road-snap request before giving up on it —
+  /// drawing chains many sequential ORS calls (one per sample), so a
+  /// transient blip on one of them is expected, not a sign that no road
+  /// exists there. Never retries a 429 specifically — see
+  /// `_fetchRoadRouteWithRetry`.
+  static const int _drawRouteMaxRetries = 1;
+
+  /// If a hop still fails after retries, how many *additional* samples
+  /// ahead to try reaching in a single longer hop before giving up on it.
+  /// This is the mechanism that keeps a drawn route road-snapped even when
+  /// the user's finger wandered off any real path for a sample or two: the
+  /// extended hop is still a genuine `RoutingService.fetchRoute` call (so
+  /// still confined to real roads/paths), it just skips past whatever
+  /// couldn't be reached directly — e.g. a sample that landed inside a
+  /// building or a field with no through-path — instead of drawing a raw
+  /// straight line across it. Kept small (not the point of this
+  /// mechanism to begin with) because each additional skip attempt is
+  /// itself up to `1 + _drawRouteMaxRetries` more requests — a bad value
+  /// here amplifies request volume on exactly the hops already struggling,
+  /// which is its own way of tripping throttling, not just a workaround
+  /// for it.
+  static const int _drawRouteMaxSkipAhead = 2;
+
+  /// Fetches one road-snapped hop, retrying once on an ordinary failure.
+  /// A 429 is deliberately *not* retried — every request in an active
+  /// rate-limit window will also be rejected, so retrying (or the caller's
+  /// skip-ahead reaching for yet more samples) only burns more of the
+  /// shared ORS quota for no better a result. Rethrows
+  /// [RoutingRateLimitedException] so the caller can stop probing entirely
+  /// for this hop rather than treating it like any other miss.
+  Future<RouteSegment?> _fetchRoadRouteWithRetry(LatLng from, LatLng to) async {
+    for (int attempt = 0; ; attempt++) {
+      final seg = await RoutingService.fetchRoute(
+        from,
+        to,
+        throwOnRateLimit: true,
+      );
+      if (seg != null || attempt >= _drawRouteMaxRetries) return seg;
+      await Future.delayed(const Duration(milliseconds: 350));
+    }
+  }
+
+  /// Converts a finished freehand stroke into an actual routed sequence of
+  /// waypoints: downsamples the raw path (see `_sampleDrawnPath`), then
+  /// road-snaps sample-to-sample via `RoutingService.fetchRoute` — retrying
+  /// a failed hop, then reaching further ahead past it (see
+  /// `_fetchRoadRouteWithRetry`/`_drawRouteMaxSkipAhead`) rather than
+  /// accepting `RoutingService.straightLine` the moment a single hop fails,
+  /// since an unsnapped straight line is exactly what can cut across
+  /// buildings/fields. A straight line is only ever used as the very last
+  /// resort, for the one unavoidable hop, if every reach attempt fails
+  /// (e.g. no network at all).
+  ///
+  /// Waypoints are committed to `_waypoints` only once their incoming
+  /// segment is resolved — a skipped sample never becomes a waypoint at
+  /// all, which is also why the pin *markers* for a drawn route look sparse
+  /// (see `_isHiddenWaypoint`): most of what's "hidden" was never a
+  /// committed point to begin with, and the ones that are simply aren't
+  /// rendered.
+  ///
+  /// Pushes undo/redo history once for the whole conversion, not once per
+  /// sampled point, so undo reverts the entire drawn shape in one step.
+  Future<void> _convertDrawingToRoute(List<LatLng> rawPoints) async {
+    final sampled = _sampleDrawnPath(rawPoints);
+    if (sampled.length < 2) return;
+
+    setState(() {
+      _isRouting = true;
+      _waypoints.add(sampled.first);
+    });
+
+    int i = 1;
+    while (i < sampled.length) {
+      if (!mounted) return;
+
+      RouteSegment? seg;
+      int target = i;
+      int skipped = 0;
+      while (true) {
+        try {
+          seg = await _fetchRoadRouteWithRetry(_waypoints.last, sampled[target]);
+        } on RoutingRateLimitedException {
+          // Being actively throttled — reaching further ahead would just
+          // fire more requests into the same wall. Accept a straight line
+          // for this one hop and let the *next* hop try fresh, in case the
+          // window has passed by then, rather than giving up on the whole
+          // rest of the conversion.
+          seg = null;
+          break;
+        }
+        if (seg != null) break;
+        if (skipped >= _drawRouteMaxSkipAhead || target == sampled.length - 1) {
+          break;
+        }
+        skipped++;
+        target++;
+      }
+      if (!mounted) return;
+
+      seg ??= RoutingService.straightLine(_waypoints.last, sampled[target]);
+
+      setState(() {
+        _waypoints.add(sampled[target]);
+        _segments.add(seg!);
+      });
+      _checkSelfIntersection();
+      i = target + 1;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isRouting = false;
+      _drawnPointsCount = _waypoints.length;
+    });
+    _pushHistory();
+  }
+
   // ── Self-intersection detection ───────────────────────────────────────────
   //
   // Two strategies, matching the OpenMap component:
@@ -360,12 +669,16 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   //    diagonal cuts or straight-line fallback segments).
 
   void _checkSelfIntersection() {
-    if (_segments.length < 2) return;
+    // Scoped to segments added since the last loop closed (see
+    // `_activeLoopStartSegment`) — otherwise a new segment could get matched
+    // against an already-finalised loop's own geometry, either wrongly
+    // re-triggering it or producing a polygon spanning two unrelated loops.
+    if (_segments.length - _activeLoopStartSegment < 2) return;
 
     final newPoly = _segments.last.polyline;
     final prevCount = _segments.length - 1;
 
-    for (int si = 0; si < prevCount; si++) {
+    for (int si = _activeLoopStartSegment; si < prevCount; si++) {
       final existPoly = _segments[si].polyline;
       final isAdjacent = si == prevCount - 1;
 
@@ -456,28 +769,40 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     return poly;
   }
 
-  /// Validates the polygon area and marks the loop as closed.
+  /// Validates the polygon area, records the closed loop, and advances the
+  /// active-loop window so the *next* loop starts fresh from here — the
+  /// path can keep going (more pins, more loops) instead of being stuck.
   void _finaliseLoop(List<LatLng> polygon) {
     if (polygon.length < 3) return;
     final area = GeometryUtils.polygonAreaM2(polygon);
     if (area < _minLoopAreaM2) return;
     setState(() {
-      _loopPolygon = polygon;
-      _loopAreaM2 = area;
-      _isLoopClosed = true;
+      _loopPolygons = [..._loopPolygons, polygon];
+      _loopAreasM2 = [..._loopAreasM2, area];
+      _activeLoopStartSegment = _segments.length;
     });
   }
 
   // ── Pin deletion ──────────────────────────────────────────────────────────
 
   Future<void> _deletePin(int index) async {
-    if (_isRouting) return;
+    // `_isRouting` alone isn't enough while a drawn stroke is converting —
+    // it flickers false between that conversion's sequential fetches (see
+    // `_isConvertingDrawing`'s doc comment), which would otherwise let a
+    // delete race with waypoints still being appended.
+    if (_isRouting || _isConvertingDrawing) return;
 
-    // Deleting any pin breaks the current topology — clear the loop.
+    // Deleting any pin breaks the current topology — clear every loop
+    // closed so far and restart loop-detection from scratch, rather than
+    // trying to work out which specific loop(s) the deletion invalidated.
+    // Also un-hides any drawn-segment interior points: once indices shift
+    // under a deletion, "the first N waypoints came from drawing" is no
+    // longer a safe assumption to render off of.
     setState(() {
-      _isLoopClosed = false;
-      _loopPolygon = [];
-      _loopAreaM2 = 0.0;
+      _loopPolygons = [];
+      _loopAreasM2 = [];
+      _activeLoopStartSegment = 0;
+      _drawnPointsCount = 0;
     });
 
     final newWaypoints = List<LatLng>.from(_waypoints);
@@ -869,13 +1194,21 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   }
 
   void _clearAll() {
+    // A drawn stroke's conversion mutates _waypoints/_segments across several
+    // sequential awaits (see `_convertDrawingToRoute`) before its own single
+    // history push at the end — clearing mid-conversion would race with
+    // that, so this is a no-op until it settles (the Cancel button is
+    // disabled for the same reason, but guard here too against any other
+    // call path).
+    if (_isConvertingDrawing) return;
     setState(() {
       _waypoints = [];
       _segments = [];
       _isDeleteMode = false;
-      _isLoopClosed = false;
-      _loopPolygon = [];
-      _loopAreaM2 = 0.0;
+      _loopPolygons = [];
+      _loopAreasM2 = [];
+      _activeLoopStartSegment = 0;
+      _drawnPointsCount = 0;
     });
     _history
       ..clear()
@@ -912,8 +1245,13 @@ class _RouteCreatePageState extends State<RouteCreatePage>
         distanceMeters: _totalDistanceKm * 1000,
         estimatedTimeMin: _estimatedTimeMin,
         estimatedCalories: _estimatedCalories,
-        isLoop: _isLoopClosed,
-        loopAreaM2: _loopAreaM2,
+        // `routes` (planned, not-yet-run paths) only ever stored a single
+        // aggregate loop/area — unlike `runningSessions.closedLoops`, it
+        // isn't read by any per-loop server logic, so a route that closes
+        // several areas is just reported as one combined total here rather
+        // than widening this collection's schema for something informational.
+        isLoop: _loopPolygons.isNotEmpty,
+        loopAreaM2: _totalLoopAreaM2,
       );
       return true;
     } catch (e) {
@@ -1059,6 +1397,12 @@ class _RouteCreatePageState extends State<RouteCreatePage>
         body: Stack(
           children: [
             _buildMap(),
+            // Sits directly above the map (so it can capture the drawing
+            // gesture) but below the sheet/buttons/top bar (so those still
+            // get their own taps first via normal Z-order hit-testing,
+            // rather than this overlay swallowing everything on screen).
+            if (_activeTool == _Tool.freeDraw && _canUseDrawTool)
+              _buildDrawGestureOverlay(),
             if (_isLoadingLocation) _buildLoadingOverlay(),
             _buildSheet(),
             _buildMapButtons(),
@@ -1076,11 +1420,25 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   // ── Map ───────────────────────────────────────────────────────────────────
 
   Widget _buildMap() {
+    // Pan is disabled for the duration of Draw mode (pinch-zoom/rotate stay
+    // on) — a single-finger drag needs to mean "draw a shape", not "pan the
+    // map", and the drawing gesture is captured by a separate overlay (see
+    // `_buildDrawGestureOverlay`) rather than fighting flutter_map's own pan
+    // recognizer for the same gesture. Deliberately locks the whole time
+    // Draw is selected, not just mid-stroke — reposition/zoom before
+    // switching to Draw, not during.
+    final drawModeActive = _activeTool == _Tool.freeDraw && _canUseDrawTool;
+
     return FlutterMap(
       mapController: _mapController,
       options: MapOptions(
         initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
         initialZoom: _defaultZoom,
+        interactionOptions: InteractionOptions(
+          flags: drawModeActive
+              ? InteractiveFlag.pinchZoom | InteractiveFlag.rotate
+              : InteractiveFlag.all,
+        ),
         onTap: (_, point) => _onMapTap(point),
       ),
       children: [
@@ -1095,16 +1453,18 @@ class _RouteCreatePageState extends State<RouteCreatePage>
         // still drops a route pin rather than opening its details) ────────
         ClaimedAreasLayer(areas: _visibleAreas),
 
-        // ── Loop fill (below route lines) ─────────────────────────────────
-        if (_loopPolygon.length >= 3)
+        // ── Loop fills (below route lines) — every closed loop, not just
+        // the most recent one ───────────────────────────────────────────
+        if (_loopPolygons.isNotEmpty)
           PolygonLayer(
             polygons: [
-              Polygon(
-                points: _loopPolygon,
-                color: const Color(0xFF4A8C52).withValues(alpha: 0.15),
-                borderColor: const Color(0xFF4A8C52).withValues(alpha: 0.55),
-                borderStrokeWidth: 2.0,
-              ),
+              for (final loop in _loopPolygons)
+                Polygon(
+                  points: loop,
+                  color: const Color(0xFF4A8C52).withValues(alpha: 0.15),
+                  borderColor: const Color(0xFF4A8C52).withValues(alpha: 0.55),
+                  borderStrokeWidth: 2.0,
+                ),
             ],
           ),
 
@@ -1134,6 +1494,20 @@ class _RouteCreatePageState extends State<RouteCreatePage>
             ],
           ),
 
+        // ── Live freehand-drawing trail (raw finger path, not yet
+        // road-snapped) ────────────────────────────────────────────────
+        if (_drawnPoints.length >= 2)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: _drawnPoints,
+                color: const Color(0xFF4A8C52).withValues(alpha: 0.6),
+                strokeWidth: 3.0,
+                pattern: StrokePattern.dashed(segments: const [6, 6]),
+              ),
+            ],
+          ),
+
         // ── GPS dot ───────────────────────────────────────────────────────
         if (_currentPosition != null)
           MarkerLayer(
@@ -1148,23 +1522,50 @@ class _RouteCreatePageState extends State<RouteCreatePage>
           ),
 
         // ── Waypoint pins ─────────────────────────────────────────────────
+        // Interior points of a drawn segment are excluded here — see
+        // `_isHiddenWaypoint` — so a drawn shape only ever shows a start and
+        // finish pin, never one per road-snap sample.
         if (_waypoints.isNotEmpty)
           MarkerLayer(
-            markers: _waypoints.asMap().entries.map((e) {
-              final idx = e.key;
-              return Marker(
-                point: e.value,
-                width: 36,
-                height: 36,
-                child: _PinMarker(
-                  index: idx,
-                  isDeleteMode: _isDeleteMode,
-                  onTap: _isDeleteMode ? () => _deletePin(idx) : null,
-                ),
-              );
-            }).toList(),
+            markers: _waypoints
+                .asMap()
+                .entries
+                .where((e) => !_isHiddenWaypoint(e.key))
+                .map((e) {
+                  final idx = e.key;
+                  return Marker(
+                    point: e.value,
+                    width: 36,
+                    height: 36,
+                    child: _PinMarker(
+                      index: idx,
+                      isDeleteMode: _isDeleteMode,
+                      onTap: _isDeleteMode ? () => _deletePin(idx) : null,
+                    ),
+                  );
+                })
+                .toList(),
           ),
       ],
+    );
+  }
+
+  /// Captures the freehand-drawing gesture. A transparent full-size overlay
+  /// rather than `MapOptions.onTap`/a pan handler on the map itself — the
+  /// map's own pan interaction is disabled while this is shown (see
+  /// `_buildMap`), so there's no competing recognizer to fight over a
+  /// single-finger drag; this is simply the only thing listening for it.
+  /// Positioned directly above the map and below the sheet/buttons/top bar
+  /// in the page's Stack, so drawing only actually starts when the gesture
+  /// lands on the visible map area, not on other UI.
+  Widget _buildDrawGestureOverlay() {
+    return Positioned.fill(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanStart: _onDrawPanStart,
+        onPanUpdate: _onDrawPanUpdate,
+        onPanEnd: _onDrawPanEnd,
+      ),
     );
   }
 
@@ -1760,10 +2161,14 @@ class _RouteCreatePageState extends State<RouteCreatePage>
                         icon: Icons.edit_outlined,
                         label: 'Draw',
                         active: _activeTool == _Tool.freeDraw && !_isDeleteMode,
-                        onTap: () => setState(() {
-                          _activeTool = _Tool.freeDraw;
-                          _isDeleteMode = false;
-                        }),
+                        // One-shot — only usable to lay down the very first
+                        // shape on an empty route (see `_canUseDrawTool`).
+                        onTap: _canUseDrawTool
+                            ? () => setState(() {
+                                _activeTool = _Tool.freeDraw;
+                                _isDeleteMode = false;
+                              })
+                            : null,
                       ),
                       if (_isRouting) ...[
                         const SizedBox(width: 8),
@@ -1837,7 +2242,9 @@ class _RouteCreatePageState extends State<RouteCreatePage>
                         children: [
                           Expanded(
                             child: OutlinedButton(
-                              onPressed: _clearAll,
+                              onPressed: _isConvertingDrawing
+                                  ? null
+                                  : _clearAll,
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: const Color(0xFF5E655C),
                                 side: const BorderSide(
@@ -1861,7 +2268,9 @@ class _RouteCreatePageState extends State<RouteCreatePage>
                             flex: 2,
                             child: ElevatedButton.icon(
                               onPressed:
-                                  (_waypoints.length >= 2 && !_isPublishing)
+                                  (_waypoints.length >= 2 &&
+                                      !_isPublishing &&
+                                      !_isConvertingDrawing)
                                   ? _handleDonePressed
                                   : null,
                               icon: _isPublishing
@@ -1951,10 +2360,14 @@ class _RouteCreatePageState extends State<RouteCreatePage>
             ),
           ],
         ),
-        // Loop area — shown only once a circuit is detected
-        if (_isLoopClosed) ...[
+        // Loop area — shown once at least one circuit is detected, and
+        // reflects every loop closed so far, not just the latest.
+        if (_loopPolygons.isNotEmpty) ...[
           const SizedBox(height: 8),
-          _LoopAreaBanner(areaM2: _loopAreaM2),
+          _LoopAreaBanner(
+            areaM2: _totalLoopAreaM2,
+            loopCount: _loopPolygons.length,
+          ),
         ],
       ],
     );
@@ -1986,18 +2399,22 @@ class _RouteCreatePageState extends State<RouteCreatePage>
 
 class _LoopAreaBanner extends StatelessWidget {
   final double areaM2;
-  const _LoopAreaBanner({required this.areaM2});
 
-  String get _areaLabel {
-    if (areaM2 >= 1000000) {
-      return '${(areaM2 / 1000000).toStringAsFixed(2)} km²';
-    }
-    if (areaM2 >= 10000) return '${(areaM2 / 10000).toStringAsFixed(2)} ha';
-    return '${areaM2.round()} m²';
-  }
+  /// How many separate loops have been closed so far — a route isn't
+  /// limited to just one, so the label/total reflect all of them combined.
+  final int loopCount;
+
+  const _LoopAreaBanner({required this.areaM2, required this.loopCount});
+
+  String get _areaLabel => GeometryUtils.formatAreaKm2(areaM2);
 
   @override
   Widget build(BuildContext context) {
+    final label = loopCount > 1
+        ? '$loopCount circuits closed!'
+        : 'Circuit closed!';
+    final areaLabelPrefix = loopCount > 1 ? 'Total area' : 'Area';
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
@@ -2015,9 +2432,9 @@ class _LoopAreaBanner extends StatelessWidget {
             color: Color(0xFF2E7D32),
           ),
           const SizedBox(width: 8),
-          const Text(
-            'Circuit closed!',
-            style: TextStyle(
+          Text(
+            label,
+            style: const TextStyle(
               color: Color(0xFF2E7D32),
               fontWeight: FontWeight.w600,
               fontSize: 13,
@@ -2031,7 +2448,7 @@ class _LoopAreaBanner extends StatelessWidget {
           ),
           const SizedBox(width: 6),
           Text(
-            'Area: $_areaLabel',
+            '$areaLabelPrefix: $_areaLabel',
             style: const TextStyle(
               fontWeight: FontWeight.w700,
               fontSize: 13,
