@@ -3,8 +3,13 @@ const { onDocumentCreated } = require("firebase-functions/v2/firestore"); // Mod
 const admin = require('firebase-admin');
 const geo = require('./geo');
 const territory = require('./territory');
+const routing = require('./routing');
 
 admin.initializeApp();
+
+// Server-side ORS proxy — see routing.js for why this exists (moves the
+// OpenRouteService API key out of the client entirely).
+exports.orsRoute = routing.orsRoute;
 
 // 1. INIZIALIZZAZIONE PROFILO (Restiamo su Gen 1 per l'Auth)
 exports.seedUserProfileAndBadges = functions
