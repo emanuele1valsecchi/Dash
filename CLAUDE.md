@@ -282,8 +282,16 @@ Keep this list current — update it whenever a feature moves between these buck
   1. **City** — point-in-polygon against a small curated, hand-drawn coverage-polygon list in
      [functions/cityTerritories.js](functions/cityTerritories.js) (administrative boundaries don't match colloquial metro
      groupings — Seregno isn't in Milano's own province — so this can't be derived from
-     geocoding alone). Currently seeded with one illustrative Milano placeholder polygon, not
-     surveyed data — real boundaries are a content-authoring follow-up.
+     geocoding alone). The actual polygon data lives as one GeoJSON file per city in
+     [functions/cities/](functions/cities/) (`cityTerritories.js` just reads every `*.geojson` file in that
+     directory at module load and flattens them into the `{name, boundary}` list
+     `resolveCityTerritory` expects) — a deliberate choice over one shared hardcoded array,
+     since city boundaries are authored by hand-tracing on geojson.io and its own export
+     format needs zero reformatting this way, and each city's diff stays isolated instead of
+     one array growing forever. A shape's `name` comes from its GeoJSON `properties.name`
+     (set in geojson.io's editor before exporting), not the filename. Currently seeded with
+     one illustrative Milano placeholder polygon (`functions/cities/milano.geojson`), not
+     surveyed data — real boundaries are a content-authoring follow-up, city by city.
   2. **Broad fallback** (only reached if no city matched, so every run lands *somewhere*) — a
      server-side Nominatim reverse-geocode of the start point. Region and Country turn out to
      be the same lookup (`address.state` vs `address.country` from one response), so which one
@@ -528,23 +536,47 @@ for convenience, and flag it clearly if a requested change would weaken either.
   only the permissions actually needed and degrade gracefully when denied.
 - Never commit secrets. `uploader/serviceAccountKey.json` is gitignored — keep it that
   way, and follow the same pattern for any new service-account or private key files.
+- Never embed a third-party API key/token as a source-code constant in the client (this
+  is what the "Resolved security debt" section below used to look like — don't
+  reintroduce the pattern). Default to proxying the call through a Cloud Function that
+  holds the key in Secret Manager (the `orsRoute` pattern below). Only fall back to a
+  client-held key — via `--dart-define`/`--dart-define-from-file` from a gitignored local
+  file, never a literal in source — for something a client must call directly per-request
+  at a volume/latency that rules out a backend hop (e.g. map tile URLs), and in that case
+  also get it restricted by app bundle id/domain on the provider's dashboard.
 
-### Known security debt — fix opportunistically, don't introduce more like it
+### Resolved security debt (kept for context — see the standing rule above; don't reintroduce this pattern)
 
-- `RoutingService` hardcodes the OpenRouteService API key as a source-code constant
-  ([lib/services/routing_service.dart](lib/services/routing_service.dart)). This key is shipped in every app build and is
-  trivially extractable. It should be moved behind a backend proxy (e.g. a Cloud
-  Function) or at minimum loaded from a non-committed config/secret store with key
-  restrictions on the ORS side. Don't copy this pattern for any new third-party API key.
-  This isn't just an exposure risk — it's a single shared quota (2000 requests/day on the
-  free tier, confirmed live via the `X-Ratelimit-*` response headers) that every developer
-  and every install of the app draws from together, and freehand drawing can chain 15+
-  sequential requests per stroke (see the route-planning bullet above). Expect this to get
-  worse, not better, as more of the app leans on `RoutingService`.
-- `MapStyle` hardcodes the Jawg access token the same way ([lib/config/map_style.dart](lib/config/map_style.dart)) —
-  same debt as the ORS key above. At minimum, restrict the token by app bundle
-  id/domain in the Jawg dashboard; longer term, move both this and the ORS key to a
-  non-committed config/secret store.
+- **OpenRouteService key** — was a source-code constant in `RoutingService`
+  ([lib/services/routing_service.dart](lib/services/routing_service.dart)), shipped in every app build, trivially
+  extractable, and drawing on a single shared 2000-req/day quota that freehand drawing
+  alone could chain 15+ requests against per stroke (see the route-planning bullet
+  above). Now proxied through the `orsRoute` Cloud Function ([functions/routing.js](functions/routing.js)): the
+  key lives only in Secret Manager (`ORS_API_KEY`, set via
+  `firebase functions:secrets:set ORS_API_KEY`) and is never shipped to a device.
+  `orsRoute` rejects calls without `request.auth` (no anonymous/scripted use of the
+  quota) and forwards ORS's own HTTP status + JSON body back to the client verbatim, so
+  `RoutingService`'s existing 429/`RoutingRateLimitedException` handling and
+  `debugPrint`-based diagnostics are unchanged — only the transport moved, from
+  `http.get`/`http.post` against ORS directly to
+  `FirebaseFunctions.httpsCallable('orsRoute')`. **Follow-up, not yet done**: the key
+  value that was committed in git history is permanently compromised regardless of this
+  change — rotate it on the ORS dashboard and update the `ORS_API_KEY` secret to match.
+- **Jawg tile token** — was a source-code constant in `MapStyle`
+  ([lib/config/map_style.dart](lib/config/map_style.dart)). Unlike the ORS key, this one can't move fully
+  server-side: `flutter_map`'s `TileLayer` requests tile URLs directly on every pan/zoom,
+  and proxying that through a Cloud Function would multiply latency/cost and defeat the
+  on-disk tile cache (`CachedTileProvider`) built specifically to cut down on Jawg
+  requests — the same reason Mapbox/Google Maps tokens are also shipped inside client
+  apps rather than proxied. Instead, the token is simply no longer committed: `MapStyle`
+  reads it via `String.fromEnvironment('JAWG_ACCESS_TOKEN')`, supplied at build/run time
+  from a gitignored `config/secrets.local.json` (`--dart-define-from-file`, already wired
+  into `.vscode/launch.json`'s three run configs; `config/secrets.example.json` is the
+  committed template new developers copy). **Follow-up, not yet done**: restrict the
+  token by app bundle id/domain in the Jawg dashboard (the actual mitigation for a
+  necessarily-client-embedded tile token — not proxying, which the paragraph above rules
+  out here), and rotate the token that was committed in git history, updating
+  `config/secrets.local.json` (and every other developer's own copy) once rotated.
 
 ## Working conventions
 

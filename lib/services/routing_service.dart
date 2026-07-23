@@ -1,7 +1,5 @@
-import 'dart:convert';
-
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
 class RouteSegment {
@@ -22,19 +20,25 @@ class RoutingRateLimitedException implements Exception {
   const RoutingRateLimitedException();
 }
 
-/// Calls the OpenRouteService foot-walking endpoint and returns a road-snapped
+/// Calls the OpenRouteService foot-walking endpoint (via the `orsRoute`
+/// Cloud Function, see functions/routing.js) and returns a road-snapped
 /// polyline plus the walking distance in metres between [origin] and [destination].
 ///
 ///   ORS uses a dedicated foot-walking profile that honours OSM tags such as
 ///   highway=footway/path/pedestrian and access=yes on park paths.
 ///
+/// The ORS API key never reaches the client: `orsRoute` holds it server-side
+/// (Secret Manager) and forwards ORS's own HTTP status + JSON body back
+/// verbatim, so the parsing/429 handling below is unchanged from when this
+/// called ORS directly — only the transport moved.
+///
 /// Returns null on any failure; callers fall back to a straight-line segment.
 class RoutingService {
+  static final FirebaseFunctions _functions =
+      FirebaseFunctions.instanceFor(region: 'europe-west1');
 
-  static const String _apiKey = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjI5NDdiMWY0YTA2ZDQ4N2M5MGY2ZGY3ZTg4YWRkYTdiIiwiaCI6Im11cm11cjY0In0=';
-
-  static const String _baseUrl =
-      'https://api.openrouteservice.org/v2/directions/foot-walking';
+  static Map<String, dynamic> _asStringMap(dynamic v) =>
+      Map<String, dynamic>.from(v as Map);
 
   /// [throwOnRateLimit] makes an HTTP 429 throw [RoutingRateLimitedException]
   /// instead of just returning null — off by default so existing callers
@@ -44,25 +48,26 @@ class RoutingService {
   /// and needs to react to active throttling instead of retrying into it.
   static Future<RouteSegment?> fetchRoute(
       LatLng origin, LatLng destination, {bool throwOnRateLimit = false}) async {
-    // ORS GET endpoint: start and end are longitude,latitude (GeoJSON order).
-    final uri = Uri.parse(
-      '$_baseUrl'
-      '?api_key=$_apiKey'
-      '&start=${origin.longitude},${origin.latitude}'
-      '&end=${destination.longitude},${destination.latitude}',
-    );
-
     try {
-      final response =
-          await http.get(uri).timeout(const Duration(seconds: 10));
+      final callable = _functions.httpsCallable(
+        'orsRoute',
+        options: HttpsCallableOptions(timeout: const Duration(seconds: 10)),
+      );
+      final result = await callable.call(<String, dynamic>{
+        'origin': {'lat': origin.latitude, 'lng': origin.longitude},
+        'destination': {'lat': destination.latitude, 'lng': destination.longitude},
+      });
 
-      if (response.statusCode != 200) {
+      final data = _asStringMap(result.data);
+      final statusCode = data['status'] as int;
+
+      if (statusCode != 200) {
         debugPrint(
-          'RoutingService.fetchRoute: HTTP ${response.statusCode} for '
+          'RoutingService.fetchRoute: HTTP $statusCode for '
           '(${origin.latitude},${origin.longitude}) -> '
           '(${destination.latitude},${destination.longitude})',
         );
-        if (throwOnRateLimit && response.statusCode == 429) {
+        if (throwOnRateLimit && statusCode == 429) {
           throw const RoutingRateLimitedException();
         }
         return null;
@@ -72,16 +77,16 @@ class RoutingService {
       // Structure:
       //   features[0].geometry.coordinates  → List<[lon, lat]>
       //   features[0].properties.summary.distance → metres (double)
-      final json = jsonDecode(response.body) as Map<String, dynamic>;
+      final json = _asStringMap(data['body']);
       final features = json['features'] as List<dynamic>;
       if (features.isEmpty) return null;
 
-      final feature = features[0] as Map<String, dynamic>;
-      final props = feature['properties'] as Map<String, dynamic>;
-      final summary = props['summary'] as Map<String, dynamic>;
+      final feature = _asStringMap(features[0]);
+      final props = _asStringMap(feature['properties']);
+      final summary = _asStringMap(props['summary']);
       final double distance = (summary['distance'] as num).toDouble();
 
-      final geometry = feature['geometry'] as Map<String, dynamic>;
+      final geometry = _asStringMap(feature['geometry']);
       final rawCoords = geometry['coordinates'] as List<dynamic>;
 
       // GeoJSON coordinates are [longitude, latitude] — flip to LatLng(lat, lng).
@@ -106,7 +111,8 @@ class RoutingService {
   }
 
   /// Requests up to [targetCount] alternative foot-walking routes from ORS
-  /// using the POST endpoint (the GET endpoint does not support alternatives).
+  /// via the same `orsRoute` proxy (its POST/geojson mode — the GET endpoint
+  /// does not support alternatives).
   ///
   /// Returns a non-empty list; falls back to a single straight-line segment
   /// if the network or API is unreachable.
@@ -115,50 +121,35 @@ class RoutingService {
     LatLng destination, {
     int targetCount = 3,
   }) async {
-    final uri = Uri.parse(
-        'https://api.openrouteservice.org/v2/directions/foot-walking/geojson');
-
-    final body = jsonEncode({
-      'coordinates': [
-        [origin.longitude, origin.latitude],
-        [destination.longitude, destination.latitude],
-      ],
-      'alternative_routes': {
-        'share_factor': 0.6,
-        'target_count': targetCount,
-        'weight_factor': 1.4,
-      },
-    });
-
     try {
-      final response = await http
-          .post(
-            uri,
-            headers: {
-              'Authorization': _apiKey,
-              'Content-Type': 'application/json; charset=UTF-8',
-              'Accept': 'application/json, application/geo+json',
-            },
-            body: body,
-          )
-          .timeout(const Duration(seconds: 12));
+      final callable = _functions.httpsCallable(
+        'orsRoute',
+        options: HttpsCallableOptions(timeout: const Duration(seconds: 12)),
+      );
+      final result = await callable.call(<String, dynamic>{
+        'origin': {'lat': origin.latitude, 'lng': origin.longitude},
+        'destination': {'lat': destination.latitude, 'lng': destination.longitude},
+        'mode': 'alternatives',
+        'targetCount': targetCount,
+      });
 
-      if (response.statusCode != 200) {
+      final data = _asStringMap(result.data);
+      final statusCode = data['status'] as int;
+      if (statusCode != 200) {
         return [straightLine(origin, destination)];
       }
 
-      final json = jsonDecode(response.body) as Map<String, dynamic>;
+      final json = _asStringMap(data['body']);
       final features = json['features'] as List<dynamic>;
       if (features.isEmpty) return [straightLine(origin, destination)];
 
       return features.map((f) {
-        final feature = f as Map<String, dynamic>;
-        final props = feature['properties'] as Map<String, dynamic>;
-        final summary = props['summary'] as Map<String, dynamic>;
+        final feature = _asStringMap(f);
+        final props = _asStringMap(feature['properties']);
+        final summary = _asStringMap(props['summary']);
         final dist = (summary['distance'] as num).toDouble();
         final coords =
-            (feature['geometry'] as Map<String, dynamic>)['coordinates']
-                as List<dynamic>;
+            _asStringMap(feature['geometry'])['coordinates'] as List<dynamic>;
         final poly = coords
             .map((c) => LatLng(
                   (c[1] as num).toDouble(),
