@@ -119,9 +119,16 @@ function geohashBoundsForLoop(points) {
 // valid, common case — the caller creates a plain new area for it).
 function computeClaim({newLoopPoints, userId, sessionId, loopIndex, candidates, sessionData, now}) {
   const areaId = `${sessionId}_${loopIndex}`;
-  let mergedGeom = loopToTurfPolygon(newLoopPoints);
+  // Kept separate from `mergedGeom` (which Pass 1 below may grow via
+  // same-owner union) specifically so XP's `totalAreaM2` can reflect just
+  // this loop's own enclosed area — see the XP-formula design notes in
+  // index.js for why re-absorbing a big prior same-owner area must not
+  // inflate it.
+  const rawLoopGeom = loopToTurfPolygon(newLoopPoints);
+  let mergedGeom = rawLoopGeom;
   let mergedContributions = [];
   let earliestCreatedAt = null;
+  let stolenAreaM2 = 0;
   const deletes = [];
   const otherOwnerUpdates = [];
 
@@ -147,6 +154,9 @@ function computeClaim({newLoopPoints, userId, sessionId, loopIndex, candidates, 
     if (!existingGeom || !turf.booleanIntersects(mergedGeom, existingGeom)) continue;
 
     const remaining = turf.difference(turf.featureCollection([existingGeom, mergedGeom]));
+    const remainingAreaM2 = remaining ? turf.area(remaining) : 0;
+    stolenAreaM2 += turf.area(existingGeom) - remainingAreaM2;
+
     if (!remaining) {
       otherOwnerUpdates.push({id: c.id, deleted: true});
     } else {
@@ -181,6 +191,11 @@ function computeClaim({newLoopPoints, userId, sessionId, loopIndex, candidates, 
     },
     deletes,
     otherOwnerUpdates,
+    // XP inputs (see index.js) — deliberately the raw loop's own area, not
+    // mergedGeom's (post same-owner-union) area; see the comment on
+    // `rawLoopGeom` above.
+    totalAreaM2: turf.area(rawLoopGeom),
+    stolenAreaM2,
   };
 }
 

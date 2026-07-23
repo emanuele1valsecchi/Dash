@@ -110,15 +110,32 @@ service cloud.firestore {
 
     // ---------- runningSessions ----------
     match /runningSessions/{sessionId} {
+      // Fields only onRunningSessionCreateClaimedAreas (Admin SDK, bypasses
+      // these rules) may ever set, computed from the session's real
+      // geometry/start point: territory placement, the XP breakdown, and
+      // the completion sentinel the run-results popup waits on.
+      function serverOnlyRunFields() {
+        return ['territoryCity', 'territoryBroad', 'territoryBroadType',
+                'totalAreaM2', 'stolenAreaM2', 'xpFromDistance', 'xpFromArea',
+                'xpFromStolenArea', 'pointsProcessed'];
+      }
+
       allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
       allow create: if isSignedIn()
         && request.resource.data.userId == request.auth.uid
-        && request.resource.data.pointsEarned == 0;
+        && request.resource.data.pointsEarned == 0
+        && noServerOnlyFields(request.resource.data, serverOnlyRunFields());
       // Client may finalize the session (set endTime, stats) but cannot
-      // change ownership or points (Cloud Function owns pointsEarned).
+      // change ownership, points, or any server-only field (Cloud Function
+      // owns all of those — same trust-value reasoning as area
+      // ownership/userStats). diff().affectedKeys() (same idiom already used
+      // by the notifications rule below) naturally handles "field doesn't
+      // exist yet" correctly, unlike comparing resource.data.<field> directly.
       allow update: if isOwner(resource.data)
         && request.resource.data.userId == resource.data.userId
-        && request.resource.data.pointsEarned == resource.data.pointsEarned;
+        && request.resource.data.pointsEarned == resource.data.pointsEarned
+        && !request.resource.data.diff(resource.data).affectedKeys()
+             .hasAny(serverOnlyRunFields());
       allow delete: if false;
     }
 

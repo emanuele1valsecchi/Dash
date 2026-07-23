@@ -43,6 +43,10 @@ function candidateFromArea(id, userId, area, contributions, createdAtMillis) {
   assert.strictEqual(result.otherOwnerUpdates.length, 0);
   assert.strictEqual(totalOuterRings(result.newArea), 1);
   assert.strictEqual(result.newArea.contributions.length, 1);
+
+  const rawAreaM2 = require('@turf/turf').area(geo.loopToTurfPolygon(square(0, 0, 1)));
+  assert.ok(Math.abs(result.totalAreaM2 - rawAreaM2) < 1, 'totalAreaM2 should match the raw loop area');
+  assert.strictEqual(result.stolenAreaM2, 0, 'no other-owner overlap -> nothing stolen');
   console.log('1. free territory: OK');
 }
 
@@ -77,7 +81,17 @@ function candidateFromArea(id, userId, area, contributions, createdAtMillis) {
   const area2 = require('@turf/turf').area(geo.storedPolygonToTurf(inner.newArea.polygon));
   assert.ok(Math.abs(area1 - area2) < 1, `expected unchanged area, got ${area1} vs ${area2}`);
   assert.strictEqual(inner.newArea.contributions.length, 2); // both runs listed
-  console.log('2. fully-contained self-overlap: OK (no visible change, contributions merged)');
+
+  // totalAreaM2 must be the small inner loop's OWN area, not the big
+  // absorbed shape's — otherwise re-running a tiny loop inside a huge
+  // existing area would inflate XP by the whole area every time.
+  const innerRawAreaM2 = require('@turf/turf').area(geo.loopToTurfPolygon(square(10, 10, 1)));
+  assert.ok(
+      Math.abs(inner.totalAreaM2 - innerRawAreaM2) < 1,
+      `totalAreaM2 should be the small loop's own area (${innerRawAreaM2}), not the absorbed big area, got ${inner.totalAreaM2}`
+  );
+  assert.strictEqual(inner.stolenAreaM2, 0);
+  console.log('2. fully-contained self-overlap: OK (no visible change, contributions merged, totalAreaM2 not inflated)');
 }
 
 // ── 3. A's new loop partially overlaps A's own existing area -> merges into
@@ -109,7 +123,14 @@ function candidateFromArea(id, userId, area, contributions, createdAtMillis) {
   assert.strictEqual(merged.otherOwnerUpdates.length, 0);
   assert.strictEqual(totalOuterRings(merged.newArea), 1); // one seamless piece, no separate borders
   assert.strictEqual(merged.newArea.contributions.length, 2);
-  console.log('3. partial self-overlap: OK (single merged polygon, contributions combined)');
+
+  const secondRawAreaM2 = require('@turf/turf').area(geo.loopToTurfPolygon(secondPoints));
+  assert.ok(
+      Math.abs(merged.totalAreaM2 - secondRawAreaM2) < 1,
+      `totalAreaM2 should be this loop's own area (${secondRawAreaM2}), not the merged union, got ${merged.totalAreaM2}`
+  );
+  assert.strictEqual(merged.stolenAreaM2, 0);
+  console.log('3. partial self-overlap: OK (single merged polygon, contributions combined, totalAreaM2 not inflated)');
 }
 
 // ── 4. A runs over part of B's area -> that part becomes A's, B keeps the
@@ -150,7 +171,15 @@ function candidateFromArea(id, userId, area, contributions, createdAtMillis) {
   assert.ok(bAreaM2After > 0, 'B should still have some area left');
   // B's contributions untouched — still "their" run, just less ground.
   assert.strictEqual(steal.otherOwnerUpdates[0].polygon.length >= 1, true);
-  console.log(`4. partial steal: OK (B ${bAreaM2Before.toFixed(1)} -> ${bAreaM2After.toFixed(1)} m^2, A gets full new loop)`);
+
+  const aRawAreaM2 = turf.area(geo.loopToTurfPolygon(aPoints));
+  assert.ok(Math.abs(steal.totalAreaM2 - aRawAreaM2) < 1, 'totalAreaM2 should be A\'s own new-loop area');
+  const expectedStolen = bAreaM2Before - bAreaM2After;
+  assert.ok(
+      Math.abs(steal.stolenAreaM2 - expectedStolen) < 1,
+      `stolenAreaM2 (${steal.stolenAreaM2}) should match B's area loss (${expectedStolen})`
+  );
+  console.log(`4. partial steal: OK (B ${bAreaM2Before.toFixed(1)} -> ${bAreaM2After.toFixed(1)} m^2, A gets full new loop, stolenAreaM2 matches)`);
 
   // ── 4b. A runs over ALL of B's (now-shrunk) area -> B is fully wiped out ──
   const engulf = geo.computeClaim({
@@ -168,7 +197,18 @@ function candidateFromArea(id, userId, area, contributions, createdAtMillis) {
   assert.deepStrictEqual(engulf.deletes, ['sa_0']); // A's own prior area absorbed via union
   assert.strictEqual(engulf.otherOwnerUpdates.length, 1);
   assert.strictEqual(engulf.otherOwnerUpdates[0].deleted, true); // B fully wiped out
-  console.log('4b. full steal: OK (B\'s area deleted entirely, A\'s own prior claim absorbed)');
+
+  // B had bAreaM2After left and loses all of it -> stolenAreaM2 should equal
+  // exactly that, even though B ends up deleted rather than shrunk.
+  assert.ok(
+      Math.abs(engulf.stolenAreaM2 - bAreaM2After) < 1,
+      `stolenAreaM2 (${engulf.stolenAreaM2}) should equal B's full remaining area (${bAreaM2After}) when B is wiped out`
+  );
+  // totalAreaM2 stays the raw huge loop's own area, unaffected by A's own
+  // prior claim (sa_0) being absorbed via union.
+  const engulfRawAreaM2 = turf.area(geo.loopToTurfPolygon(square(2, 0, 6)));
+  assert.ok(Math.abs(engulf.totalAreaM2 - engulfRawAreaM2) < 1, 'totalAreaM2 should be the raw engulfing loop\'s own area');
+  console.log('4b. full steal: OK (B\'s area deleted entirely, A\'s own prior claim absorbed, area numbers correct)');
 }
 
 console.log('\nAll scenarios passed.');

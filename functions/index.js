@@ -2,6 +2,7 @@ const functions = require("firebase-functions/v1"); // Modulo Gen 1
 const { onDocumentCreated } = require("firebase-functions/v2/firestore"); // Modulo Gen 2
 const admin = require('firebase-admin');
 const geo = require('./geo');
+const territory = require('./territory');
 
 admin.initializeApp();
 
@@ -136,7 +137,15 @@ exports.onRunningSessionCompleted = onDocumentCreated(
   }
 );
 
-// 3. CLAIM DELLE AREE (loop chiusi -> claimedAreas), con unione/sottrazione
+// XP formula constants (Cd/Ca/Cr from the design spec): Cd is XP per km, Ca
+// is m^2 of total claimed area per XP, Cr is m^2 of *stolen* area per XP — an
+// additional bonus stacked on top of Ca's area XP, not a replacement for it.
+const XP_PER_KM = 100; // Cd
+const AREA_M2_PER_XP = 1000; // Ca
+const STOLEN_AREA_M2_PER_XP = 333; // Cr
+
+// 3. CLAIM DELLE AREE (loop chiusi -> claimedAreas), con unione/sottrazione,
+//    e ASSEGNAZIONE PUNTI/TERRITORIO per l'intera sessione
 //
 // Per ogni loop chiuso della sessione:
 //   - trova le claimedAreas vicine tramite una query geohash (evita di
@@ -152,9 +161,18 @@ exports.onRunningSessionCompleted = onDocumentCreated(
 // La geometria pesante (union/difference/query) vive in geo.js, pura e
 // testabile senza Firestore — qui c'è solo l'I/O transazionale.
 //
-// L'ownership deve essere assegnata lato server (Admin SDK) e non dal
-// client: firestore.rules nega `create`/`update` su claimedAreas per lo
-// stesso motivo per cui nega i write su userStats.
+// Dopo aver processato tutti i loop (anche zero — una corsa senza loop
+// chiusi guadagna comunque XP per la sola distanza), la sessione riceve
+// `pointsEarned` (formula XP, vedi XP_PER_KM/AREA_M2_PER_XP/
+// STOLEN_AREA_M2_PER_XP sopra) e il territorio ("City"/"Broad", vedi
+// territory.js) risolto dal punto di partenza reale (path[0]), non dalla
+// stringa `startLocality` fornita dal client.
+//
+// L'ownership (aree, punti, territorio) deve essere assegnata lato server
+// (Admin SDK) e non dal client: firestore.rules nega `create`/`update` su
+// claimedAreas per lo stesso motivo per cui nega i write su userStats, e
+// forza pointsEarned/territoryCity/territoryBroad/territoryBroadType
+// invariati sui write client di runningSessions.
 //
 // Nota: niente colorHex — il colore ("mie" vs "altrui") è relativo a chi
 // guarda la mappa, calcolato lato client (ClaimedAreasLayer).
@@ -168,11 +186,13 @@ exports.onRunningSessionCreateClaimedAreas = onDocumentCreated(
     if (!snapshot) return null;
 
     const sessionData = snapshot.data();
-    const closedLoops = sessionData.closedLoops;
-    if (!Array.isArray(closedLoops) || closedLoops.length === 0) return null;
+    const closedLoops = Array.isArray(sessionData.closedLoops) ? sessionData.closedLoops : [];
 
     const userId = sessionData.userId;
     const sessionId = event.params.sessionId;
+
+    let sessionTotalAreaM2 = 0;
+    let sessionStolenAreaM2 = 0;
 
     // Processed sequentially (not Promise.all) so a second loop in the same
     // session sees the first loop's already-committed result, and so we
@@ -181,16 +201,74 @@ exports.onRunningSessionCreateClaimedAreas = onDocumentCreated(
       const points = closedLoops[index] && closedLoops[index].points;
       if (!Array.isArray(points) || points.length < 3) continue;
       try {
-        await claimLoop({userId, sessionId, loopIndex: index, points, sessionData});
+        const loopResult = await claimLoop({userId, sessionId, loopIndex: index, points, sessionData});
+        sessionTotalAreaM2 += loopResult.totalAreaM2;
+        sessionStolenAreaM2 += loopResult.stolenAreaM2;
       } catch (e) {
         // One malformed/degenerate loop shouldn't stop the rest of the
-        // session's loops from being claimed.
+        // session's loops from being claimed/scored.
         console.error(`claimLoop failed for ${sessionId}_${index}:`, e);
       }
     }
+
+    await awardSessionPoints({
+      userId,
+      sessionId,
+      sessionData,
+      totalAreaM2: sessionTotalAreaM2,
+      stolenAreaM2: sessionStolenAreaM2,
+    });
     return null;
   }
 );
+
+/** Computes this session's XP, resolves its scoreboard territory from its
+ * real start coordinates, and writes both onto the session doc plus the
+ * user's running `profiles.totalPoints` total — in a single batch, since
+ * FieldValue.increment() is safe outside a transaction. */
+async function awardSessionPoints({userId, sessionId, sessionData, totalAreaM2, stolenAreaM2}) {
+  const distanceKm = Number(sessionData.distanceMeters || 0) / 1000;
+  // Named separately (not just inlined into the sum) so they can be
+  // persisted below — the client-facing "why did I get this many XP"
+  // breakdown reads these back rather than re-deriving them from
+  // XP_PER_KM/AREA_M2_PER_XP/STOLEN_AREA_M2_PER_XP, which are
+  // server-authoritative game-balance constants that shouldn't be
+  // duplicated client-side.
+  const xpFromDistance = distanceKm * XP_PER_KM;
+  const xpFromArea = totalAreaM2 / AREA_M2_PER_XP;
+  const xpFromStolenArea = stolenAreaM2 / STOLEN_AREA_M2_PER_XP;
+  const xp = Math.round(xpFromDistance + xpFromArea + xpFromStolenArea);
+
+  const path = sessionData.path;
+  const start = Array.isArray(path) && path.length > 0 ? path[0] : null;
+  const resolved = start ?
+    await territory.resolveTerritory(start.latitude, start.longitude) :
+    {city: null, broad: null, broadType: null};
+
+  const db = admin.firestore();
+  const batch = db.batch();
+  batch.update(db.collection('runningSessions').doc(sessionId), {
+    pointsEarned: xp,
+    territoryCity: resolved.city,
+    territoryBroad: resolved.broad,
+    territoryBroadType: resolved.broadType,
+    totalAreaM2,
+    stolenAreaM2,
+    xpFromDistance,
+    xpFromArea,
+    xpFromStolenArea,
+    // Explicit completion sentinel — pointsEarned alone can legitimately be
+    // 0 for a negligible session, so clients waiting on this write (the run
+    // results popup) can't use "pointsEarned != 0" to mean "done".
+    pointsProcessed: true,
+  });
+  batch.set(
+    db.collection('profiles').doc(userId),
+    {totalPoints: admin.firestore.FieldValue.increment(xp)},
+    {merge: true}
+  );
+  await batch.commit();
+}
 
 async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
   const db = admin.firestore();
@@ -198,7 +276,7 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
   const areaId = `${sessionId}_${loopIndex}`;
   const bounds = geo.geohashBoundsForLoop(points);
 
-  await db.runTransaction(async (tx) => {
+  return db.runTransaction(async (tx) => {
     // ── Reads first — a Firestore transaction requires every read to
     // happen before any write. Sequential (not Promise.all) to keep the
     // transaction's read-tracking straightforward.
@@ -293,5 +371,7 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
         });
       }
     }
+
+    return {totalAreaM2: result.totalAreaM2, stolenAreaM2: result.stolenAreaM2};
   });
 }

@@ -147,6 +147,58 @@ Keep this list current — update it whenever a feature moves between these buck
     other-owner, resulting piece count) was added to `claimLoop` in `functions/index.js` to
     make the next occurrence diagnosable via `firebase functions:log`. Not yet confirmed
     fixed — revisit if it recurs, and check the log line first.
+- **XP/points and scoreboard territory**, computed in the same `onRunningSessionCreateClaimedAreas`
+  transaction pass rather than a separate trigger, since both need the same per-loop
+  union/difference geometry: `XP = distanceKm*100 + totalAreaM2/1000 + stolenAreaM2/333`
+  (`totalAreaM2` is deliberately the raw closed loop's *own* area, not the post-merge shape
+  `mergedGeom` ends up as — otherwise re-running a loop that re-absorbs a large existing
+  same-owner area would inflate XP, and a multi-loop session would double-count ground a later
+  loop re-absorbs from an earlier one in the same session; `stolenAreaM2` reuses the existing
+  other-owner subtraction pass, `area(existingGeom) - area(remaining)`, rather than a separate
+  geometry call). Sessions with zero closed loops still earn distance-only XP. Written onto
+  `runningSessions` as `pointsEarned` (rounded total) plus the raw, unrounded
+  `xpFromDistance`/`xpFromArea`/`xpFromStolenArea` (so a client can show *why* — see the
+  run-results popup below — without duplicating the Cd/Ca/Cr constants), `totalAreaM2`/
+  `stolenAreaM2`, `territoryCity`/`territoryBroad`/`territoryBroadType`, and a `pointsProcessed:
+  true` sentinel (deliberately not "`pointsEarned != 0`" — a negligible session can legitimately
+  round to 0 XP, which would otherwise look identical to "not processed yet" to a client waiting
+  on this write). `profiles.totalPoints` is incremented (`FieldValue.increment`) in the same
+  batch. `firestore.rules` protects all of these on `runningSessions` the same way: absent on
+  client `create` (`noServerOnlyFields`), and on `update` guarded via
+  `!request.resource.data.diff(resource.data).affectedKeys().hasAny([...])` — the same idiom the
+  `notifications` rule already used, chosen over a `resource.data.<field> == request.resource.data.<field>`
+  chain because these fields don't exist at all until the Cloud Function runs, and dot-accessing
+  a genuinely-missing map key is a rules evaluation error. Territory
+  resolution ([functions/territory.js](functions/territory.js)) is two-tier and always keyed off the session's real GPS
+  start point (`runningSessions.path[0]`), never the client-supplied `startLocality` string — it's
+  now score-affecting, so it falls under the same server-only trust rule as area ownership:
+  1. **City** — point-in-polygon against a small curated, hand-drawn coverage-polygon list in
+     [functions/cityTerritories.js](functions/cityTerritories.js) (administrative boundaries don't match colloquial metro
+     groupings — Seregno isn't in Milano's own province — so this can't be derived from
+     geocoding alone). Currently seeded with one illustrative Milano placeholder polygon, not
+     surveyed data — real boundaries are a content-authoring follow-up.
+  2. **Broad fallback** (only reached if no city matched, so every run lands *somewhere*) — a
+     server-side Nominatim reverse-geocode of the start point. Region and Country turn out to
+     be the same lookup (`address.state` vs `address.country` from one response), so which one
+     is "the broad tier" is a single constant, `territory.js`'s `BROAD_TERRITORY_LEVEL`
+     (currently `'state'`, i.e. Region) — switching to Country later is a one-line change, not
+     a new data source.
+  Both new modules are pure/testable the same way `geo.js` is (`functions/_verify_territory.js`,
+  same not-deployed convention as `_verify_geo.js`). No scoreboard/leaderboard collection or UI
+  reads any of this yet — this is only the data layer one will eventually read from.
+- **Run-results popup** ([lib/widgets/run_results_dialog.dart](lib/widgets/run_results_dialog.dart), `showRunResultsDialog`), shown after a
+  run is saved from both the real GPS flow (`RunTrackingPage`'s summary dialog) and the dev-only
+  [lib/screens/test_run_creator_page.dart](lib/screens/test_run_creator_page.dart) — a shared widget rather than duplicated, since both need
+  the same thing. Shows a locked, non-interactive map fitted to the whole route
+  (`MapOptions.initialCameraFit`/`CameraFit.coordinates`, `InteractiveFlag.none` — same
+  pattern as the run-tracking mini preview card) plus distance/time/calories/elevation/avg
+  speed immediately (all known client-side already), while Area/XP/leaderboard and a debug XP
+  breakdown wait on a `runningSessions/{sessionId}` snapshot listener for the Cloud Function's
+  `pointsProcessed: true` write to land — bounded (cancelled on arrival or a ~20s timeout,
+  whichever first) rather than a standing listener, since this is genuinely waiting on a
+  one-time async server computation, not an ongoing feed.
+  `RunSessionRepository.saveSession` returns the new doc's ID (was `Future<void>`) specifically
+  so callers have something to point this listener at.
 - **What actually gets stored**: `claimedAreas.polygon` is a MultiPolygon-with-holes — an
   area can be more than one disconnected piece after a steal splits it, and/or have a hole
   where someone carved out its middle. Firestore disallows directly-nested arrays, so it's
@@ -224,10 +276,10 @@ Keep this list current — update it whenever a feature moves between these buck
 - Each `runningSessions` doc records a best-effort `startLocality` — the raw reverse-geocoded
   place name (e.g. "Seregno") of the run's starting point, via Nominatim in
   [lib/services/run_session_repository.dart](lib/services/run_session_repository.dart) — and the claim Cloud Function copies it
-  onto the `claimedAreas` docs it creates. This is deliberately just the raw locality, not
-  a "city" grouping: the intended future scoreboard groups nearby towns under a broader
-  city (e.g. Seregno under Milan) using this raw value, but that grouping logic doesn't
-  exist yet and isn't this codebase's concern until the scoreboard is actually built.
+  onto the `claimedAreas` docs it creates. This stays a display-only raw locality string,
+  client-supplied and never used for anything score-affecting; the actual "group Seregno
+  under Milano" scoreboard-territory logic is a separate, server-computed system (see
+  "XP/points and scoreboard territory" above) keyed off real GPS coordinates, not this string.
 - App-wide GPS position via [lib/services/location_service.dart](lib/services/location_service.dart) (`LocationService`, a
   singleton started once from `HomeScreen.initState`), so map screens read an
   already-warm position instead of each independently requesting permission and waiting
@@ -248,16 +300,15 @@ rules anticipate these collections — `runningSessions`, `claimedAreas`, `userS
 or writing them yet, except `runningSessions` writes as of the run-tracking screen and
 `claimedAreas` writes as of the claim Cloud Function above). Treat these as the next
 major milestones:
-- Point-awarding (no Cloud Function sets it yet — `runningSessions.pointsEarned` and
-  `profiles.totalPoints` are server-authoritative by rule but nothing currently writes
-  them server-side; every session is saved with `pointsEarned: 0`).
 - Champion re-timing: re-running the same loop *faster* than whoever currently holds it,
   without necessarily overwriting their territory. Spatial overlap — a new loop's ground
   taking over someone else's claimed area — **is** now handled (see "Area claiming,
   with real territory interaction" above); champion status is a separate, still-unbuilt
   mechanic layered on top of ground you may not even be contesting.
-- The scoreboard itself, and the "broad city" grouping it needs (e.g. treating Seregno as
-  part of Milan) built on top of the raw `startLocality` value described above.
+- The scoreboard itself (leaderboard UI, and the aggregation/query layer behind it). The
+  per-session data it will read from — `pointsEarned` and city/broad territory — **is** now
+  computed and stored server-side (see "XP/points and scoreboard territory" above); only the
+  actual ranking/UI on top of that data is still unbuilt.
 - Background/lock-screen GPS tracking for live runs (needs a foreground service on
   Android and a background location mode on iOS — deliberately out of scope for the
   first version of the run-tracking screen; flag this if asked to make it production-ready).
@@ -329,7 +380,15 @@ See [firestore.rules](firestore.rules) for the authoritative, enforced version o
   a property of the area. Owner may still `delete`.
 - `runningSessions/{sessionId}` — created by the client with `pointsEarned == 0`; only a
   server process may ever change `pointsEarned`. Also carries `closedLoops` (array of
-  `{'points': [...]}` maps) and a best-effort `startLocality` string.
+  `{'points': [...]}` maps), the full breadcrumb `path` (array of GeoPoints — `path[0]` is
+  the run's real start point, what territory resolution keys off), and a best-effort
+  `startLocality` string. `territoryCity`/`territoryBroad`/`territoryBroadType`,
+  `totalAreaM2`/`stolenAreaM2`, `xpFromDistance`/`xpFromArea`/`xpFromStolenArea`, and
+  `pointsProcessed` are all server-only the same way (client must omit them on create;
+  `firestore.rules` enforces this via `noServerOnlyFields` on create and a
+  `diff().affectedKeys().hasAny([...])` guard on update) — all set together by
+  `onRunningSessionCreateClaimedAreas` alongside `pointsEarned` (see "XP/points and scoreboard
+  territory" above).
 - `userStats/{uid}` — fully read-only from the client; only Cloud Functions (Admin SDK)
   write it.
 - `favoriteRoutes/{uid_routeId}`, `follows/{followId}`, `notifications/{id}` — mostly

@@ -21,6 +21,7 @@ import '../utils/geometry_utils.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
 import '../widgets/map/water_fountain_marker_layer.dart';
+import '../widgets/run_results_dialog.dart';
 import 'test_run_creator_page.dart';
 
 // ── Track point ──────────────────────────────────────────────────────────────
@@ -915,8 +916,19 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     );
   }
 
-  void _handleSummarySaved() {
+  Future<void> _handleSummarySaved(String sessionId) async {
     Navigator.of(context).pop(); // close the summary dialog
+    if (!mounted) return;
+    await showRunResultsDialog(
+      context: context,
+      sessionId: sessionId,
+      path: _breadcrumb.map((t) => t.point).toList(growable: false),
+      distanceMeters: _distanceMeters,
+      duration: _stopwatch.elapsed,
+      caloriesBurned: _caloriesBurned,
+      elevationDifferenceMeters: _elevationDifferenceMeters,
+    );
+    if (!mounted) return;
     _finishRun(saved: true);
   }
 
@@ -1728,10 +1740,10 @@ class _RunSummaryDialog extends StatefulWidget {
   final String maxPace;
   final String calories;
   final String elevation;
-  final Future<void> Function(String name) onSave;
+  final Future<String> Function(String name) onSave;
   final Future<bool?> Function() onRequestDiscardConfirm;
   final VoidCallback onDiscarded;
-  final VoidCallback onSaved;
+  final ValueChanged<String> onSaved;
 
   const _RunSummaryDialog({
     required this.time,
@@ -1776,8 +1788,8 @@ class _RunSummaryDialogState extends State<_RunSummaryDialog> {
   Future<void> _handleSave() async {
     setState(() => _isSaving = true);
     try {
-      await widget.onSave(_nameController.text);
-      widget.onSaved();
+      final sessionId = await widget.onSave(_nameController.text);
+      widget.onSaved(sessionId);
     } catch (e) {
       if (!mounted) return;
       setState(() => _isSaving = false);
