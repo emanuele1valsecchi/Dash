@@ -16,6 +16,7 @@ import '../services/run_session_repository.dart';
 import '../utils/geometry_utils.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
+import '../widgets/run_results_dialog.dart';
 
 /// Dev-only tool: build a fake run by placing pins — routed the same way as
 /// the real route builder — and manually setting its duration, then publish
@@ -432,7 +433,7 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
     final avgPace = distanceKm > 0 ? _manualMinutes! / distanceKm : 0.0;
 
     try {
-      await RunSessionRepository.instance.saveSession(
+      final sessionId = await RunSessionRepository.instance.saveSession(
         name: _nameCtrl.text,
         distanceMeters: distanceKm * 1000,
         duration: Duration(minutes: _manualMinutes!),
@@ -443,6 +444,16 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
         loopsCompleted: _isLoopClosed ? 1 : 0,
         path: poly,
         closedLoops: _isLoopClosed ? [_loopPolygon] : [],
+      );
+      if (!mounted) return;
+      await showRunResultsDialog(
+        context: context,
+        sessionId: sessionId,
+        path: poly,
+        distanceMeters: distanceKm * 1000,
+        duration: Duration(minutes: _manualMinutes!),
+        caloriesBurned: _estimatedCalories,
+        elevationDifferenceMeters: 0.0,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

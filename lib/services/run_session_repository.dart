@@ -81,18 +81,22 @@ class RunSessionRepository {
 
   String get _uid => _auth.currentUser!.uid;
 
-  /// Persists a finished run. [closedLoops] are stored as an array of maps
-  /// (`{'points': [...]}`) rather than a raw array-of-arrays — Firestore does
-  /// not support nested arrays.
+  /// Persists a finished run and returns the new doc's ID — callers that need
+  /// to observe the async server-side scoring (see
+  /// `onRunningSessionCreateClaimedAreas` in `functions/index.js`, which sets
+  /// `pointsEarned`/territory/`pointsProcessed` on this same doc after it's
+  /// created) need the ID to listen on, e.g. `showRunResultsDialog`.
+  ///
+  /// [closedLoops] are stored as an array of maps (`{'points': [...]}`)
+  /// rather than a raw array-of-arrays — Firestore does not support nested
+  /// arrays.
   ///
   /// Also best-effort reverse-geocodes the run's starting point to a raw
   /// locality name (`startLocality`, e.g. "Seregno") via Nominatim. This is
-  /// deliberately just the raw place name — grouping towns into broader
-  /// "cities" for the scoreboard (e.g. treating Seregno as part of Milan) is
-  /// future scoreboard logic, not something decided here; the Cloud Function
-  /// that turns closed loops into `claimedAreas` docs copies this value
-  /// through unchanged.
-  Future<void> saveSession({
+  /// deliberately just the raw place name for display — scoreboard territory
+  /// placement is separate, server-computed logic (see `functions/territory.js`)
+  /// keyed off real coordinates, not this string.
+  Future<String> saveSession({
     required String name,
     required double distanceMeters,
     required Duration duration,
@@ -107,7 +111,7 @@ class RunSessionRepository {
     final startLocality =
         path.isEmpty ? null : await _reverseGeocodeLocality(path.first);
 
-    await _db.collection('runningSessions').add({
+    final docRef = await _db.collection('runningSessions').add({
       'userId': _uid,
       'name': name.trim().isEmpty ? 'Untitled run' : name.trim(),
       'distanceMeters': distanceMeters,
@@ -128,6 +132,7 @@ class RunSessionRepository {
       'pointsEarned': 0,
       'createdAt': FieldValue.serverTimestamp(),
     });
+    return docRef.id;
   }
 
   Future<String?> _reverseGeocodeLocality(LatLng point) async {
