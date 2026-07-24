@@ -16,6 +16,7 @@ import '../services/place_search_service.dart';
 import '../services/routing_service.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
+import '../widgets/map/enhanced_map_gestures.dart';
 
 // ── Data models ────────────────────────────────────────────────────────────────
 
@@ -584,129 +585,138 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     final hasSelection = _selectedRouteIndex >= 0 &&
         _selectedRouteIndex < _foundRoutes.length;
 
-    return FlutterMap(
+    return EnhancedMapGestures(
       mapController: _mapController,
-      options: MapOptions(
-        initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
-        initialZoom: _defaultZoom,
-        onTap: (tapPos, point) {
-          FocusScope.of(context).unfocus();
-          // Tapping the map background clears the route highlight.
-          if (_selectedRouteIndex != -1) {
-            setState(() => _selectedRouteIndex = -1);
-          }
-        },
-      ),
-      children: [
-        TileLayer(
-          urlTemplate: MapStyle.terrainTileUrl,
-          userAgentPackageName: 'com.dash',
-          retinaMode: RetinaMode.isHighDensity(context),
-          tileProvider: CachedTileProvider.instance,
+      child: FlutterMap(
+        mapController: _mapController,
+        options: MapOptions(
+          initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
+          initialZoom: _defaultZoom,
+          // Rotate is handled by the wrapping EnhancedMapGestures instead
+          // (dead-zoned two-finger rotate + a little zoom inertia, shared
+          // with every other map screen; see that widget).
+          interactionOptions: const InteractionOptions(
+            flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
+          ),
+          onTap: (tapPos, point) {
+            FocusScope.of(context).unfocus();
+            // Tapping the map background clears the route highlight.
+            if (_selectedRouteIndex != -1) {
+              setState(() => _selectedRouteIndex = -1);
+            }
+          },
         ),
-
-        // ── Claimed areas (display only) ────────────────────────────────
-        ClaimedAreasLayer(areas: _visibleAreas),
-
-        // ── Dimmed non-selected routes (rendered first, below) ────────────
-        if (_foundRoutes.isNotEmpty && hasSelection)
-          PolylineLayer(
-            polylines: _foundRoutes.asMap().entries
-                .where((e) => e.key != _selectedRouteIndex)
-                .map((e) => Polyline(
-                      points: e.value.polyline,
-                      color: e.value.color.withValues(alpha: 0.25),
-                      strokeWidth: 3.0,
-                    ))
-                .toList(),
+        children: [
+          TileLayer(
+            urlTemplate: MapStyle.terrainTileUrl,
+            userAgentPackageName: 'com.dash',
+            retinaMode: RetinaMode.isHighDensity(context),
+            tileProvider: CachedTileProvider.instance,
           ),
 
-        // ── All routes at full opacity (when nothing is selected) ──────────
-        if (_foundRoutes.isNotEmpty && !hasSelection)
-          PolylineLayer(
-            polylines: _foundRoutes
-                .map((r) => Polyline(
-                      points: r.polyline,
-                      color: r.color,
-                      strokeWidth: 4.5,
-                    ))
-                .toList(),
-          ),
+          // ── Claimed areas (display only) ────────────────────────────────
+          ClaimedAreasLayer(areas: _visibleAreas),
 
-        // ── Selected route on top, with white border for contrast ─────────
-        if (hasSelection)
-          PolylineLayer(
-            polylines: [
-              Polyline(
-                points: _foundRoutes[_selectedRouteIndex].polyline,
-                color: _foundRoutes[_selectedRouteIndex].color,
-                strokeWidth: 6.5,
-                borderColor: Colors.white,
-                borderStrokeWidth: 2.0,
-              ),
-            ],
-          ),
+          // ── Dimmed non-selected routes (rendered first, below) ────────────
+          if (_foundRoutes.isNotEmpty && hasSelection)
+            PolylineLayer(
+              polylines: _foundRoutes.asMap().entries
+                  .where((e) => e.key != _selectedRouteIndex)
+                  .map((e) => Polyline(
+                        points: e.value.polyline,
+                        color: e.value.color.withValues(alpha: 0.25),
+                        strokeWidth: 3.0,
+                      ))
+                  .toList(),
+            ),
 
-        // ── GPS dot ───────────────────────────────────────────────────────
-        if (_currentPosition != null)
-          MarkerLayer(
-            markers: [
-              Marker(
-                point: _currentPosition!,
-                width: 60,
-                height: 60,
-                child: const _LocationDot(),
-              ),
-            ],
-          ),
+          // ── All routes at full opacity (when nothing is selected) ──────────
+          if (_foundRoutes.isNotEmpty && !hasSelection)
+            PolylineLayer(
+              polylines: _foundRoutes
+                  .map((r) => Polyline(
+                        points: r.polyline,
+                        color: r.color,
+                        strokeWidth: 4.5,
+                      ))
+                  .toList(),
+            ),
 
-        // ── Numbered tap-targets at route midpoints ───────────────────────
-        if (_foundRoutes.isNotEmpty)
-          MarkerLayer(
-            markers: _foundRoutes.asMap().entries.map((e) {
-              final idx = e.key;
-              final route = e.value;
-              final isSelected = idx == _selectedRouteIndex;
-              return Marker(
-                point: route.midpoint,
-                width: 38,
-                height: 38,
-                child: GestureDetector(
-                  onTap: () => _selectRoute(idx),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: isSelected
-                          ? route.color
-                          : route.color.withValues(
-                              alpha: _selectedRouteIndex == -1 ? 1.0 : 0.45),
-                      border: Border.all(
-                        color: Colors.white,
-                        width: isSelected ? 3.0 : 2.0,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: isSelected ? 8 : 4,
+          // ── Selected route on top, with white border for contrast ─────────
+          if (hasSelection)
+            PolylineLayer(
+              polylines: [
+                Polyline(
+                  points: _foundRoutes[_selectedRouteIndex].polyline,
+                  color: _foundRoutes[_selectedRouteIndex].color,
+                  strokeWidth: 6.5,
+                  borderColor: Colors.white,
+                  borderStrokeWidth: 2.0,
+                ),
+              ],
+            ),
+
+          // ── GPS dot ───────────────────────────────────────────────────────
+          if (_currentPosition != null)
+            MarkerLayer(
+              markers: [
+                Marker(
+                  point: _currentPosition!,
+                  width: 60,
+                  height: 60,
+                  child: const _LocationDot(),
+                ),
+              ],
+            ),
+
+          // ── Numbered tap-targets at route midpoints ───────────────────────
+          if (_foundRoutes.isNotEmpty)
+            MarkerLayer(
+              markers: _foundRoutes.asMap().entries.map((e) {
+                final idx = e.key;
+                final route = e.value;
+                final isSelected = idx == _selectedRouteIndex;
+                return Marker(
+                  point: route.midpoint,
+                  width: 38,
+                  height: 38,
+                  child: GestureDetector(
+                    onTap: () => _selectRoute(idx),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: isSelected
+                            ? route.color
+                            : route.color.withValues(
+                                alpha: _selectedRouteIndex == -1 ? 1.0 : 0.45),
+                        border: Border.all(
+                          color: Colors.white,
+                          width: isSelected ? 3.0 : 2.0,
                         ),
-                      ],
-                    ),
-                    alignment: Alignment.center,
-                    child: Text(
-                      '${idx + 1}',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: isSelected ? 14 : 12,
-                        fontWeight: FontWeight.w700,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black26,
+                            blurRadius: isSelected ? 8 : 4,
+                          ),
+                        ],
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        '${idx + 1}',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: isSelected ? 14 : 12,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
                   ),
-                ),
-              );
-            }).toList(),
-          ),
-      ],
+                );
+              }).toList(),
+            ),
+        ],
+      ),
     );
   }
 

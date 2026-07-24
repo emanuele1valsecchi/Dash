@@ -26,7 +26,9 @@ Keep this list current — update it whenever a feature moves between these buck
 **Built:**
 - Email/password + Google Sign-In auth ([lib/services/auth_service.dart](lib/services/auth_service.dart)), session persisted via `FirebaseAuth.authStateChanges` so the user isn't asked to log in every launch ([lib/main.dart](lib/main.dart)).
 - Onboarding, registration, profile setup flow ([lib/screens/onboarding_screen.dart](lib/screens/onboarding_screen.dart), [lib/screens/user_setup_screen.dart](lib/screens/user_setup_screen.dart)).
-- Map exploration page ([lib/screens/explore_page.dart](lib/screens/explore_page.dart)).
+- Map exploration page ([lib/screens/explore_page.dart](lib/screens/explore_page.dart)) — its map gestures
+  (two-finger rotate/zoom feel) come from `EnhancedMapGestures`, shared by every interactive
+  map screen; see the bullet below.
 - Route planning: pin-dropping (tap the map) or freehand drawing (press-and-drag a
   finger across the map) on the map, road-snapped via OpenRouteService, with
   distance/time/calorie estimation and undo/redo history
@@ -134,6 +136,53 @@ Keep this list current — update it whenever a feature moves between these buck
   dependencies, used elsewhere for profile/badge images) rather than a new dependency, with
   its own dedicated cache (not the shared `DefaultCacheManager`) since tiles are far more
   numerous/smaller/longer-lived than those images.
+- **Two-finger rotate with a persistent dead zone, plus a little zoom inertia** —
+  `EnhancedMapGestures` ([lib/widgets/map/enhanced_map_gestures.dart](lib/widgets/map/enhanced_map_gestures.dart)), wrapping every
+  interactive map screen's `FlutterMap` (explore, route create/search, run tracking, test
+  run creator — not the small static map-preview card on run tracking's finish summary,
+  which uses `InteractiveFlag.none` and has no gestures to enhance in the first place). Each
+  wrapped screen also disables flutter_map's own rotate handling in its own
+  `MapOptions.interactionOptions` (`flags: InteractiveFlag.all & ~InteractiveFlag.rotate`,
+  adjusted for whatever else that screen already restricts — e.g. route create/test run
+  creator drop pan during freehand-draw mode, run tracking never allows pan at all). Two
+  refinements flutter_map doesn't offer on its own:
+  - **Rotation.** This was investigated at length on the explore page before landing here,
+    and the history matters if anyone's tempted to reach for flutter_map's own
+    `enableMultiFingerGestureRace` again: turning it on gates *starting* to move behind
+    whichever of `rotationThreshold`/`pinchZoomThreshold` is crossed first, which stops an
+    ordinary pinch from also rotating — but flutter_map's race picks one winner *per whole
+    gesture*, not continuously (`pinchZoomWinGestures`/`rotationWinGestures` default to
+    excluding each other). Merging those win-gesture fields let both zoom and rotate apply
+    together, but then rotation's threshold only ever gated the *very first instant* —
+    once anything won (and with a zoom threshold tiny enough to stay smooth, zoom always
+    won almost immediately), rotation applied at full, un-gated sensitivity for the rest of
+    the touch, indistinguishable from the original bug. **No combination of flutter_map's
+    own `InteractionOptions` fields can express "always-smooth zoom + a persistent,
+    whole-gesture rotation dead zone that doesn't lock zoom out"** — a hard limitation of
+    its one-shot winner-take-all model, not a tuning problem. The actual fix: track
+    rotation independently via a plain `Listener` (observes raw pointer events without
+    competing in the gesture arena, so it can't conflict with flutter_map's own zoom/pan
+    handling). It tracks the first two fingers by pointer id; with exactly two down,
+    `_rearmOrClearRotationTracking` records a base angle and the map's current rotation,
+    and clears/restarts on any other finger count (a third finger clears tracking entirely
+    rather than risk silently re-basing onto a different pair). Each move recomputes the
+    angle delta since that base and applies a **continuous, whole-gesture** dead zone
+    (`rotationThresholdDeg`, currently 8° everywhere) — below it nothing rotates; once
+    crossed, the threshold amount is subtracted from the delta (crossing direction's sign
+    fixed at the moment of crossing, not re-evaluated per frame) so rotation picks up
+    smoothly from zero rather than jumping ahead by the dead-zone amount — independent of
+    whatever zoom/pan is doing at the same time, so pinching and twisting together works as
+    one continuous motion.
+  - **Zoom inertia.** flutter_map has fling/momentum for panning but none for pinch-zoom —
+    lifting fingers mid-pinch used to just stop dead. Samples the zoom level (via
+    `MapController.camera.zoom`, polled on every multi-finger pointer move — not a
+    `mapEventStream` subscription, since the raw pointer callback already fires at the same
+    cadence and needs the finger positions anyway for rotation) during any 2+-finger touch,
+    keeping only the last ~150ms of samples; on release, estimates a velocity from those and,
+    if fast enough (`_minInertiaVelocity`), animates a short (`_inertiaDuration`, 220ms),
+    hard-capped (`_maxInertiaZoomLevels`, 0.5 zoom levels) continuation around the same focal
+    point via `MapCamera.focusedZoomCenter` — deliberately subtle, not a full physical fling.
+    Any new touch (even a single finger) cancels a still-running inertia animation.
 - Route search/discovery by parameters ([lib/screens/route_search_page.dart](lib/screens/route_search_page.dart)). Its
   start/destination/stop address fields (`_AddressInputField`) use the same shared
   `PlaceSearchService` as the route-creation search bar (see above) for suggestions —
