@@ -88,24 +88,32 @@ Keep this list current — update it whenever a feature moves between these buck
   app-wide (loop-closure banners, claimed-area details, run results)
   show km² consistently, with decimal precision scaling by magnitude
   (`GeometryUtils.formatAreaKm2`) rather than switching between m²/ha/km² by size.
+- **Shared place search** ([lib/services/place_search_service.dart](lib/services/place_search_service.dart), `PlaceSearchService`) — Nominatim
+  (primary) + an Overpass POI fallback for informally-named places Nominatim's address
+  search misses (e.g. "Edificio 25 Polimi"), re-ranked client-side by a strict
+  lexicographic sort — text-match quality, then a coarse tier of Nominatim's own
+  `importance`, then proximity, each only a tiebreaker for the one before it — not a
+  weighted sum, which failed on real cases (a village named "Londo" outranking London on
+  text match; London, Ontario outranking London, England on a summed score). Exposed as a
+  `Stream<List<Place>>` (`PlaceSearchService.search`) rather than a single `Future`
+  specifically so callers can show Nominatim's own results the instant they arrive (a
+  plain search typically resolves in well under a second) as a first emission, then a
+  second, merged emission if the slower Overpass fallback (only tried when Nominatim
+  returned fewer than 3 results — measured anywhere from ~7s-504 to 37s for the same shape
+  of query on the public instance) turns up anything new — **non-blocking**, never gating
+  what's already on screen. Used by both of the screens below so they share identical
+  search behaviour instead of drifting apart; each caller does its own staleness check
+  (has the field's text moved on to a different query since this emission?) around the
+  stream, since that's inherently per-field state the service itself can't know about.
 - Place search on the route-creation map's top bar: while the field is focused, the
   whole page becomes a full-screen white takeover (map/sheet/buttons all covered) with
   the results list filling the remaining space, rather than a small dropdown — all
-  search state (controller, focus, debounce, fetch/rank logic) lives directly on
-  `_RouteCreatePageState` rather than a separate widget, since the results list is a
-  `Stack` sibling of the search field, not a descendant of it. Two sources are merged:
-  Nominatim (primary, fast — results show the instant they arrive) and an Overpass POI
-  fallback for informally-named places Nominatim's address search misses (e.g. "Edificio
-  25 Polimi"), only queried when Nominatim returns fewer than 3 results, and treated as a
-  **non-blocking** background enhancement — the public Overpass instance measured
-  anywhere from ~7s-504 to 37s for the same shape of query, so nothing waits on it.
-  Results are re-ranked client-side by a strict lexicographic sort — text-match quality,
-  then a coarse tier of Nominatim's own `importance`, then proximity, each only a
-  tiebreaker for the one before it — not a weighted sum, which failed on real cases (a
-  village named "Londo" outranking London on text match; London, Ontario outranking
-  London, England on a summed score). Selecting a result flies the camera there
-  (`_flyTo`, see below) and also drops a pin at that spot via the same `_onMapTap` pin
-  logic a real map tap would use.
+  search state (controller, focus, debounce) lives directly on `_RouteCreatePageState`
+  rather than a separate widget, since the results list is a `Stack` sibling of the
+  search field, not a descendant of it; only the fetch/rank logic itself is the shared
+  `PlaceSearchService` above. Selecting a result flies the camera there (`_flyTo`, see
+  below) and also drops a pin at that spot via the same `_onMapTap` pin logic a real map
+  tap would use.
 - Two camera animations shared by the route-creation map: `_flyTo` (search-result
   selection and the "my location" button) does a proportional "zoom out, pan, zoom back
   in" flourish for search selection (`CameraFit.coordinates` sizes the dip to how far
@@ -126,7 +134,21 @@ Keep this list current — update it whenever a feature moves between these buck
   dependencies, used elsewhere for profile/badge images) rather than a new dependency, with
   its own dedicated cache (not the shared `DefaultCacheManager`) since tiles are far more
   numerous/smaller/longer-lived than those images.
-- Route search/discovery by parameters ([lib/screens/route_search_page.dart](lib/screens/route_search_page.dart)).
+- Route search/discovery by parameters ([lib/screens/route_search_page.dart](lib/screens/route_search_page.dart)). Its
+  start/destination/stop address fields (`_AddressInputField`) use the same shared
+  `PlaceSearchService` as the route-creation search bar (see above) for suggestions —
+  biased/ranked toward the field's `near` (the user's current GPS position) — rather than
+  the plain single-call Nominatim lookup they originally had, so an informally-named
+  destination resolves here the same way it would on the creation map. The bottom sheet
+  (`DraggableScrollableSheet`) drags from anywhere on its handle+header, not only from
+  within the scrollable form content below — that chrome sits outside the `ListView`
+  driving the sheet's own built-in scroll-linked drag, so without a manual
+  `onVerticalDrag*` handler wired to `_sheetController` there it would be inert (see
+  `_onHeaderDragUpdate`/`_onHeaderDragEnd`), which is the more natural place a user
+  reaches for to resize a bottom sheet. `route_create_page.dart` and
+  `test_run_creator_page.dart` build a `DraggableScrollableSheet` the same underlying way
+  (handle+header outside the `ListView`) and likely have the same gap — not yet fixed
+  there, revisit if it comes up.
 - Saving/listing/deleting routes in Firestore, with a client-side cache ([lib/services/route_repository.dart](lib/services/route_repository.dart)).
 - Profile picture upload with strict validation (size/extension/MIME/magic-byte sniffing) to Firebase Storage ([lib/services/image_upload_service.dart](lib/services/image_upload_service.dart)).
 - Badge listing (default/visible badges) and a temporary profile page showing the user's saved routes ([lib/services/badge_service.dart](lib/services/badge_service.dart), [lib/screens/temp_profile_page.dart](lib/screens/temp_profile_page.dart)).
@@ -146,7 +168,15 @@ Keep this list current — update it whenever a feature moves between these buck
   the run and reviews time/distance/avg pace/max pace/calories/elevation before choosing
   Save (persists via `RunSessionRepository` to `runningSessions`, see below) or Discard
   (re-confirms, then nothing is written). The screen only tracks in the foreground — no
-  background/lock-screen GPS service is configured.
+  background/lock-screen GPS service is configured. The system/gesture back button is
+  intercepted via `PopScope` once a run is actually in progress (`_hasStarted`, set in
+  `_beginRun` after the pre-run countdown) and made to behave exactly like tapping
+  "Finish" (`_confirmFinish`) — not like the X button's `_confirmDiscard`, which abandons
+  the run with no summary. Before a run starts (loading/permission-denied/countdown) back
+  still pops normally, matching `_confirmDiscard`'s own early-return for that case. The
+  run-summary dialog shown after Finish has its own separate `PopScope(canPop: false)`,
+  fully blocking back-dismissal there too — the user must explicitly choose Save or
+  Discard.
 - Dev-only test run creator, reached from the run-tracking countdown screen
   ([lib/screens/test_run_creator_page.dart](lib/screens/test_run_creator_page.dart)) — builds a fake run by placing pins (routed
   the same way as route creation) plus a manually-entered duration, then publishes

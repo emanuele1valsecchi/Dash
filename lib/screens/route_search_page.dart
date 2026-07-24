@@ -12,6 +12,7 @@ import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
+import '../services/place_search_service.dart';
 import '../services/routing_service.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
@@ -34,12 +35,6 @@ class _FoundRoute {
   });
 
   LatLng get midpoint => polyline[polyline.length ~/ 2];
-}
-
-class _NominatimResult {
-  final String displayName;
-  final LatLng latLng;
-  const _NominatimResult({required this.displayName, required this.latLng});
 }
 
 // ── Page ───────────────────────────────────────────────────────────────────────
@@ -301,7 +296,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
       _selectedRouteIndex = -1;
     });
     if (_sheetController.isAttached) {
-      _sheetController.animateTo(0.52,
+      _sheetController.animateTo(_sheetMidSize,
           duration: const Duration(milliseconds: 350), curve: Curves.easeOut);
     }
   }
@@ -454,8 +449,47 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
 
   void _collapseSheet() {
     if (!_sheetController.isAttached) return;
-    _sheetController.animateTo(0.12,
+    _sheetController.animateTo(_sheetMinSize,
         duration: const Duration(milliseconds: 350), curve: Curves.easeOut);
+  }
+
+  // ── Bottom sheet drag ─────────────────────────────────────────────────────
+  //
+  // The drag handle + header sit outside the ListView (see `_buildSheet`), so
+  // without this they'd be inert — only the list content participates in
+  // DraggableScrollableSheet's own scroll-driven drag handling. This drives
+  // the sheet directly from drag deltas on that non-scrollable region
+  // instead, so grabbing the handle/header (not just the form content below)
+  // resizes the sheet too.
+
+  static const double _sheetMinSize = 0.12;
+  static const double _sheetMidSize = 0.52;
+  static const double _sheetMaxSize = 0.90;
+  static const List<double> _sheetSnapSizes = [
+    _sheetMinSize,
+    _sheetMidSize,
+    _sheetMaxSize,
+  ];
+
+  void _onHeaderDragUpdate(DragUpdateDetails details) {
+    if (!_sheetController.isAttached) return;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final delta = details.primaryDelta! / screenHeight;
+    final newSize =
+        (_sheetController.size - delta).clamp(_sheetMinSize, _sheetMaxSize);
+    _sheetController.jumpTo(newSize);
+  }
+
+  /// Snaps to the nearest of the sheet's own snap sizes on release,
+  /// mirroring `snap: true`'s behaviour for the ListView-driven drag — a
+  /// manual `jumpTo` during the drag above doesn't go through that logic.
+  void _onHeaderDragEnd(DragEndDetails details) {
+    if (!_sheetController.isAttached) return;
+    final current = _sheetController.size;
+    final nearest = _sheetSnapSizes.reduce(
+        (a, b) => (a - current).abs() < (b - current).abs() ? a : b);
+    _sheetController.animateTo(nearest,
+        duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
   }
 
   void _fitMap(List<_FoundRoute> routes) {
@@ -704,11 +738,11 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   Widget _buildSheet() {
     return DraggableScrollableSheet(
       controller: _sheetController,
-      initialChildSize: 0.52,
-      minChildSize: 0.12,
-      maxChildSize: 0.90,
+      initialChildSize: _sheetMidSize,
+      minChildSize: _sheetMinSize,
+      maxChildSize: _sheetMaxSize,
       snap: true,
-      snapSizes: const [0.12, 0.52, 0.90],
+      snapSizes: _sheetSnapSizes,
       builder: (context, scrollController) => Container(
         decoration: const BoxDecoration(
           color: Color(0xFFF3F5EE),
@@ -717,74 +751,89 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
         ),
         child: Column(
           children: [
-            // Drag handle
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              child: Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            // Header row
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-              child: Row(
+            // Drag handle + header — outside the ListView below, so they'd
+            // otherwise be inert (only the list content participates in
+            // DraggableScrollableSheet's own scroll-driven drag handling).
+            // A manual vertical-drag handler here drives the sheet directly,
+            // so grabbing the handle or header (not just the form content)
+            // resizes it, matching where users instinctively grab a sheet.
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onVerticalDragUpdate: _onHeaderDragUpdate,
+              onVerticalDragEnd: _onHeaderDragEnd,
+              child: Column(
                 children: [
-                  const Text(
-                    'Search a route',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF2A3028),
+                  // Drag handle
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.grey[300],
+                        borderRadius: BorderRadius.circular(2),
+                      ),
                     ),
                   ),
-                  const Spacer(),
-                  // Loading spinner while searching
-                  if (_isSearching)
-                    const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Color(0xFF4A8C52)),
-                    )
-                  // "N found" badge in results mode
-                  else if (_hasSearched && !_isResultsMode)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: _foundRoutes.isNotEmpty
-                            ? const Color(0xFFEAF7E0)
-                            : const Color(0xFFF0F0F0),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        '${_foundRoutes.length} found',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: _foundRoutes.isNotEmpty
-                              ? const Color(0xFF2E7D32)
-                              : Colors.grey,
+                  // Header row
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                    child: Row(
+                      children: [
+                        const Text(
+                          'Search a route',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF2A3028),
+                          ),
                         ),
-                      ),
-                    )
-                  // "Edit search" button in results mode
-                  else if (_isResultsMode)
-                    TextButton.icon(
-                      onPressed: _enterEditMode,
-                      icon: const Icon(Icons.edit_outlined, size: 16),
-                      label: const Text('Edit search'),
-                      style: TextButton.styleFrom(
-                        foregroundColor: const Color(0xFF4A8C52),
-                        padding: EdgeInsets.zero,
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
+                        const Spacer(),
+                        // Loading spinner while searching
+                        if (_isSearching)
+                          const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Color(0xFF4A8C52)),
+                          )
+                        // "N found" badge in results mode
+                        else if (_hasSearched && !_isResultsMode)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: _foundRoutes.isNotEmpty
+                                  ? const Color(0xFFEAF7E0)
+                                  : const Color(0xFFF0F0F0),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Text(
+                              '${_foundRoutes.length} found',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: _foundRoutes.isNotEmpty
+                                    ? const Color(0xFF2E7D32)
+                                    : Colors.grey,
+                              ),
+                            ),
+                          )
+                        // "Edit search" button in results mode
+                        else if (_isResultsMode)
+                          TextButton.icon(
+                            onPressed: _enterEditMode,
+                            icon: const Icon(Icons.edit_outlined, size: 16),
+                            label: const Text('Edit search'),
+                            style: TextButton.styleFrom(
+                              foregroundColor: const Color(0xFF4A8C52),
+                              padding: EdgeInsets.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          ),
+                      ],
                     ),
+                  ),
                 ],
               ),
             ),
@@ -871,6 +920,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
               controller: _startCtrl,
               hint: 'Enter an address',
               enabled: !_isResultsMode,
+              near: _currentPosition,
               onUseLocation: _isResultsMode
                   ? null
                   : () => setState(() => _useCurrentPositionAsStart = true),
@@ -893,6 +943,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
               controller: _destCtrl,
               hint: 'Enter an address',
               enabled: !_isResultsMode,
+              near: _currentPosition,
               onUseLocation: _isResultsMode
                   ? null
                   : () => setState(() => _useCurrentPositionAsDest = true),
@@ -928,6 +979,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
               controller: _stopCtrls[i],
               hint: 'Stop ${i + 1}',
               enabled: !_isResultsMode,
+              near: _currentPosition,
               onRemove: _isResultsMode ? null : () => _removeStop(i),
               onSuggestionPicked: (ll) =>
                   setState(() => _stopLatLngs[i] = ll),
@@ -1181,6 +1233,10 @@ class _AddressInputField extends StatefulWidget {
   final VoidCallback? onRemove;
   final void Function(LatLng? latLng) onSuggestionPicked;
 
+  /// Biases/ranks suggestions toward this position (usually the user's GPS
+  /// fix) — see [PlaceSearchService.search]. Null just means no bias.
+  final LatLng? near;
+
   const _AddressInputField({
     required this.controller,
     required this.hint,
@@ -1188,6 +1244,7 @@ class _AddressInputField extends StatefulWidget {
     this.enabled = true,
     this.onUseLocation,
     this.onRemove,
+    this.near,
   });
 
   @override
@@ -1197,7 +1254,7 @@ class _AddressInputField extends StatefulWidget {
 class _AddressInputFieldState extends State<_AddressInputField> {
   final FocusNode _focusNode = FocusNode();
   Timer? _debounce;
-  List<_NominatimResult> _suggestions = [];
+  List<Place> _suggestions = [];
   bool _showSuggestions = false;
 
   // Guards against the listener re-firing when text is set programmatically
@@ -1240,41 +1297,37 @@ class _AddressInputFieldState extends State<_AddressInputField> {
         () => _fetchSuggestions(text));
   }
 
+  /// Delegates to [PlaceSearchService.search] (Nominatim + Overpass POI
+  /// fallback, re-ranked by text-match quality/importance/proximity — the
+  /// same pipeline route creation's place search uses) and applies each
+  /// emission as it arrives, bailing out if the field's text has moved on
+  /// to a different query since.
   Future<void> _fetchSuggestions(String query) async {
-    try {
-      final uri = Uri.parse(
-        'https://nominatim.openstreetmap.org/search'
-        '?q=${Uri.encodeComponent(query)}&format=json&limit=5',
-      );
-      final res = await http
-          .get(uri, headers: {'User-Agent': 'DashApp/1.0'})
-          .timeout(const Duration(seconds: 5));
-      if (res.statusCode != 200) return;
-      final list = jsonDecode(res.body) as List<dynamic>;
-      final results = list.map((item) {
-        final m = item as Map<String, dynamic>;
-        return _NominatimResult(
-          displayName: m['display_name'] as String,
-          latLng: LatLng(
-            double.parse(m['lat'] as String),
-            double.parse(m['lon'] as String),
-          ),
-        );
-      }).toList();
-      if (mounted) {
-        setState(() {
-          _suggestions = results;
-          _showSuggestions = results.isNotEmpty && _focusNode.hasFocus;
-        });
-      }
-    } catch (_) {}
+    await for (final results
+        in PlaceSearchService.search(query, near: widget.near, limit: 5)) {
+      if (!mounted || widget.controller.text.trim() != query) return;
+      setState(() {
+        _suggestions = results;
+        _showSuggestions = results.isNotEmpty && _focusNode.hasFocus;
+      });
+    }
   }
 
-  void _selectSuggestion(_NominatimResult result) {
+  void _selectSuggestion(Place result) {
+    _debounce?.cancel();
     _suppressNextChange = true;
-    widget.controller.text = result.displayName;
-    widget.controller.selection = TextSelection.fromPosition(
-        TextPosition(offset: result.displayName.length));
+    // Set text + selection together in one `.value` assignment rather than
+    // as two separate `.text =` / `.selection =` assignments — each of
+    // those fires the controller's listener independently, and
+    // `_suppressNextChange` only survives the first. The second,
+    // unsuppressed firing would schedule a real debounced fetch for the
+    // full place name — since it's basically guaranteed to match itself,
+    // that would repopulate `_suggestions` a moment later even after this
+    // method already unfocused the field and moved on.
+    widget.controller.value = TextEditingValue(
+      text: result.displayName,
+      selection: TextSelection.collapsed(offset: result.displayName.length),
+    );
     setState(() { _showSuggestions = false; _suggestions = []; });
     widget.onSuggestionPicked(result.latLng);
     _focusNode.unfocus();

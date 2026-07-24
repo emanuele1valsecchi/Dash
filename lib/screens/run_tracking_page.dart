@@ -1036,18 +1036,36 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF3F5EE),
-      body: SafeArea(
-        child: _isLoadingLocation
-            ? _buildLoadingView()
-            : _permissionDenied
-                ? _buildPermissionDeniedView()
-                : _isCountingDown
-                    ? _buildCountdownView()
-                    : _isMapExpanded
-                        ? _buildExpandedMapView()
-                        : _buildStatsView(),
+    return PopScope(
+      // Once a run is actually in progress (`_hasStarted` — set in
+      // `_beginRun`, after the pre-run countdown), the system/gesture back
+      // button must not silently exit — it should behave exactly like
+      // tapping "Finish" (`_confirmFinish`), not like the X button's
+      // `_confirmDiscard` (which abandons the run with no summary). Before
+      // that (loading, permission-denied, countdown), there's nothing to
+      // protect yet, so back pops normally — matching `_confirmDiscard`'s
+      // own `!_hasStarted` fast-path. `canPop: false` only blocks the
+      // system back gesture/`maybePop`; every explicit `Navigator.pop()`
+      // call elsewhere in this file (discard, finish, summary
+      // save/discard) is unaffected and still pops immediately.
+      canPop: !_hasStarted,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _confirmFinish();
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF3F5EE),
+        body: SafeArea(
+          child: _isLoadingLocation
+              ? _buildLoadingView()
+              : _permissionDenied
+                  ? _buildPermissionDeniedView()
+                  : _isCountingDown
+                      ? _buildCountdownView()
+                      : _isMapExpanded
+                          ? _buildExpandedMapView()
+                          : _buildStatsView(),
+        ),
       ),
     );
   }
