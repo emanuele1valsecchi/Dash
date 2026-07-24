@@ -14,6 +14,7 @@ import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
 import '../widgets/map/area_details_sheet.dart';
 import '../widgets/map/claimed_areas_layer.dart';
+import '../widgets/map/enhanced_map_gestures.dart';
 
 class ExplorePage extends StatefulWidget {
   const ExplorePage({super.key});
@@ -178,40 +179,50 @@ class _ExplorePageState extends State<ExplorePage> {
   // ── Map ───────────────────────────────────────────────────────────────────
 
   Widget _buildMap() {
-    return FlutterMap(
+    // Rotation dead-zone + zoom inertia both live in the shared
+    // EnhancedMapGestures wrapper now (see that file for the full
+    // rationale) — flutter_map's own rotate handling is switched off below
+    // so the two can't fight over the same touch.
+    return EnhancedMapGestures(
       mapController: _mapController,
-      options: MapOptions(
-        initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
-        initialZoom: _defaultZoom,
-        // Dismiss keyboard when the user taps the map; open the area sheet
-        // if the tap landed on a claimed-area polygon.
-        onTap: (_, _) {
-          FocusScope.of(context).unfocus();
-          handleAreaTap(context, _areaHitNotifier, _visibleAreas);
-        },
-      ),
-      children: [
-        TileLayer(
-          urlTemplate: MapStyle.terrainTileUrl,
-          userAgentPackageName: 'com.dash',
-          retinaMode: RetinaMode.isHighDensity(context),
-          tileProvider: CachedTileProvider.instance,
-        ),
-        // Claimed areas — filtered by the grid ("other users'") and cable
-        // ("my own") panel toggles.
-        ClaimedAreasLayer(areas: _visibleAreas, hitNotifier: _areaHitNotifier),
-        if (_currentPosition != null)
-          MarkerLayer(
-            markers: [
-              Marker(
-                point: _currentPosition!,
-                width: 60,
-                height: 60,
-                child: const _LocationDot(),
-              ),
-            ],
+      child: FlutterMap(
+        mapController: _mapController,
+        options: MapOptions(
+          initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
+          initialZoom: _defaultZoom,
+          interactionOptions: const InteractionOptions(
+            flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
           ),
-      ],
+          // Dismiss keyboard when the user taps the map; open the area sheet
+          // if the tap landed on a claimed-area polygon.
+          onTap: (_, _) {
+            FocusScope.of(context).unfocus();
+            handleAreaTap(context, _areaHitNotifier, _visibleAreas);
+          },
+        ),
+        children: [
+          TileLayer(
+            urlTemplate: MapStyle.terrainTileUrl,
+            userAgentPackageName: 'com.dash',
+            retinaMode: RetinaMode.isHighDensity(context),
+            tileProvider: CachedTileProvider.instance,
+          ),
+          // Claimed areas — filtered by the grid ("other users'") and cable
+          // ("my own") panel toggles.
+          ClaimedAreasLayer(areas: _visibleAreas, hitNotifier: _areaHitNotifier),
+          if (_currentPosition != null)
+            MarkerLayer(
+              markers: [
+                Marker(
+                  point: _currentPosition!,
+                  width: 60,
+                  height: 60,
+                  child: const _LocationDot(),
+                ),
+              ],
+            ),
+        ],
+      ),
     );
   }
 

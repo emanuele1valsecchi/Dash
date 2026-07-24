@@ -20,6 +20,7 @@ import '../services/water_fountain_service.dart';
 import '../utils/geometry_utils.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
+import '../widgets/map/enhanced_map_gestures.dart';
 import '../widgets/map/water_fountain_marker_layer.dart';
 import '../widgets/run_results_dialog.dart';
 import 'test_run_creator_page.dart';
@@ -1492,88 +1493,99 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   }
 
   Widget _buildMap() {
-    return FlutterMap(
+    // Rotate isn't in the flags below (never was) and the wrapping
+    // EnhancedMapGestures doesn't change that — it only adds a dead-zoned
+    // two-finger rotate (plus a little zoom inertia) on top of whatever
+    // flutter_map flags a screen already allows, shared with every other
+    // map screen; see that widget. Pan stays deliberately disabled here
+    // (only pinch/double-tap zoom) — a runner's view shouldn't drift off
+    // their position mid-workout.
+    return EnhancedMapGestures(
       mapController: _mapController,
-      options: MapOptions(
-        initialCenter: _displayedPosition ?? _currentPosition ?? const LatLng(45.4642, 9.1900),
-        initialZoom: _defaultZoom,
-        interactionOptions: const InteractionOptions(
-          flags: InteractiveFlag.pinchZoom | InteractiveFlag.doubleTapZoom,
+      child: FlutterMap(
+        mapController: _mapController,
+        options: MapOptions(
+          initialCenter:
+              _displayedPosition ?? _currentPosition ?? const LatLng(45.4642, 9.1900),
+          initialZoom: _defaultZoom,
+          interactionOptions: const InteractionOptions(
+            flags: InteractiveFlag.pinchZoom | InteractiveFlag.doubleTapZoom,
+          ),
+          onPositionChanged: _handleMapPositionChanged,
         ),
-        onPositionChanged: _handleMapPositionChanged,
+        children: [
+          TileLayer(
+            urlTemplate: MapStyle.terrainTileUrl,
+            userAgentPackageName: 'com.dash',
+            retinaMode: RetinaMode.isHighDensity(context),
+            tileProvider: CachedTileProvider.instance,
+          ),
+
+          // ── Claimed areas (as of when this run started — not refreshed
+          // live, to save battery/network mid-workout; display only, no
+          // tap-to-view while running) ────────────────────────────────────
+          ClaimedAreasLayer(areas: _visibleAreas),
+
+          // ── Claimed loop fills (this run's own in-progress loops) ────────
+          if (_closedLoops.isNotEmpty)
+            PolygonLayer(
+              polygons: _closedLoops
+                  .map((poly) => Polygon(
+                        points: poly,
+                        color: const Color(0xFF4A8C52).withValues(alpha: 0.18),
+                        borderColor: const Color(0xFF4A8C52).withValues(alpha: 0.6),
+                        borderStrokeWidth: 2.2,
+                      ))
+                  .toList(),
+            ),
+
+          // ── Planned-route guide line (static — no on/off-route tracking or
+          // rerouting, see RunTrackingPage.plannedRoute) ──────────────────
+          if (_smoothedPlannedRoute != null && _smoothedPlannedRoute!.length >= 2)
+            PolylineLayer(
+              polylines: [
+                Polyline(
+                  points: _smoothedPlannedRoute!,
+                  color: const Color(0xFF2E7D32).withValues(alpha: 0.55),
+                  strokeWidth: 3.0,
+                ),
+              ],
+            ),
+
+          // ── Dashed connector from the runner to the route's start, while
+          // they're still far enough from it to be useful ─────────────────
+          if (_startConnectorLine case final connector?)
+            PolylineLayer(polylines: [connector]),
+
+          // ── Breadcrumb trail (paint left behind the runner) ──────────────
+          if (_trailPoints.length >= 2)
+            PolylineLayer(
+              polylines: [
+                Polyline(
+                  points: _trailPoints,
+                  color: const Color(0xFF4A8C52),
+                  strokeWidth: 6.0,
+                ),
+              ],
+            ),
+
+          // ── Water fountains ────────────────────────────────────────────
+          WaterFountainMarkerLayer(fountains: _waterFountains, visible: _fountainsVisible),
+
+          // ── Runner position ────────────────────────────────────────────
+          if ((_displayedPosition ?? _currentPosition) != null)
+            MarkerLayer(
+              markers: [
+                Marker(
+                  point: _displayedPosition ?? _currentPosition!,
+                  width: 60,
+                  height: 60,
+                  child: const _RunnerLocationDot(),
+                ),
+              ],
+            ),
+        ],
       ),
-      children: [
-        TileLayer(
-          urlTemplate: MapStyle.terrainTileUrl,
-          userAgentPackageName: 'com.dash',
-          retinaMode: RetinaMode.isHighDensity(context),
-          tileProvider: CachedTileProvider.instance,
-        ),
-
-        // ── Claimed areas (as of when this run started — not refreshed
-        // live, to save battery/network mid-workout; display only, no
-        // tap-to-view while running) ────────────────────────────────────
-        ClaimedAreasLayer(areas: _visibleAreas),
-
-        // ── Claimed loop fills (this run's own in-progress loops) ────────
-        if (_closedLoops.isNotEmpty)
-          PolygonLayer(
-            polygons: _closedLoops
-                .map((poly) => Polygon(
-                      points: poly,
-                      color: const Color(0xFF4A8C52).withValues(alpha: 0.18),
-                      borderColor: const Color(0xFF4A8C52).withValues(alpha: 0.6),
-                      borderStrokeWidth: 2.2,
-                    ))
-                .toList(),
-          ),
-
-        // ── Planned-route guide line (static — no on/off-route tracking or
-        // rerouting, see RunTrackingPage.plannedRoute) ──────────────────
-        if (_smoothedPlannedRoute != null && _smoothedPlannedRoute!.length >= 2)
-          PolylineLayer(
-            polylines: [
-              Polyline(
-                points: _smoothedPlannedRoute!,
-                color: const Color(0xFF2E7D32).withValues(alpha: 0.55),
-                strokeWidth: 3.0,
-              ),
-            ],
-          ),
-
-        // ── Dashed connector from the runner to the route's start, while
-        // they're still far enough from it to be useful ─────────────────
-        if (_startConnectorLine case final connector?)
-          PolylineLayer(polylines: [connector]),
-
-        // ── Breadcrumb trail (paint left behind the runner) ──────────────
-        if (_trailPoints.length >= 2)
-          PolylineLayer(
-            polylines: [
-              Polyline(
-                points: _trailPoints,
-                color: const Color(0xFF4A8C52),
-                strokeWidth: 6.0,
-              ),
-            ],
-          ),
-
-        // ── Water fountains ────────────────────────────────────────────
-        WaterFountainMarkerLayer(fountains: _waterFountains, visible: _fountainsVisible),
-
-        // ── Runner position ────────────────────────────────────────────
-        if ((_displayedPosition ?? _currentPosition) != null)
-          MarkerLayer(
-            markers: [
-              Marker(
-                point: _displayedPosition ?? _currentPosition!,
-                width: 60,
-                height: 60,
-                child: const _RunnerLocationDot(),
-              ),
-            ],
-          ),
-      ],
     );
   }
 }

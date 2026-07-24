@@ -17,6 +17,7 @@ import '../services/run_session_repository.dart';
 import '../utils/geometry_utils.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
+import '../widgets/map/enhanced_map_gestures.dart';
 import '../widgets/run_results_dialog.dart';
 
 /// Dev-only tool: build a fake run by placing pins — routed the same way as
@@ -751,108 +752,115 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
   // ── Map ───────────────────────────────────────────────────────────────────
 
   Widget _buildMap() {
-    // Pan is disabled for the duration of Draw mode (pinch-zoom/rotate stay
-    // on) — see RouteCreatePage's `_buildMap` for the full rationale: a
+    // Pan is disabled for the duration of Draw mode (pinch-zoom stays on) —
+    // see RouteCreatePage's `_buildMap` for the full rationale: a
     // single-finger drag needs to mean "draw a shape", not "pan the map",
     // and the drawing gesture is captured by a separate overlay instead of
-    // fighting flutter_map's own pan recognizer for the same gesture.
+    // fighting flutter_map's own pan recognizer for the same gesture. Rotate
+    // is excluded from flutter_map's own flags in both branches — handled
+    // instead by the wrapping `EnhancedMapGestures` (dead-zoned two-finger
+    // rotate + a little zoom inertia, shared with every other map screen;
+    // see that widget).
     final drawModeActive = _activeTool == _Tool.freeDraw && _canUseDrawTool;
 
-    return FlutterMap(
+    return EnhancedMapGestures(
       mapController: _mapController,
-      options: MapOptions(
-        initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
-        initialZoom: _defaultZoom,
-        interactionOptions: InteractionOptions(
-          flags: drawModeActive
-              ? InteractiveFlag.pinchZoom | InteractiveFlag.rotate
-              : InteractiveFlag.all,
+      child: FlutterMap(
+        mapController: _mapController,
+        options: MapOptions(
+          initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
+          initialZoom: _defaultZoom,
+          interactionOptions: InteractionOptions(
+            flags: drawModeActive
+                ? InteractiveFlag.pinchZoom
+                : InteractiveFlag.all & ~InteractiveFlag.rotate,
+          ),
+          onTap: (_, point) => _onMapTap(point),
         ),
-        onTap: (_, point) => _onMapTap(point),
-      ),
-      children: [
-        TileLayer(
-          urlTemplate: MapStyle.terrainTileUrl,
-          userAgentPackageName: 'com.dash',
-          retinaMode: RetinaMode.isHighDensity(context),
-          tileProvider: CachedTileProvider.instance,
-        ),
+        children: [
+          TileLayer(
+            urlTemplate: MapStyle.terrainTileUrl,
+            userAgentPackageName: 'com.dash',
+            retinaMode: RetinaMode.isHighDensity(context),
+            tileProvider: CachedTileProvider.instance,
+          ),
 
-        // ── Claimed areas (display only — no tap-to-view here) ─────────────
-        ClaimedAreasLayer(areas: _visibleAreas),
+          // ── Claimed areas (display only — no tap-to-view here) ─────────────
+          ClaimedAreasLayer(areas: _visibleAreas),
 
-        if (_loopPolygons.isNotEmpty)
-          PolygonLayer(
-            polygons: [
-              for (final loop in _loopPolygons)
-                Polygon(
-                  points: loop,
-                  color: const Color(0xFF4A8C52).withValues(alpha: 0.15),
-                  borderColor: const Color(0xFF4A8C52).withValues(alpha: 0.55),
-                  borderStrokeWidth: 2.0,
+          if (_loopPolygons.isNotEmpty)
+            PolygonLayer(
+              polygons: [
+                for (final loop in _loopPolygons)
+                  Polygon(
+                    points: loop,
+                    color: const Color(0xFF4A8C52).withValues(alpha: 0.15),
+                    borderColor: const Color(0xFF4A8C52).withValues(alpha: 0.55),
+                    borderStrokeWidth: 2.0,
+                  ),
+              ],
+            ),
+          if (_segments.isNotEmpty)
+            PolylineLayer(
+              polylines: _segments
+                  .map((s) => Polyline(points: s.polyline, color: const Color(0xFF4A8C52), strokeWidth: 4.0))
+                  .toList(),
+            ),
+          if (_isRouting && _waypoints.length >= 2)
+            PolylineLayer(
+              polylines: [
+                Polyline(
+                  points: [_waypoints[_waypoints.length - 2], _waypoints.last],
+                  color: const Color(0xFF4A8C52).withValues(alpha: 0.35),
+                  strokeWidth: 3.0,
                 ),
-            ],
-          ),
-        if (_segments.isNotEmpty)
-          PolylineLayer(
-            polylines: _segments
-                .map((s) => Polyline(points: s.polyline, color: const Color(0xFF4A8C52), strokeWidth: 4.0))
-                .toList(),
-          ),
-        if (_isRouting && _waypoints.length >= 2)
-          PolylineLayer(
-            polylines: [
-              Polyline(
-                points: [_waypoints[_waypoints.length - 2], _waypoints.last],
-                color: const Color(0xFF4A8C52).withValues(alpha: 0.35),
-                strokeWidth: 3.0,
-              ),
-            ],
-          ),
-        // ── Live freehand-drawing trail (raw finger path, not yet
-        // road-snapped) ────────────────────────────────────────────────
-        if (_drawnPoints.length >= 2)
-          PolylineLayer(
-            polylines: [
-              Polyline(
-                points: _drawnPoints,
-                color: const Color(0xFF4A8C52).withValues(alpha: 0.6),
-                strokeWidth: 3.0,
-                pattern: StrokePattern.dashed(segments: const [6, 6]),
-              ),
-            ],
-          ),
-        if (_currentPosition != null)
-          MarkerLayer(
-            markers: [
-              Marker(point: _currentPosition!, width: 60, height: 60, child: const _LocationDot()),
-            ],
-          ),
-        // Interior points of a drawn segment are excluded here — see
-        // `_isHiddenWaypoint` — so a drawn shape only ever shows a start
-        // and finish pin, never one per road-snap sample.
-        if (_waypoints.isNotEmpty)
-          MarkerLayer(
-            markers: _waypoints
-                .asMap()
-                .entries
-                .where((e) => !_isHiddenWaypoint(e.key))
-                .map((e) {
-                  final idx = e.key;
-                  return Marker(
-                    point: e.value,
-                    width: 36,
-                    height: 36,
-                    child: _PinMarker(
-                      index: idx,
-                      isDeleteMode: _isDeleteMode,
-                      onTap: _isDeleteMode ? () => _deletePin(idx) : null,
-                    ),
-                  );
-                })
-                .toList(),
-          ),
-      ],
+              ],
+            ),
+          // ── Live freehand-drawing trail (raw finger path, not yet
+          // road-snapped) ────────────────────────────────────────────────
+          if (_drawnPoints.length >= 2)
+            PolylineLayer(
+              polylines: [
+                Polyline(
+                  points: _drawnPoints,
+                  color: const Color(0xFF4A8C52).withValues(alpha: 0.6),
+                  strokeWidth: 3.0,
+                  pattern: StrokePattern.dashed(segments: const [6, 6]),
+                ),
+              ],
+            ),
+          if (_currentPosition != null)
+            MarkerLayer(
+              markers: [
+                Marker(point: _currentPosition!, width: 60, height: 60, child: const _LocationDot()),
+              ],
+            ),
+          // Interior points of a drawn segment are excluded here — see
+          // `_isHiddenWaypoint` — so a drawn shape only ever shows a start
+          // and finish pin, never one per road-snap sample.
+          if (_waypoints.isNotEmpty)
+            MarkerLayer(
+              markers: _waypoints
+                  .asMap()
+                  .entries
+                  .where((e) => !_isHiddenWaypoint(e.key))
+                  .map((e) {
+                    final idx = e.key;
+                    return Marker(
+                      point: e.value,
+                      width: 36,
+                      height: 36,
+                      child: _PinMarker(
+                        index: idx,
+                        isDeleteMode: _isDeleteMode,
+                        onTap: _isDeleteMode ? () => _deletePin(idx) : null,
+                      ),
+                    );
+                  })
+                  .toList(),
+            ),
+        ],
+      ),
     );
   }
 
