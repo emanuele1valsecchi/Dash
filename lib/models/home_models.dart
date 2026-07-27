@@ -1,16 +1,32 @@
 import 'package:flutter/material.dart';
 
+class PreviewPin {
+  final String userId;
+  final String profileImageUrl;
+  final double normalizedPosition; // Valore da 0.0 a 1.0 per posizionarlo sulla barra
+  final bool isCurrentUser;
+
+  PreviewPin({
+    required this.userId,
+    required this.profileImageUrl,
+    required this.normalizedPosition,
+    required this.isCurrentUser,
+  });
+}
+
 class LeaderboardPreviewData {
-  final int? position;
-  final int? points;
-  final int? variation;
-  final List<String> avatarAssets;
+  final int position;
+  final int points;
+  final String? variation;
+  final String city; // Nuova aggiunta
+  final List<PreviewPin> pins; // Nuova aggiunta
 
   const LeaderboardPreviewData({
     required this.position,
     required this.points,
-    required this.variation,
-    required this.avatarAssets,
+    this.variation,
+    required this.city,
+    required this.pins,
   });
 }
 

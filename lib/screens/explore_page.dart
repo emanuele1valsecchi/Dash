@@ -14,6 +14,7 @@ import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
 import '../widgets/map/area_details_sheet.dart';
 import '../widgets/map/claimed_areas_layer.dart';
+import 'leaderboard_screen.dart'; // Assicurati che il percorso sia corretto
 import '../widgets/map/enhanced_map_gestures.dart';
 
 class ExplorePage extends StatefulWidget {
@@ -288,25 +289,28 @@ class _ExplorePageState extends State<ExplorePage> {
   }
 
   Widget _buildLeaderboardButton() {
-    return GestureDetector(
-      onTap: () {
-        // TODO: open leaderboard screen
-      },
-      child: Container(
-        width: 46,
-        height: 46,
-        decoration: const BoxDecoration(
-          shape: BoxShape.circle,
-          color: Color(0xFFCAF0B8),
-        ),
-        child: const Icon(
-          Icons.bar_chart_rounded,
-          color: Color(0xFF425143),
-          size: 24,
-        ),
+  return GestureDetector(
+    onTap: () {
+      // Naviga alla Leaderboard!
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const LeaderboardScreen()),
+      );
+    },
+    child: Container(
+      width: 46,
+      height: 46,
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        color: Color(0xFFCAF0B8),
       ),
-    );
-  }
+      child: const Icon(
+        Icons.bar_chart_rounded,
+        color: Color(0xFF425143),
+        size: 24,
+      ),
+    ),
+  );
+}
 
   // ── Vertical button panel (bottom-right) ──────────────────────────────────
 

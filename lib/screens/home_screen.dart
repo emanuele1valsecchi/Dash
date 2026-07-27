@@ -21,6 +21,7 @@ import '../widgets/home/leaderboard_preview_card.dart';
 import '../widgets/home/start_run_overlay.dart';
 import '../widgets/home/monthly_stats_section.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'leaderboard_screen.dart';
 
 class _NoOverscrollBehavior extends ScrollBehavior {
   const _NoOverscrollBehavior();
@@ -47,6 +48,9 @@ class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 1;
   HomeBadgeUiModel? _selectedBadge;
 
+  // Variabile per contenere i dati dinamici della leaderboard
+  LeaderboardPreviewData? _leaderboardData;
+
   // Gestione stato distanza e statistiche degli ultimi 30 giorni
   double _monthlyKm = 0.0;
   bool _isLoadingKm = true;
@@ -65,6 +69,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _badgesFuture = _loadBadges();
     _loadNickname();
     _loadMonthlyDistance();
+    _loadLeaderboardPreview(); // Avvia il calcolo della preview
     // Start the shared GPS stream as soon as the user reaches the app's main
     // screen, so map pages read an already-warm position instead of each
     // separately requesting permission and waiting on a fresh fix.
@@ -97,8 +102,6 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {}
   }
 
-  // Interroga Firestore per calcolare le medie degli allenamenti degli ultimi 30 giorni 
-  // e confrontarle con i record globali (best overall) e con il mese precedente (ultimi 60 giorni).
   Future<void> _loadMonthlyDistance() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
@@ -106,7 +109,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final db = FirebaseFirestore.instance;
 
-      // Andiamo indietro di 60 giorni per poter confrontare le attività con il mese precedente
       final now = DateTime.now();
       final thirtyDaysAgo = now.subtract(const Duration(days: 30));
       final sixtyDaysAgo = now.subtract(const Duration(days: 60));
@@ -122,7 +124,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final querySnapshot = results[0] as QuerySnapshot<Map<String, dynamic>>;
       final statsDoc = results[1] as DocumentSnapshot<Map<String, dynamic>>;
 
-      // Dividiamo i documenti tra gli ultimi 30 giorni e i 30 giorni ancora precedenti
       final currentMonthDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
       final previousMonthDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
 
@@ -138,7 +139,6 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
-      // --- ESTRAZIONE RECORD ASSOLUTI DAL DOC `userStats` ---
       final globalStats = statsDoc.data() ?? {};
       final bestOverall = globalStats['bestOverall'] ?? {};
       
@@ -148,7 +148,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final bestAvgSpeedKmh = (bestOverall['maxAvgSpeedKmh'] as num?)?.toDouble() ?? 0.0;
       final bestCalories = (bestOverall['maxCaloriesBurned'] as num?)?.toDouble() ?? 0.0;
 
-      // --- CALCOLO MEDIE DEGLI ULTIMI 30 GIORNI ---
       double totalMeters = 0;
       double totalCalories = 0;
       int totalDurationMs = 0;
@@ -170,49 +169,35 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
-      // Calcolo Valori Medi per Singolo Allenamento
       double avgDistanceMeters = completedActivities > 0 ? totalMeters / completedActivities : 0.0;
       double avgDurationMs = completedActivities > 0 ? totalDurationMs / completedActivities : 0.0;
       double avgCalories = completedActivities > 0 ? totalCalories / completedActivities : 0.0;
       double avgMaxSpeedKmh = completedActivities > 0 ? sumMaxSpeedsKmh / completedActivities : 0.0;
 
-      // Velocità Media Complessiva dei 30 giorni
       double avgSpeed30d = 0.0;
       if (totalDurationMs > 0 && totalMeters > 0) {
         double totalHours = totalDurationMs / 3600000;
         avgSpeed30d = (totalMeters / 1000) / totalHours;
       }
 
-      // --- FORMATTAZIONE E CALCOLO PROGRESSI ---
-      
-      // 1. Avg Session Time
       String avgDurationStr = '--';
       if (avgDurationMs > 0) {
         Duration d = Duration(milliseconds: avgDurationMs.toInt());
         avgDurationStr = d.inHours > 0 ? '${d.inHours}h ${d.inMinutes.remainder(60)}m' : '${d.inMinutes.remainder(60)} min';
       }
 
-      // 2. Avg Max Speed
       String avgMaxSpeedStr = avgMaxSpeedKmh > 0 ? '${avgMaxSpeedKmh.toStringAsFixed(1)} km/h' : '--';
-
-      // 3. Avg Speed
       String avgSpeedStr = avgSpeed30d > 0 ? '${avgSpeed30d.toStringAsFixed(1)} km/h' : '--';
-
-      // 4. Avg Distance
       String avgDistanceStr = avgDistanceMeters >= 1000 ? '${(avgDistanceMeters / 1000).toStringAsFixed(1)} km' : '${avgDistanceMeters.toStringAsFixed(0)} m';
-
-      // 5. Avg Calories
       String avgCaloriesStr = avgCalories > 0 ? '${avgCalories.toStringAsFixed(0)} kCal' : '--';
 
-      // Progresso Activities (confronto mese corrente vs precedente)
       double activitiesProgress = 0.0;
       if (previousCompletedActivities > 0) {
         activitiesProgress = (completedActivities / previousCompletedActivities).clamp(0.0, 1.0);
       } else if (completedActivities > 0) {
-        activitiesProgress = 1.0; // Se prima era 0 e ora > 0, 100% di progresso
+        activitiesProgress = 1.0; 
       }
 
-      // Costruzione statistiche UI
       final calculatedStats = [
         MonthlyStatData(
           title: 'Average\nsession time',
@@ -260,7 +245,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (mounted) {
         setState(() {
-          // Manteniamo la somma totale della distanza per il testo "X km ran in the last 30 days" in cima alla Home
           _monthlyKm = totalMeters / 1000;
           _monthlyStats = calculatedStats;
           _isLoadingKm = false;
@@ -269,6 +253,115 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       debugPrint('Errore calcolo statistiche: $e');
       if (mounted) setState(() => _isLoadingKm = false);
+    }
+  }
+
+  // --- NUOVO METODO: Genera la preview della classifica ---
+  Future<void> _loadLeaderboardPreview() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+      final db = FirebaseFirestore.instance;
+
+      // 1. Recupera i seguiti
+      final followsSnap = await db.collection('follows').where('followerId', isEqualTo: user.uid).get();
+      final List<String> followingIds = followsSnap.docs.map((d) => d.data()['followingId'] as String).toList();
+
+      // 2. Aggrega i punti di TUTTE le sessioni e cerca l'ultima città
+      final sessionsSnap = await db.collection('runningSessions').get();
+      Map<String, int> userPointsMap = {};
+      String currentCity = '';
+      DateTime latestRunDate = DateTime(2000);
+
+      for (var doc in sessionsSnap.docs) {
+        final data = doc.data();
+        final userId = data['userId'] as String?;
+        final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
+        final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
+        final city = (data['territoryCity'] as String?) ?? (data['startLocality'] as String?);
+
+        if (userId != null) {
+          userPointsMap[userId] = (userPointsMap[userId] ?? 0) + points;
+          
+          if (userId == user.uid && createdAt != null && city != null && city.isNotEmpty && createdAt.isAfter(latestRunDate)) {
+            latestRunDate = createdAt;
+            currentCity = city;
+          }
+        }
+      }
+
+      if (!userPointsMap.containsKey(user.uid)) {
+        userPointsMap[user.uid] = 0;
+      }
+
+      // 3. Ordina e trova l'utente
+      var sortedGlobal = userPointsMap.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+      final currentUserPoints = userPointsMap[user.uid]!;
+      final currentRank = sortedGlobal.indexWhere((e) => e.key == user.uid) + 1;
+
+      // 4. Seleziona fino a 10 utenti (utente + seguiti + riempimento)
+      Set<String> selectedUserIds = {user.uid};
+      
+      for (var id in followingIds) {
+        if (userPointsMap.containsKey(id) && selectedUserIds.length < 10) {
+          selectedUserIds.add(id);
+        }
+      }
+      
+      int upIndex = currentRank - 2; 
+      int downIndex = currentRank;   
+      while (selectedUserIds.length < 10 && (upIndex >= 0 || downIndex < sortedGlobal.length)) {
+        if (upIndex >= 0) {
+          selectedUserIds.add(sortedGlobal[upIndex].key);
+          upIndex--;
+        }
+        if (selectedUserIds.length < 10 && downIndex < sortedGlobal.length) {
+          selectedUserIds.add(sortedGlobal[downIndex].key);
+          downIndex++;
+        }
+      }
+
+      // 5. Normalizza le posizioni e recupera i profili
+      List<PreviewPin> pins = [];
+      int maxPointsInSelection = 1; 
+      for (var id in selectedUserIds) {
+        if ((userPointsMap[id] ?? 0) > maxPointsInSelection) {
+          maxPointsInSelection = userPointsMap[id]!;
+        }
+      }
+
+      for (var id in selectedUserIds) {
+        final profileDoc = await db.collection('profiles').doc(id).get();
+        final profileUrl = profileDoc.data()?['profileImageUrl'] as String? ?? '';
+        
+        final pts = userPointsMap[id] ?? 0;
+        double normalized = pts / maxPointsInSelection; 
+        
+        if (id != user.uid) {
+           normalized += (id.hashCode % 10) / 1000.0; 
+        }
+
+        pins.add(PreviewPin(
+          userId: id,
+          profileImageUrl: profileUrl,
+          normalizedPosition: normalized.clamp(0.0, 1.0),
+          isCurrentUser: id == user.uid,
+        ));
+      }
+
+      if (mounted) {
+        setState(() {
+          _leaderboardData = LeaderboardPreviewData(
+            position: currentRank,
+            points: currentUserPoints,
+            variation: null, 
+            city: currentCity,
+            pins: pins,
+          );
+        });
+      }
+    } catch (e) {
+      debugPrint("Errore Widget Leaderboard: $e");
     }
   }
 
@@ -329,14 +422,11 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  final leaderboardData = const LeaderboardPreviewData(
-    position: 300,
-    points: 10,
-    variation: null,
-    avatarAssets: [],
-  );
-
-  void _openLeaderboard() {}
+  void _openLeaderboard() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const LeaderboardScreen()),
+    );
+  }
   void _openNotifications() {}
   void _openHistory() {
     Navigator.of(context).push(
@@ -392,6 +482,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (mounted) {
       _loadMonthlyDistance();
+      _loadLeaderboardPreview(); // Ricarichiamo anche la classifica
     }
   }
 
@@ -439,7 +530,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: RefreshIndicator(
                         color: const Color(0xFF425143),
                         backgroundColor: const Color(0xFFCAF0B8),
-                        onRefresh: _loadMonthlyDistance,
+                        onRefresh: () async {
+                           await _loadMonthlyDistance();
+                           await _loadLeaderboardPreview();
+                        },
                         child: SingleChildScrollView(
                           physics: const AlwaysScrollableScrollPhysics(),
                           padding: const EdgeInsets.fromLTRB(20, 16, 20, 85),
@@ -523,10 +617,21 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ],
                               ),
                               const SizedBox(height: 14),
-                              LeaderboardPreviewCard(
-                                data: leaderboardData,
-                                onTap: _openLeaderboard,
-                              ),
+                              
+                              // --- QUI RENDERIZZIAMO IL WIDGET SE CARICATO ---
+                              if (_leaderboardData != null)
+                                LeaderboardPreviewCard(
+                                  data: _leaderboardData!,
+                                  onTap: _openLeaderboard,
+                                )
+                              else
+                                const Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 24),
+                                  child: Center(
+                                    child: CircularProgressIndicator(color: Color(0xFF4A8C52)),
+                                  ),
+                                ),
+                                
                               const SizedBox(height: 28),
                               FutureBuilder<List<HomeBadgeUiModel>>(
                                 future: _badgesFuture,
@@ -692,7 +797,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                                   size: 34,
                                                 ),
                                               ),
-                                            ),
+                                          ),
                                         );
                                       },
                                     )
