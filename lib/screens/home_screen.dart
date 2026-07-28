@@ -841,29 +841,29 @@ class _HomeScreenState extends State<HomeScreen> {
                                                   0, 0, 0, 1, 0,
                                                 ]),
                                           child: CachedNetworkImage(
-                                              imageUrl: _selectedBadge!.imageUrl,
-                                              fit: BoxFit.cover,
-                                              placeholder: (context, url) => Container(
-                                                color: const Color(0xFFE5E9DF),
-                                                alignment: Alignment.center,
-                                                child: const SizedBox(
-                                                  width: 24,
-                                                  height: 24,
-                                                  child: CircularProgressIndicator(
-                                                    strokeWidth: 2,
-                                                    color: Color(0xFF6F8C63),
-                                                  ),
+                                            imageUrl: _selectedBadge!.imageUrl,
+                                            fit: BoxFit.cover,
+                                            placeholder: (context, url) => Container(
+                                              color: const Color(0xFFE5E9DF),
+                                              alignment: Alignment.center,
+                                              child: const SizedBox(
+                                                width: 24,
+                                                height: 24,
+                                                child: CircularProgressIndicator(
+                                                  strokeWidth: 2,
+                                                  color: Color(0xFF6F8C63),
                                                 ),
                                               ),
-                                              errorWidget: (context, url, error) => Container(
-                                                color: const Color(0xFFE5E9DF),
-                                                alignment: Alignment.center,
-                                                child: const Icon(
-                                                  Icons.image_not_supported_outlined,
-                                                  color: Color(0xFF7A8377),
-                                                  size: 34,
-                                                ),
+                                            ),
+                                            errorWidget: (context, url, error) => Container(
+                                              color: const Color(0xFFE5E9DF),
+                                              alignment: Alignment.center,
+                                              child: const Icon(
+                                                Icons.image_not_supported_outlined,
+                                                color: Color(0xFF7A8377),
+                                                size: 34,
                                               ),
+                                            ),
                                           ),
                                         );
                                       },
