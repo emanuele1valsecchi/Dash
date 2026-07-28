@@ -14,7 +14,7 @@ import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
 import '../widgets/map/area_details_sheet.dart';
 import '../widgets/map/claimed_areas_layer.dart';
-import 'leaderboard_screen.dart'; // Assicurati che il percorso sia corretto
+import 'leaderboard_screen.dart';
 import '../widgets/map/enhanced_map_gestures.dart';
 
 class ExplorePage extends StatefulWidget {
@@ -35,25 +35,18 @@ class _ExplorePageState extends State<ExplorePage> {
   StreamSubscription<LatLng>? _positionSub;
 
   // ── Claimed areas from Firestore ────────────────────────────────────────
-  // Loaded incrementally (not a live listener — see ClaimedAreaRepository)
-  // from every user, then split for rendering by ownership of the signed-in
-  // user. _areaHitNotifier drives tap detection on the polygons themselves.
   List<ClaimedArea> _allAreas = [];
   final LayerHitNotifier<String> _areaHitNotifier = ValueNotifier(null);
 
   // ── Map settings ──────────────────────────────────────────────────────────
-  // Independent filters over `claimedAreas` by ownership: "other users'
-  // territory" (what's contestable) vs. "my own territory" (already
-  // secured). Both default on, bound to the grid/cable panel buttons.
   bool _showOtherAreas = true;
   bool _showMyAreas = true;
 
-  // ── Search ────────────────────────────────────────────────────────────────
+  // ── Search & City Context for Leaderboard ─────────────────────────────────
   bool _isSearching = false;
+  String _activeCityFilter = 'Global Leaderboard'; 
 
   static const double _defaultZoom = 16.0;
-
-  // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   @override
   void initState() {
@@ -70,11 +63,6 @@ class _ExplorePageState extends State<ExplorePage> {
     super.dispose();
   }
 
-  // ── Location helpers ──────────────────────────────────────────────────────
-
-  /// Uses the app-wide [LocationService] instead of requesting a fresh fix
-  /// itself — usually already warm by the time this page opens, since
-  /// `HomeScreen` starts it right after login, so there's nothing to wait on.
   Future<void> _initLocation() async {
     await LocationService.instance.start();
     if (!mounted) return;
@@ -85,8 +73,10 @@ class _ExplorePageState extends State<ExplorePage> {
       _currentPosition = cached;
       _isLoadingLocation = false;
     });
+    
     if (cached != null) {
       _mapController.move(cached, _defaultZoom);
+      await _updateCityForCurrentLocation(cached);
     }
 
     _positionSub = LocationService.instance.updates.listen((pos) {
@@ -97,10 +87,40 @@ class _ExplorePageState extends State<ExplorePage> {
   void _centerOnUser() {
     if (_currentPosition != null) {
       _mapController.move(_currentPosition!, _defaultZoom);
+      _updateCityForCurrentLocation(_currentPosition!);
     }
   }
 
-  // ── Claimed areas ─────────────────────────────────────────────────────────
+  // Rileva la città basata sulle coordinate attuali (Reverse Geocoding)
+  Future<void> _updateCityForCurrentLocation(LatLng pos) async {
+    try {
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/reverse'
+        '?lat=${pos.latitude}&lon=${pos.longitude}&format=json',
+      );
+      final response = await http
+          .get(uri, headers: {'User-Agent': 'DashApp/1.0'})
+          .timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final address = data['address'] as Map<String, dynamic>?;
+        
+        final city = address?['city'] ?? 
+                     address?['town'] ?? 
+                     address?['village'] ?? 
+                     address?['municipality'];
+
+        if (city != null && mounted) {
+          setState(() {
+            _activeCityFilter = city.toString().trim();
+          });
+        }
+      }
+    } catch (_) {
+      // In caso di errore di rete, mantiene il fallback
+    }
+  }
 
   Future<void> _loadClaimedAreas() async {
     final areas = await ClaimedAreaRepository.instance.fetchAllAreas();
@@ -108,10 +128,6 @@ class _ExplorePageState extends State<ExplorePage> {
     setState(() => _allAreas = areas);
   }
 
-  /// [_allAreas] split by ownership of the signed-in user and filtered by
-  /// the grid/cable toggles — each area is either "mine" or "someone
-  /// else's", never both, so the two toggles cover the whole collection
-  /// between them.
   List<ClaimedArea> get _visibleAreas {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     return _allAreas.where((area) {
@@ -119,8 +135,6 @@ class _ExplorePageState extends State<ExplorePage> {
       return isMine ? _showMyAreas : _showOtherAreas;
     }).toList();
   }
-
-  // ── Map controls ──────────────────────────────────────────────────────────
 
   void _resetNorth() => _mapController.rotate(0);
 
@@ -130,35 +144,42 @@ class _ExplorePageState extends State<ExplorePage> {
     if (query.trim().isEmpty) return;
     FocusScope.of(context).unfocus();
     setState(() => _isSearching = true);
+    
+    final cleanQuery = query.trim();
+
     try {
       final uri = Uri.parse(
         'https://nominatim.openstreetmap.org/search'
-        '?q=${Uri.encodeComponent(query.trim())}&format=json&limit=1',
+        '?q=${Uri.encodeComponent(cleanQuery)}&format=json&limit=1',
       );
       final response = await http
           .get(uri, headers: {'User-Agent': 'DashApp/1.0'})
           .timeout(const Duration(seconds: 8));
+          
       if (response.statusCode == 200) {
         final results = jsonDecode(response.body) as List<dynamic>;
         if (results.isNotEmpty) {
           final first = results[0] as Map<String, dynamic>;
           final lat = double.parse(first['lat'] as String);
           final lon = double.parse(first['lon'] as String);
+          
           _mapController.move(LatLng(lat, lon), 13.0);
+          
+          setState(() {
+            _activeCityFilter = cleanQuery[0].toUpperCase() + cleanQuery.substring(1).toLowerCase();
+          });
         } else if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('City "$query" not found')),
+            SnackBar(content: Text('City "$cleanQuery" not found')),
           );
         }
       }
     } catch (_) {
-      // Silently ignore network errors — map stays where it was
+      // Silently ignore network errors
     } finally {
       if (mounted) setState(() => _isSearching = false);
     }
   }
-
-  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -177,13 +198,7 @@ class _ExplorePageState extends State<ExplorePage> {
     );
   }
 
-  // ── Map ───────────────────────────────────────────────────────────────────
-
   Widget _buildMap() {
-    // Rotation dead-zone + zoom inertia both live in the shared
-    // EnhancedMapGestures wrapper now (see that file for the full
-    // rationale) — flutter_map's own rotate handling is switched off below
-    // so the two can't fight over the same touch.
     return EnhancedMapGestures(
       mapController: _mapController,
       child: FlutterMap(
@@ -194,8 +209,6 @@ class _ExplorePageState extends State<ExplorePage> {
           interactionOptions: const InteractionOptions(
             flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
           ),
-          // Dismiss keyboard when the user taps the map; open the area sheet
-          // if the tap landed on a claimed-area polygon.
           onTap: (_, _) {
             FocusScope.of(context).unfocus();
             handleAreaTap(context, _areaHitNotifier, _visibleAreas);
@@ -208,8 +221,6 @@ class _ExplorePageState extends State<ExplorePage> {
             retinaMode: RetinaMode.isHighDensity(context),
             tileProvider: CachedTileProvider.instance,
           ),
-          // Claimed areas — filtered by the grid ("other users'") and cable
-          // ("my own") panel toggles.
           ClaimedAreasLayer(areas: _visibleAreas, hitNotifier: _areaHitNotifier),
           if (_currentPosition != null)
             MarkerLayer(
@@ -226,8 +237,6 @@ class _ExplorePageState extends State<ExplorePage> {
       ),
     );
   }
-
-  // ── Top controls (search bar + leaderboard button) ────────────────────────
 
   Widget _buildTopControls() {
     return Padding(
@@ -276,7 +285,9 @@ class _ExplorePageState extends State<ExplorePage> {
                   icon: const Icon(Icons.close, size: 18, color: Colors.grey),
                   onPressed: () {
                     _searchController.clear();
-                    setState(() {});
+                    if (_currentPosition != null) {
+                      _updateCityForCurrentLocation(_currentPosition!);
+                    }
                   },
                 )
               : null,
@@ -289,30 +300,29 @@ class _ExplorePageState extends State<ExplorePage> {
   }
 
   Widget _buildLeaderboardButton() {
-  return GestureDetector(
-    onTap: () {
-      // Naviga alla Leaderboard!
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const LeaderboardScreen()),
-      );
-    },
-    child: Container(
-      width: 46,
-      height: 46,
-      decoration: const BoxDecoration(
-        shape: BoxShape.circle,
-        color: Color(0xFFCAF0B8),
+    return GestureDetector(
+      onTap: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => LeaderboardScreen(cityFilter: _activeCityFilter),
+          ),
+        );
+      },
+      child: Container(
+        width: 46,
+        height: 46,
+        decoration: const BoxDecoration(
+          shape: BoxShape.circle,
+          color: Color(0xFFCAF0B8),
+        ),
+        child: const Icon(
+          Icons.bar_chart_rounded,
+          color: Color(0xFF425143),
+          size: 24,
+        ),
       ),
-      child: const Icon(
-        Icons.bar_chart_rounded,
-        color: Color(0xFF425143),
-        size: 24,
-      ),
-    ),
-  );
-}
-
-  // ── Vertical button panel (bottom-right) ──────────────────────────────────
+    );
+  }
 
   Widget _buildVerticalButtonPanel() {
     return Positioned(
@@ -321,13 +331,11 @@ class _ExplorePageState extends State<ExplorePage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // My-location button — standalone above the settings group
           _MapRoundButton(
             icon: Icons.my_location,
             onTap: _centerOnUser,
           ),
           const SizedBox(height: 8),
-          // 4-button settings card
           Container(
             decoration: BoxDecoration(
               color: Colors.white,
@@ -343,14 +351,12 @@ class _ExplorePageState extends State<ExplorePage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // 3.1 Compass — resets map rotation to north-up
                 _PanelButton(
                   icon: Icons.explore_outlined,
                   onTap: _resetNorth,
                   position: _PanelPosition.top,
                 ),
                 _PanelDivider(),
-                // 3.2 Grid — toggle other users' claimed territory
                 _PanelButton(
                   icon: Icons.grid_on_outlined,
                   onTap: () =>
@@ -359,7 +365,6 @@ class _ExplorePageState extends State<ExplorePage> {
                   position: _PanelPosition.middle,
                 ),
                 _PanelDivider(),
-                // 3.3 Toggle my own claimed territory
                 _PanelButton(
                   icon: Icons.cable_outlined,
                   onTap: () => setState(() => _showMyAreas = !_showMyAreas),
@@ -374,8 +379,6 @@ class _ExplorePageState extends State<ExplorePage> {
     );
   }
 
-  // ── Bottom navigation ─────────────────────────────────────────────────────
-
   Widget _buildBottomNav() {
     return NavigationBar(
       height: 82,
@@ -384,11 +387,9 @@ class _ExplorePageState extends State<ExplorePage> {
       indicatorColor: const Color(0xFFCFE8BD),
       onDestinationSelected: (index) {
         if (index == 1) {
-          // Home tab — return to HomeScreen
           Navigator.of(context).pop();
           return;
         }
-        // Profile (index 2) — TODO
       },
       destinations: const [
         NavigationDestination(
@@ -409,8 +410,6 @@ class _ExplorePageState extends State<ExplorePage> {
       ],
     );
   }
-
-  // ── Loading / permission overlays ─────────────────────────────────────────
 
   Widget _buildLoadingOverlay() {
     return Container(
@@ -435,7 +434,7 @@ class _ExplorePageState extends State<ExplorePage> {
     return Positioned(
       bottom: 16,
       left: 16,
-      right: 72, // leave room for the button panel on the right
+      right: 72,
       child: Material(
         borderRadius: BorderRadius.circular(12),
         color: Colors.red.shade700,
@@ -466,11 +465,8 @@ class _ExplorePageState extends State<ExplorePage> {
   }
 }
 
-// ── Reusable map UI widgets ───────────────────────────────────────────────────
-
 enum _PanelPosition { top, middle, bottom }
 
-/// Standalone round button (e.g. "My location").
 class _MapRoundButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
@@ -495,7 +491,6 @@ class _MapRoundButton extends StatelessWidget {
   }
 }
 
-/// Button inside the vertical settings panel — handles corner rounding.
 class _PanelButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
@@ -545,8 +540,6 @@ class _PanelDivider extends StatelessWidget {
     );
   }
 }
-
-// ── GPS location dot ──────────────────────────────────────────────────────────
 
 class _LocationDot extends StatelessWidget {
   const _LocationDot();

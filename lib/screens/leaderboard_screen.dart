@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
-// Modello di supporto per i dati della classifica
 class LeaderboardEntry {
   final String userId;
   final int totalPoints;
@@ -22,7 +21,12 @@ class LeaderboardEntry {
 }
 
 class LeaderboardScreen extends StatefulWidget {
-  const LeaderboardScreen({super.key});
+  final String cityFilter; // Città specifica o 'Global Leaderboard'
+
+  const LeaderboardScreen({
+    super.key,
+    required this.cityFilter,
+  });
 
   @override
   State<LeaderboardScreen> createState() => _LeaderboardScreenState();
@@ -41,49 +45,50 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
 
   Future<void> _fetchLeaderboardData() async {
     try {
-      // 1. Aggrega i punti dalle runningSession
       final sessionsSnapshot = await FirebaseFirestore.instance.collection('runningSessions').get();
       
       Map<String, int> userPointsMap = {};
+      final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+      final isGlobal = widget.cityFilter == 'Global Leaderboard';
+
       for (var doc in sessionsSnapshot.docs) {
         final data = doc.data();
         final userId = data['userId'] as String?;
         final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
+        final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
+        final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
+        final city = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
         
         if (userId != null) {
+          // Se non è globale, saltiamo tutte le sessioni non appartenenti a questa città
+          if (!isGlobal && city != widget.cityFilter) continue;
+
           userPointsMap[userId] = (userPointsMap[userId] ?? 0) + points;
         }
       }
 
-      // 2. Ordina gli user per punteggio decrescente
       var sortedUsers = userPointsMap.entries.toList()
         ..sort((a, b) => b.value.compareTo(a.value));
 
-      // 3. Recupera i profili degli utenti e crea la classifica
       List<LeaderboardEntry> leaderboard = [];
       int currentRank = 1;
-      
-      final currentUserId = FirebaseAuth.instance.currentUser?.uid;
 
       for (var entry in sortedUsers) {
         final userId = entry.key;
         final totalPoints = entry.value;
 
-        // Idealmente, qui potresti fare una query 'in' per ottimizzare, 
-        // ma per semplicità recuperiamo i profili uno ad uno
         final profileDoc = await FirebaseFirestore.instance.collection('profiles').doc(userId).get();
         final profileData = profileDoc.data() ?? {};
 
         final name = profileData['name'] as String? ?? 'Unknown';
-        final surname = profileData['surname'] as String? ?? 'User';
-        final profileImageUrl = profileData['profileImageUrl'] as String? ?? '';
+        final surname = profileData['surname'] as String? ?? '';
 
         final lbEntry = LeaderboardEntry(
           userId: userId,
           totalPoints: totalPoints,
           name: name,
           surname: surname,
-          profileImageUrl: profileImageUrl,
+          profileImageUrl: profileData['profileImageUrl'] as String? ?? '',
           rank: currentRank,
         );
 
@@ -109,10 +114,22 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
     }
   }
 
+  String _formatName(String name, String surname) {
+    final fullName = '$name $surname'.trim();
+    if (fullName.isEmpty) return 'Unknown User';
+    
+    return fullName.split(' ').map((word) {
+      if (word.isEmpty) return '';
+      return word[0].toUpperCase() + word.substring(1).toLowerCase();
+    }).join(' ');
+  }
+
   @override
   Widget build(BuildContext context) {
+    final isGlobal = widget.cityFilter == 'Global Leaderboard';
+
     return Scaffold(
-      backgroundColor: const Color(0xFFF3F5EE), // Sfondo panna
+      backgroundColor: const Color(0xFFF3F5EE),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -121,52 +138,92 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
           icon: const Icon(Icons.arrow_back, color: Color(0xFF425143)),
           onPressed: () => Navigator.pop(context),
         ),
-        title: const Text(
-          'Track', // Come da design Figma
-          style: TextStyle(
-            color: Color(0xFF4A8C52), // Verde scuro
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-          ),
+        title: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              isGlobal ? 'Global Leaderboard' : 'Leaderboard',
+              style: const TextStyle(
+                color: Color(0xFF4A8C52),
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            if (!isGlobal)
+              Text(
+                widget.cityFilter,
+                style: const TextStyle(
+                  color: Color(0xFF8A9389),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+          ],
         ),
+        // Mostra l'icona del mondo in alto a destra SOLO se NON siamo già nella Global Leaderboard
+        actions: [
+          if (!isGlobal)
+            IconButton(
+              icon: const Icon(Icons.public_rounded, color: Color(0xFF425143)),
+              tooltip: 'Global Leaderboard',
+              onPressed: () {
+                // Sostituisce la schermata attuale con la Global Leaderboard
+                Navigator.of(context).pushReplacement(
+                  MaterialPageRoute(
+                    builder: (_) => const LeaderboardScreen(cityFilter: 'Global Leaderboard'),
+                  ),
+                );
+              },
+            ),
+        ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator(color: Color(0xFF4A8C52)))
-          : Stack(
-              children: [
-                Column(
-                  children: [
-                    // PODIO (Top 3)
-                    if (_leaderboard.isNotEmpty) _buildPodiumSection(),
-                    
-                    // LISTA (Dal 4° in poi)
-                    Expanded(
-                      child: ListView.builder(
-                        padding: const EdgeInsets.only(top: 8, bottom: 100), // Spazio per la sticky bar
-                        itemCount: _leaderboard.length > 3 ? _leaderboard.length - 3 : 0,
-                        itemBuilder: (context, index) {
-                          final entry = _leaderboard[index + 3]; // Salta i primi 3
-                          return _buildListItem(entry);
-                        },
+          : SafeArea(
+              child: Stack(
+                children: [
+                  Column(
+                    children: [
+                      if (_leaderboard.isNotEmpty) _buildPodiumSection(),
+                      
+                      // --- LINETTA DIVISORIA DECORATIVA ---
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: Colors.black.withValues(alpha: 0.08),
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-                
-                // STICKY BOTTOM BAR (Utente Corrente)
-                if (_currentUserEntry != null)
-                  Positioned(
-                    bottom: 24,
-                    left: 20,
-                    right: 20,
-                    child: _buildCurrentUserStickyBar(_currentUserEntry!),
+                      const SizedBox(height: 8),
+                      // ------------------------------------
+                      
+                      Expanded(
+                        child: ListView.builder(
+                          padding: const EdgeInsets.only(top: 8, bottom: 100),
+                          itemCount: _leaderboard.length > 3 ? _leaderboard.length - 3 : 0,
+                          itemBuilder: (context, index) {
+                            final entry = _leaderboard[index + 3];
+                            return _buildListItem(entry);
+                          },
+                        ),
+                      ),
+                    ],
                   ),
-              ],
+                  
+                  if (_currentUserEntry != null)
+                    Positioned(
+                      bottom: 24,
+                      left: 20,
+                      right: 20,
+                      child: _buildCurrentUserStickyBar(_currentUserEntry!),
+                    ),
+                ],
+              ),
             ),
     );
   }
 
-  // ── Sezione Podio (Top 3) ──────────────────────────────────────────────────
   Widget _buildPodiumSection() {
     final first = _leaderboard.isNotEmpty ? _leaderboard[0] : null;
     final second = _leaderboard.length > 1 ? _leaderboard[1] : null;
@@ -177,13 +234,10 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          // SECONDO POSTO
           Expanded(child: _buildPodiumColumn(second, 2, 120, const Color(0xFFD3E0CA))),
           const SizedBox(width: 8),
-          // PRIMO POSTO
           Expanded(child: _buildPodiumColumn(first, 1, 160, const Color(0xFFCAF0B8))),
           const SizedBox(width: 8),
-          // TERZO POSTO
           Expanded(child: _buildPodiumColumn(third, 3, 100, const Color(0xFFC0CEC0))),
         ],
       ),
@@ -193,131 +247,139 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
   Widget _buildPodiumColumn(LeaderboardEntry? entry, int rank, double barHeight, Color barColor) {
     if (entry == null) return const SizedBox.shrink();
 
-    // Colori per il bordo dell'avatar in base al rank
     Color borderColor = rank == 1 ? const Color(0xFFF1C40F) : 
                         rank == 2 ? const Color(0xFFBDC3C7) : 
-                        const Color(0xFFCD7F32); // Oro, Argento, Bronzo
+                        const Color(0xFFCD7F32);
 
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.end,
-      children: [
-        Stack(
-          clipBehavior: Clip.none,
-          alignment: Alignment.bottomCenter,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(3),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: borderColor,
-              ),
-              child: CircleAvatar(
-                radius: rank == 1 ? 36 : 28, // Il primo è più grande
-                backgroundColor: Colors.grey.shade300,
-                backgroundImage: entry.profileImageUrl.isNotEmpty 
-                    ? NetworkImage(entry.profileImageUrl) 
-                    : null,
-                child: entry.profileImageUrl.isEmpty 
-                    ? Icon(Icons.person, color: Colors.grey.shade600) 
-                    : null,
-              ),
-            ),
-            Positioned(
-              bottom: -10,
-              child: CircleAvatar(
-                radius: 12,
-                backgroundColor: Colors.white,
+    return GestureDetector(
+      onTap: () {
+        // TODO: Apri il profilo dell'utente del podio (es. entry.userId)
+      },
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          Stack(
+            clipBehavior: Clip.none,
+            alignment: Alignment.bottomCenter,
+            children: [
+              Container(
+                padding: EdgeInsets.all(rank == 1 ? 4 : 3),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: borderColor,
+                ),
                 child: CircleAvatar(
-                  radius: 10,
-                  backgroundColor: borderColor,
-                  child: Text(
-                    '$rank',
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                  radius: rank == 1 ? 36 : 28,
+                  backgroundColor: Colors.grey.shade300,
+                  backgroundImage: entry.profileImageUrl.isNotEmpty 
+                      ? NetworkImage(entry.profileImageUrl) 
+                      : null,
+                  child: entry.profileImageUrl.isEmpty 
+                      ? Icon(Icons.person, color: Colors.grey.shade600, size: rank == 1 ? 36 : 28) 
+                      : null,
+                ),
+              ),
+              Positioned(
+                bottom: -10,
+                child: CircleAvatar(
+                  radius: 12,
+                  backgroundColor: Colors.white,
+                  child: CircleAvatar(
+                    radius: 10,
+                    backgroundColor: borderColor,
+                    child: Text(
+                      '$rank',
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
                   ),
                 ),
               ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text(
+            _formatName(entry.name, entry.surname),
+            maxLines: 2,
+            textAlign: TextAlign.center,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF2A3028), height: 1.1),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '${entry.totalPoints} pt',
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            height: barHeight,
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: barColor,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
             ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        Text(
-          '${entry.name} ${entry.surname}',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF2A3028)),
-        ),
-        Text(
-          '${entry.totalPoints} pt',
-          style: const TextStyle(fontSize: 12, color: Colors.grey),
-        ),
-        const SizedBox(height: 8),
-        Container(
-          height: barHeight,
-          width: double.infinity,
-          decoration: BoxDecoration(
-            color: barColor,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ── Elementi della Lista (Dal 4° in poi) ──────────────────────────────────
-  Widget _buildListItem(LeaderboardEntry entry) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 24,
-            child: Text(
-              '#${entry.rank}',
-              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.grey, fontSize: 14),
-            ),
-          ),
-          CircleAvatar(
-            radius: 20,
-            backgroundColor: Colors.grey.shade300,
-            backgroundImage: entry.profileImageUrl.isNotEmpty 
-                ? NetworkImage(entry.profileImageUrl) 
-                : null,
-            child: entry.profileImageUrl.isEmpty 
-                ? Icon(Icons.person, color: Colors.grey.shade600) 
-                : null,
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '${entry.name} ${entry.surname}',
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF2A3028)),
-                ),
-                Text(
-                  '${entry.totalPoints} pt',
-                  style: const TextStyle(fontSize: 13, color: Colors.grey),
-                ),
-              ],
-            ),
-          ),
-          // Icona trend finta (come da mockup Figma)
-          Icon(
-            entry.rank % 2 == 0 ? Icons.arrow_drop_down : Icons.remove, 
-            color: entry.rank % 2 == 0 ? Colors.red : Colors.grey,
-            size: 24,
           ),
         ],
       ),
     );
   }
 
-  // ── Sticky Bar Utente Corrente in basso ───────────────────────────────────
+  Widget _buildListItem(LeaderboardEntry entry) {
+    return InkWell(
+      onTap: () {
+        // TODO: Apri il profilo dell'utente (es. Navigator.push(...) con entry.userId)
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 24,
+              child: Text(
+                '#${entry.rank}',
+                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.grey, fontSize: 14),
+              ),
+            ),
+            CircleAvatar(
+              radius: 20,
+              backgroundColor: Colors.grey.shade300,
+              backgroundImage: entry.profileImageUrl.isNotEmpty 
+                  ? NetworkImage(entry.profileImageUrl) 
+                  : null,
+              child: entry.profileImageUrl.isEmpty 
+                  ? Icon(Icons.person, color: Colors.grey.shade600) 
+                  : null,
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _formatName(entry.name, entry.surname),
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF2A3028)),
+                  ),
+                  Text(
+                    '${entry.totalPoints} pt',
+                    style: const TextStyle(fontSize: 13, color: Colors.grey),
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              entry.rank % 2 == 0 ? Icons.arrow_drop_down : Icons.remove, 
+              color: entry.rank % 2 == 0 ? Colors.red : Colors.grey,
+              size: 24,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildCurrentUserStickyBar(LeaderboardEntry entry) {
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFFD6ECC6), // Verde chiaro traslucido dal design
+        color: const Color(0xFFD6ECC6),
         borderRadius: BorderRadius.circular(24),
         boxShadow: const [
           BoxShadow(
@@ -354,7 +416,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  '${entry.name} ${entry.surname}',
+                  _formatName(entry.name, entry.surname),
                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF2A3028)),
                 ),
                 Text(

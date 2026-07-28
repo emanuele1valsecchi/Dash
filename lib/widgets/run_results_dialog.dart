@@ -264,7 +264,9 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
 
     final data = _serverData!;
     final points = (data['pointsEarned'] as num?)?.round() ?? 0;
-    final leaderboard = (data['territoryCity'] as String?) ?? (data['territoryBroad'] as String?) ?? 'Unknown';
+    final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
+    final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
+    final leaderboard = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
     final xpFromDistance = (data['xpFromDistance'] as num?)?.toDouble() ?? 0;
     final xpFromArea = (data['xpFromArea'] as num?)?.toDouble() ?? 0;
     final xpFromStolenArea = (data['xpFromStolenArea'] as num?)?.toDouble() ?? 0;

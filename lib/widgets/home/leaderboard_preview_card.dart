@@ -23,7 +23,7 @@ class LeaderboardPreviewCard extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
         decoration: BoxDecoration(
-          color: const Color(0xFFF6F7F2),
+          color: const Color.fromARGB(232, 235, 238, 233),
           borderRadius: BorderRadius.circular(24),
           border: Border.all(color: const Color(0xFFE6E8E0), width: 1.5),
         ),

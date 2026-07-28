@@ -48,8 +48,10 @@ class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 1;
   HomeBadgeUiModel? _selectedBadge;
 
-  // Variabile per contenere i dati dinamici della leaderboard
-  LeaderboardPreviewData? _leaderboardData;
+  // Carosello Leaderboard
+  List<LeaderboardPreviewData>? _leaderboards;
+  final PageController _pageController = PageController();
+  int _currentLeaderboardPage = 0;
 
   // Gestione stato distanza e statistiche degli ultimi 30 giorni
   double _monthlyKm = 0.0;
@@ -69,15 +71,15 @@ class _HomeScreenState extends State<HomeScreen> {
     _badgesFuture = _loadBadges();
     _loadNickname();
     _loadMonthlyDistance();
-    _loadLeaderboardPreview(); // Avvia il calcolo della preview
-    // Start the shared GPS stream as soon as the user reaches the app's main
-    // screen, so map pages read an already-warm position instead of each
-    // separately requesting permission and waiting on a fresh fix.
+    _loadLeaderboardPreviews(); 
     LocationService.instance.start();
-    // Same idea for the water-fountain disk cache: read it now, in parallel
-    // with GPS acquisition, instead of only starting on the first fountain
-    // fetch a map screen makes.
     WaterFountainService.instance.warmUp();
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadNickname() async {
@@ -256,108 +258,112 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // --- NUOVO METODO: Genera la preview della classifica ---
-  Future<void> _loadLeaderboardPreview() async {
+  Future<void> _loadLeaderboardPreviews() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return;
       final db = FirebaseFirestore.instance;
 
-      // 1. Recupera i seguiti
       final followsSnap = await db.collection('follows').where('followerId', isEqualTo: user.uid).get();
       final List<String> followingIds = followsSnap.docs.map((d) => d.data()['followingId'] as String).toList();
 
-      // 2. Aggrega i punti di TUTTE le sessioni e cerca l'ultima città
       final sessionsSnap = await db.collection('runningSessions').get();
-      Map<String, int> userPointsMap = {};
-      String currentCity = '';
-      DateTime latestRunDate = DateTime(2000);
+      
+      Map<String, Map<String, int>> cityUserPoints = {};
+      Map<String, int> globalUserPoints = {};
+      Map<String, DateTime> currentUserCities = {};
 
       for (var doc in sessionsSnap.docs) {
         final data = doc.data();
         final userId = data['userId'] as String?;
         final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
         final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
-        final city = (data['territoryCity'] as String?) ?? (data['startLocality'] as String?);
+        
+        final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
+        final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
+        final city = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
 
-        if (userId != null) {
-          userPointsMap[userId] = (userPointsMap[userId] ?? 0) + points;
-          
-          if (userId == user.uid && createdAt != null && city != null && city.isNotEmpty && createdAt.isAfter(latestRunDate)) {
-            latestRunDate = createdAt;
-            currentCity = city;
+        if (userId != null && createdAt != null) {
+          globalUserPoints[userId] = (globalUserPoints[userId] ?? 0) + points;
+
+          if (city != 'Unknown') {
+            cityUserPoints.putIfAbsent(city, () => {});
+            cityUserPoints[city]![userId] = (cityUserPoints[city]![userId] ?? 0) + points;
+            
+            if (userId == user.uid) {
+              if (!currentUserCities.containsKey(city) || createdAt.isAfter(currentUserCities[city]!)) {
+                currentUserCities[city] = createdAt;
+              }
+            }
           }
         }
       }
 
-      if (!userPointsMap.containsKey(user.uid)) {
-        userPointsMap[user.uid] = 0;
-      }
+      var sortedCities = currentUserCities.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+      var allUserCities = sortedCities.map((e) => e.key).toList();
 
-      // 3. Ordina e trova l'utente
-      var sortedGlobal = userPointsMap.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
-      final currentUserPoints = userPointsMap[user.uid]!;
-      final currentRank = sortedGlobal.indexWhere((e) => e.key == user.uid) + 1;
+      List<LeaderboardPreviewData> previews = [];
 
-      // 4. Seleziona fino a 10 utenti (utente + seguiti + riempimento)
-      Set<String> selectedUserIds = {user.uid};
-      
-      for (var id in followingIds) {
-        if (userPointsMap.containsKey(id) && selectedUserIds.length < 10) {
-          selectedUserIds.add(id);
-        }
-      }
-      
-      int upIndex = currentRank - 2; 
-      int downIndex = currentRank;   
-      while (selectedUserIds.length < 10 && (upIndex >= 0 || downIndex < sortedGlobal.length)) {
-        if (upIndex >= 0) {
-          selectedUserIds.add(sortedGlobal[upIndex].key);
-          upIndex--;
-        }
-        if (selectedUserIds.length < 10 && downIndex < sortedGlobal.length) {
-          selectedUserIds.add(sortedGlobal[downIndex].key);
-          downIndex++;
-        }
-      }
+      Future<LeaderboardPreviewData> buildCardData(Map<String, int> pointsMap, String title) async {
+        if (!pointsMap.containsKey(user.uid)) pointsMap[user.uid] = 0;
+        var sortedMap = pointsMap.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+        final currentUserPoints = pointsMap[user.uid]!;
+        final currentRank = sortedMap.indexWhere((e) => e.key == user.uid) + 1;
 
-      // 5. Normalizza le posizioni e recupera i profili
-      List<PreviewPin> pins = [];
-      int maxPointsInSelection = 1; 
-      for (var id in selectedUserIds) {
-        if ((userPointsMap[id] ?? 0) > maxPointsInSelection) {
-          maxPointsInSelection = userPointsMap[id]!;
+        Set<String> selectedUserIds = {user.uid};
+        for (var id in followingIds) {
+          if (pointsMap.containsKey(id) && selectedUserIds.length < 10) selectedUserIds.add(id);
         }
-      }
-
-      for (var id in selectedUserIds) {
-        final profileDoc = await db.collection('profiles').doc(id).get();
-        final profileUrl = profileDoc.data()?['profileImageUrl'] as String? ?? '';
         
-        final pts = userPointsMap[id] ?? 0;
-        double normalized = pts / maxPointsInSelection; 
-        
-        if (id != user.uid) {
-           normalized += (id.hashCode % 10) / 1000.0; 
+        int upIndex = currentRank - 2; 
+        int downIndex = currentRank;   
+        while (selectedUserIds.length < 10 && (upIndex >= 0 || downIndex < sortedMap.length)) {
+          if (upIndex >= 0) { selectedUserIds.add(sortedMap[upIndex].key); upIndex--; }
+          if (selectedUserIds.length < 10 && downIndex < sortedMap.length) {
+            selectedUserIds.add(sortedMap[downIndex].key); downIndex++;
+          }
         }
 
-        pins.add(PreviewPin(
-          userId: id,
-          profileImageUrl: profileUrl,
-          normalizedPosition: normalized.clamp(0.0, 1.0),
-          isCurrentUser: id == user.uid,
-        ));
+        List<PreviewPin> pins = [];
+        int maxPointsInSelection = 1; 
+        for (var id in selectedUserIds) {
+          if ((pointsMap[id] ?? 0) > maxPointsInSelection) maxPointsInSelection = pointsMap[id]!;
+        }
+
+        for (var id in selectedUserIds) {
+          final profileDoc = await db.collection('profiles').doc(id).get();
+          final profileUrl = profileDoc.data()?['profileImageUrl'] as String? ?? '';
+          
+          final pts = pointsMap[id] ?? 0;
+          double normalized = pts / maxPointsInSelection; 
+          if (id != user.uid) normalized += (id.hashCode % 10) / 1000.0; 
+
+          pins.add(PreviewPin(
+            userId: id,
+            profileImageUrl: profileUrl,
+            normalizedPosition: normalized.clamp(0.0, 1.0),
+            isCurrentUser: id == user.uid,
+          ));
+        }
+
+        return LeaderboardPreviewData(
+          position: currentRank,
+          points: currentUserPoints,
+          variation: null, 
+          city: title,
+          pins: pins,
+        );
       }
+
+      for (var city in allUserCities) {
+        previews.add(await buildCardData(cityUserPoints[city]!, city));
+      }
+
+      previews.add(await buildCardData(globalUserPoints, 'Global Leaderboard'));
 
       if (mounted) {
         setState(() {
-          _leaderboardData = LeaderboardPreviewData(
-            position: currentRank,
-            points: currentUserPoints,
-            variation: null, 
-            city: currentCity,
-            pins: pins,
-          );
+          _leaderboards = previews;
         });
       }
     } catch (e) {
@@ -422,11 +428,12 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _openLeaderboard() {
+  void _openLeaderboard(String city) {
     Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const LeaderboardScreen()),
+      MaterialPageRoute(builder: (_) => LeaderboardScreen(cityFilter: city)),
     );
   }
+
   void _openNotifications() {}
   void _openHistory() {
     Navigator.of(context).push(
@@ -482,7 +489,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (mounted) {
       _loadMonthlyDistance();
-      _loadLeaderboardPreview(); // Ricarichiamo anche la classifica
+      _loadLeaderboardPreviews(); 
     }
   }
 
@@ -532,7 +539,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         backgroundColor: const Color(0xFFCAF0B8),
                         onRefresh: () async {
                            await _loadMonthlyDistance();
-                           await _loadLeaderboardPreview();
+                           await _loadLeaderboardPreviews();
                         },
                         child: SingleChildScrollView(
                           physics: const AlwaysScrollableScrollPhysics(),
@@ -607,7 +614,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                                   SizedBox(width: 8),
                                   Text(
-                                    'Leaderboard preview',
+                                    'Leaderboards',
                                     style: TextStyle(
                                       fontSize: 17,
                                       fontWeight: FontWeight.w700,
@@ -618,11 +625,71 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                               const SizedBox(height: 14),
                               
-                              // --- QUI RENDERIZZIAMO IL WIDGET SE CARICATO ---
-                              if (_leaderboardData != null)
-                                LeaderboardPreviewCard(
-                                  data: _leaderboardData!,
-                                  onTap: _openLeaderboard,
+                              if (_leaderboards != null && _leaderboards!.isNotEmpty)
+                                Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    SizedBox(
+                                      height: 255, 
+                                      child: PageView.builder(
+                                        controller: _pageController,
+                                        onPageChanged: (index) {
+                                          setState(() => _currentLeaderboardPage = index);
+                                        },
+                                        itemCount: _leaderboards!.length,
+                                        itemBuilder: (context, index) {
+                                          final data = _leaderboards![index];
+                                          return Padding(
+                                            padding: const EdgeInsets.symmetric(horizontal: 2), 
+                                            child: LeaderboardPreviewCard(
+                                              data: data,
+                                              onTap: () => _openLeaderboard(data.city),
+                                            ),
+                                          );
+                                        }
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    
+                                    // INDICATORE FLUIDO INTELLIGENTE
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: List.generate(
+                                        _leaderboards!.length,
+                                        (index) {
+                                          final dist = (index - _currentLeaderboardPage).abs();
+                                          
+                                          double width;
+                                          double height;
+                                          double margin;
+
+                                          if (dist == 0) {
+                                            width = 16; height = 6; margin = 4; // Attivo (Lungo)
+                                          } else if (dist <= 2) { 
+                                            width = 6; height = 6; margin = 4; // Vicini (Normali)
+                                          } else if (dist == 3) {
+                                            width = 4; height = 4; margin = 3; // Lontani (Piccoli/Sfumano)
+                                          } else {
+                                            width = 0; height = 0; margin = 0; // Troppo lontani (Invisibili)
+                                          }
+
+                                          return AnimatedContainer(
+                                            duration: const Duration(milliseconds: 300),
+                                            curve: Curves.easeOutCubic,
+                                            margin: EdgeInsets.symmetric(horizontal: margin),
+                                            height: height,
+                                            width: width,
+                                            decoration: BoxDecoration(
+                                              color: _currentLeaderboardPage == index
+                                                  ? const Color(0xFF4A8C52) 
+                                                  : const Color(0xFFD3D6CE), 
+                                              borderRadius: BorderRadius.circular(3),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    )
+                                  ],
                                 )
                               else
                                 const Padding(

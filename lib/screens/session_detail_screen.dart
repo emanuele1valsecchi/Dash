@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -24,11 +25,15 @@ class SessionDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Rileviamo le dimensioni dello schermo per adattare i widget
+    final size = MediaQuery.of(context).size;
+    
     // Estrazione dei dati dalla sessione
     final name = sessionData['name'] ?? 'Untitled run';
     final distanceMeters = (sessionData['distanceMeters'] as num?)?.toDouble() ?? 0.0;
     final durationMs = (sessionData['durationMs'] as num?)?.toInt() ?? 0;
     final calories = (sessionData['caloriesBurned'] as num?)?.toDouble() ?? 0.0;
+    final points = (sessionData['pointsEarned'] as num?)?.toInt() ?? 0;
     
     // Controlliamo avgPaceMinPerKm se esiste, altrimenti fallback su maxPaceMinPerKm
     final pace = (sessionData['avgPaceMinPerKm'] as num?)?.toDouble() ?? 
@@ -37,6 +42,30 @@ class SessionDetailScreen extends StatelessWidget {
     
     final distKm = (distanceMeters / 1000).toStringAsFixed(2);
     final timeMin = (durationMs / 60000).round();
+
+    // 1. Calcoliamo i confini esatti della corsa
+    final routeBounds = routePolyline.isNotEmpty 
+        ? LatLngBounds.fromPoints(routePolyline) 
+        : null;
+
+    // 2. Creiamo il recinto elastico a prova di crash (Addio Kiev)
+    LatLngBounds? safeCameraLimits;
+    if (routeBounds != null) {
+      final latSpan = (routeBounds.north - routeBounds.south).abs();
+      final lngSpan = (routeBounds.east - routeBounds.west).abs();
+      
+      // Prendiamo la dimensione maggiore tra larghezza e altezza della corsa
+      final maxSpan = math.max(latSpan, lngSpan);
+      
+      // Il buffer è proporzionale al lato più lungo (80%), con un minimo vitale di ~3km (0.03 gradi)
+      // per evitare che corse molto piccole schiaccino il rettangolo della telecamera.
+      final buffer = math.max(maxSpan * 0.8, 0.03);
+
+      safeCameraLimits = LatLngBounds(
+        LatLng(routeBounds.south - buffer, routeBounds.west - buffer),
+        LatLng(routeBounds.north + buffer, routeBounds.east + buffer),
+      );
+    }
 
     return Scaffold(
       backgroundColor: const Color(0xFFF3F5EE),
@@ -57,49 +86,105 @@ class SessionDetailScreen extends StatelessWidget {
           ),
         ),
       ),
-      body: Column(
-        children: [
-          // ── Sezione Mappa ──
-          if (routePolyline.isNotEmpty)
-            Container(
-              height: 250,
-              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x11000000),
-                    blurRadius: 12,
-                    offset: Offset(0, 6),
+      body: SafeArea(
+        bottom: true,
+        top: false,
+        child: Column(
+          children: [
+            // ── Sezione Mappa ──
+            if (routePolyline.isNotEmpty && routeBounds != null && safeCameraLimits != null)
+              Container(
+                height: (size.height * 0.28).clamp(180.0, 260.0),
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x11000000),
+                      blurRadius: 12,
+                      offset: Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(24),
+                  child: FlutterMap(
+                    options: MapOptions(
+                      // All'apertura inquadra comodamente il percorso esatto
+                      initialCameraFit: CameraFit.bounds(
+                        bounds: routeBounds,
+                        padding: const EdgeInsets.all(32),
+                      ),
+                      minZoom: 11.0,
+                      // Blocco dinamico calcolato sulle proporzioni per non andare a Kiev!
+                      cameraConstraint: CameraConstraint.contain(
+                        bounds: safeCameraLimits,
+                      ),
+                      interactionOptions: const InteractionOptions(
+                        flags: InteractiveFlag.all,
+                      ),
+                    ),
+                    children: [
+                      TileLayer(
+                        urlTemplate: MapStyle.terrainTileUrl,
+                        userAgentPackageName: 'com.dash',
+                        retinaMode: RetinaMode.isHighDensity(context),
+                      ),
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: routePolyline,
+                            color: const Color(0xFF4A8C52),
+                            strokeWidth: 4.0,
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(24),
-                child: FlutterMap(
-                  options: MapOptions(
-                    initialCameraFit: CameraFit.bounds(
-                      bounds: LatLngBounds.fromPoints(routePolyline),
-                      padding: const EdgeInsets.all(32),
-                    ),
-                    // Permettiamo all'utente di muoversi e zoomare nella schermata di dettaglio
-                    interactionOptions: const InteractionOptions(
-                      flags: InteractiveFlag.all,
-                    ),
-                  ),
+              
+            // ── Sezione Statistiche ──
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    TileLayer(
-                      urlTemplate: MapStyle.terrainTileUrl,
-                      userAgentPackageName: 'com.dash',
-                      retinaMode: RetinaMode.isHighDensity(context),
+                    const Text(
+                      'Workout Stats',
+                      style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF2A3028),
+                      ),
                     ),
-                    PolylineLayer(
-                      polylines: [
-                        Polyline(
-                          points: routePolyline,
-                          color: const Color(0xFF4A8C52),
-                          strokeWidth: 4.0,
+                    const SizedBox(height: 16),
+                    GridView.count(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      crossAxisCount: 2,
+                      mainAxisSpacing: 12,
+                      crossAxisSpacing: 12,
+                      childAspectRatio: 2.15,
+                      children: [
+                        _buildStatCard(Icons.straighten_rounded, 'Distance', '$distKm km'),
+                        _buildStatCard(Icons.timer_outlined, 'Duration', '$timeMin min'),
+                        _buildStatCard(Icons.speed_rounded, 'Avg Pace', '${_formatPace(pace)} /km'),
+                        _buildStatCard(Icons.local_fire_department_rounded, 'Calories', '${calories.toStringAsFixed(0)} kcal'),
+                        _buildStatCard(
+                          Icons.bolt_rounded, 
+                          'Points', 
+                          '$points XP', 
+                          iconColor: const Color(0xFF4A8C52),
                         ),
+                        if (loops > 0)
+                          _buildStatCard(
+                            Icons.loop_rounded, 
+                            'Loops', 
+                            '$loops closed', 
+                            iconColor: const Color(0xFF4A8C52),
+                          ),
                       ],
                     ),
                   ],
@@ -107,83 +192,41 @@ class SessionDetailScreen extends StatelessWidget {
               ),
             ),
             
-          // ── Sezione Statistiche ──
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Workout Stats',
+            // ── Pulsante in basso ──
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+              child: SizedBox(
+                width: double.infinity,
+                height: 56,
+                child: ElevatedButton(
+                  onPressed: () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Route pre-loading functionality coming soon!'),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFCAF0B8),
+                    foregroundColor: const Color(0xFF1F3020),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: const Text(
+                    'Start run with this route',
                     style: TextStyle(
-                      fontSize: 19,
+                      fontSize: 16,
                       fontWeight: FontWeight.bold,
-                      color: Color(0xFF2A3028),
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  GridView.count(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    crossAxisCount: 2,
-                    mainAxisSpacing: 12,
-                    crossAxisSpacing: 12,
-                    childAspectRatio: 2.3,
-                    children: [
-                      _buildStatCard(Icons.straighten_rounded, 'Distance', '$distKm km'),
-                      _buildStatCard(Icons.timer_outlined, 'Duration', '$timeMin min'),
-                      _buildStatCard(Icons.speed_rounded, 'Avg Pace', '${_formatPace(pace)} /km'),
-                      _buildStatCard(Icons.local_fire_department_rounded, 'Calories', '${calories.toStringAsFixed(0)} kcal'),
-                      if (loops > 0)
-                        _buildStatCard(
-                          Icons.loop_rounded, 
-                          'Loops', 
-                          '$loops closed', 
-                          iconColor: const Color(0xFF4A8C52),
-                        ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-          
-          // ── Pulsante in basso ──
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-            child: SizedBox(
-              width: double.infinity,
-              height: 56,
-              child: ElevatedButton(
-                onPressed: () {
-                  // TODO: Collegare alla schermata per iniziare l'allenamento
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Route pre-loading functionality coming soon!'),
-                      behavior: SnackBarBehavior.floating,
-                    ),
-                  );
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFCAF0B8),
-                  foregroundColor: const Color(0xFF1F3020),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  elevation: 0,
-                ),
-                child: const Text(
-                  'Start run with this route',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
                   ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -212,6 +255,8 @@ class SessionDetailScreen extends StatelessWidget {
                     color: Color(0xFF7A8377),
                     fontWeight: FontWeight.w500,
                   ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
                 Text(
                   value,
