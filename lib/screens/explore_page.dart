@@ -206,7 +206,14 @@ class _ExplorePageState extends State<ExplorePage> {
         options: MapOptions(
           initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
           initialZoom: _defaultZoom,
+          minZoom: MapStyle.minZoom,
+          cameraConstraint: CameraConstraint.contain(bounds: MapStyle.safeCameraBounds),
           interactionOptions: const InteractionOptions(
+            // Fling stays enabled (single-finger drag momentum is a real,
+            // wanted feature) — EnhancedMapGestures cancels it specifically
+            // when it was triggered by the corrupted post-multi-touch
+            // velocity reading instead of blanket-disabling it; see that
+            // widget's class doc, point 3.
             flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
           ),
           onTap: (_, _) {

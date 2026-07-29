@@ -20,6 +20,68 @@ class RoutingRateLimitedException implements Exception {
   const RoutingRateLimitedException();
 }
 
+/// Outcome of [RoutingService.matchDrawnPath]. A sealed hierarchy instead of
+/// `RouteSegment?` because the freehand-draw conversion must react
+/// *differently* to different failures (429 minutely rate limit vs. 403
+/// daily-quota exhaustion vs. "no walkable match" vs. plain network
+/// trouble) — the old nullable contract collapsed all of those into one
+/// indistinguishable `null`, which is how a 403 ended up being retried and
+/// amplified against a wall. Exhaustive `switch`ing over this type is
+/// compiler-enforced, so no failure kind can silently fall through to a
+/// straight-line fallback again.
+sealed class DrawMatchResult {
+  const DrawMatchResult();
+}
+
+/// The whole stroke was matched to the walkable network in one operation.
+class DrawMatchSuccess extends DrawMatchResult {
+  /// Road-snapped geometry for the entire stroke, start to finish.
+  final List<LatLng> polyline;
+
+  /// Walking distance along [polyline] as reported by the routing backend.
+  final double distanceMeters;
+
+  const DrawMatchSuccess({required this.polyline, required this.distanceMeters});
+}
+
+/// The backend is actively throttling (HTTP 429 — ORS's 40 req/min sliding
+/// window, or the Valhalla instance's own limiter). Retrying after a short
+/// wait can work; retrying immediately cannot.
+class DrawMatchRateLimited extends DrawMatchResult {
+  /// Parsed from the upstream `Retry-After` header when present.
+  final Duration? retryAfter;
+
+  const DrawMatchRateLimited({this.retryAfter});
+}
+
+/// The shared ORS *daily* quota is spent (HTTP 403 — 2000 directions/day on
+/// the free plan, rolling 24 h window). Distinct from [DrawMatchRateLimited]
+/// because retrying is pointless until the window rolls over: the UI should
+/// say so instead of offering a retry.
+class DrawMatchQuotaExhausted extends DrawMatchResult {
+  const DrawMatchQuotaExhausted();
+}
+
+/// The service was reachable and healthy but found no walkable match for
+/// this stroke (drawn over water/private ground, or with a gap no path
+/// crosses). Redrawing closer to real paths is the fix, not retrying.
+class DrawMatchNoRoute extends DrawMatchResult {
+  final String? reason;
+
+  const DrawMatchNoRoute({this.reason});
+}
+
+/// The backend answered, but with an unexpected error or malformed payload.
+class DrawMatchServiceError extends DrawMatchResult {
+  const DrawMatchServiceError();
+}
+
+/// The backend could not be reached at all (offline, timeout, function
+/// unavailable).
+class DrawMatchNetworkError extends DrawMatchResult {
+  const DrawMatchNetworkError();
+}
+
 /// Calls the OpenRouteService foot-walking endpoint (via the `orsRoute`
 /// Cloud Function, see functions/routing.js) and returns a road-snapped
 /// polyline plus the walking distance in metres between [origin] and [destination].
@@ -160,6 +222,77 @@ class RoutingService {
       }).toList();
     } catch (_) {
       return [straightLine(origin, destination)];
+    }
+  }
+
+  /// Converts a whole freehand-drawn stroke into one road-snapped walking
+  /// route via the `matchDrawnPath` Cloud Function (functions/routing.js),
+  /// which map-matches the full polyline in a single upstream operation —
+  /// replacing the old chain of 15–90 sequential [fetchRoute] calls per
+  /// stroke that exhausted the shared ORS quota.
+  ///
+  /// The function normalizes both backends (Valhalla trace_route / ORS
+  /// multi-waypoint directions) into one response shape, so this method has
+  /// a single parser and — unlike [fetchRoute] — NEVER returns null and
+  /// NEVER falls back to a straight line: every outcome is an explicit
+  /// [DrawMatchResult] case the caller must handle. Server-side request
+  /// bound: at most 3 upstream calls per invocation (see routing.js).
+  ///
+  /// [stroke] should be the lightly decimated finger path (see
+  /// DrawnRouteConverter, which is the intended caller), not the raw
+  /// one-point-per-pixel list.
+  static Future<DrawMatchResult> matchDrawnPath(List<LatLng> stroke) async {
+    try {
+      final callable = _functions.httpsCallable(
+        'matchDrawnPath',
+        // Generous relative to the 5–10 s UX budget: worst case the server
+        // makes two upstream attempts at 12 s each; the drawing UI shows a
+        // progress indicator for the (rare) slow tail.
+        options: HttpsCallableOptions(timeout: const Duration(seconds: 30)),
+      );
+      final result = await callable.call(<String, dynamic>{
+        'points': [
+          for (final p in stroke) {'lat': p.latitude, 'lng': p.longitude},
+        ],
+      });
+
+      final data = _asStringMap(result.data);
+      final status = data['status'] as String?;
+      switch (status) {
+        case 'ok':
+          final raw = data['polyline'] as List<dynamic>;
+          final polyline = raw
+              .map((c) => LatLng(
+                    (c[0] as num).toDouble(),
+                    (c[1] as num).toDouble(),
+                  ))
+              .toList();
+          if (polyline.length < 2) {
+            return const DrawMatchNoRoute(reason: 'empty geometry');
+          }
+          return DrawMatchSuccess(
+            polyline: polyline,
+            distanceMeters: (data['distanceMeters'] as num).toDouble(),
+          );
+        case 'rate_limited':
+          final seconds = data['retryAfterSeconds'];
+          return DrawMatchRateLimited(
+            retryAfter:
+                seconds is num ? Duration(seconds: seconds.toInt()) : null,
+          );
+        case 'quota_exhausted':
+          return const DrawMatchQuotaExhausted();
+        case 'no_route':
+          return DrawMatchNoRoute(reason: data['message'] as String?);
+        default:
+          return const DrawMatchServiceError();
+      }
+    } catch (e) {
+      // Covers the callable's HttpsError('unavailable') (upstream
+      // unreachable), transport timeouts, and any malformed payload — all
+      // of which mean the same thing to the drawing UI: try again later.
+      debugPrint('RoutingService.matchDrawnPath: $e');
+      return const DrawMatchNetworkError();
     }
   }
 

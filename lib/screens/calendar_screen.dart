@@ -221,7 +221,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             ),
                           )
                         : ListView.builder(
-                            padding: const EdgeInsets.fromLTRB(20, 0, 20, 60),
+                            padding: const EdgeInsets.symmetric(horizontal: 20),
                             itemCount: selectedDayActivities.length,
                             itemBuilder: (context, index) {
                               final session = selectedDayActivities[index];

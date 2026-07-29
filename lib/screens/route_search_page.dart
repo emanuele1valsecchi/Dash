@@ -592,9 +592,14 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
         options: MapOptions(
           initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
           initialZoom: _defaultZoom,
+          minZoom: MapStyle.minZoom,
+          cameraConstraint: CameraConstraint.contain(bounds: MapStyle.safeCameraBounds),
           // Rotate is handled by the wrapping EnhancedMapGestures instead
           // (dead-zoned two-finger rotate + a little zoom inertia, shared
-          // with every other map screen; see that widget).
+          // with every other map screen; see that widget). Fling stays
+          // enabled — EnhancedMapGestures cancels it specifically when
+          // triggered by a corrupted post-multi-touch velocity reading,
+          // rather than blanket-disabling it; see its class doc, point 3.
           interactionOptions: const InteractionOptions(
             flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
           ),

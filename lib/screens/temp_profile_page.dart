@@ -155,6 +155,7 @@ class _TempProfilePageState extends State<TempProfilePage> {
                       bounds: LatLngBounds.fromPoints(route.routePolyline),
                       padding: const EdgeInsets.all(28),
                     ),
+                    minZoom: MapStyle.minZoom,
                     interactionOptions: const InteractionOptions(
                       flags: InteractiveFlag.none,
                     ),

@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 
 /// Wraps a [FlutterMap] (as [child]) with two gesture refinements
 /// flutter_map doesn't offer on its own, applied consistently to every map
@@ -32,6 +34,67 @@ import 'package:flutter_map/flutter_map.dart';
 ///     — hard-capped at a fraction of a zoom level over a couple hundred
 ///     milliseconds (see `_maxInertiaZoomLevels`/`_inertiaDuration` below).
 ///     Deliberately subtle, not a full physical-style fling.
+///  3. **Correcting a real flutter_map/Flutter-framework gesture bug**: a
+///     fast pinch released with the two fingers lifting even a few
+///     milliseconds apart (rather than at the exact same instant, which no
+///     real touch ever is) makes the map jump sideways in a
+///     seemingly-random direction in addition to the zoom, which is
+///     otherwise correct. Root cause, confirmed directly against the
+///     Flutter SDK (`packages/flutter/lib/src/gestures/scale.dart`,
+///     `ScaleGestureRecognizer`): the recognizer's focal point is defined
+///     as the live average of *currently touching* pointers, recomputed
+///     synchronously the instant a pointer is removed — going from
+///     "midpoint of two fingers" to "position of the one remaining
+///     finger" in a single step, with no interpolation — and it fires
+///     `onUpdate` with that jumped value immediately, in the same event
+///     that removed the pointer (`handleEvent` → `_update()` →
+///     `_advanceStateMachine`). flutter_map's own pan math
+///     (`MapInteractiveViewerState._calculatePinchZoomAndMove`) consumes
+///     that absolute focal point directly, so the discontinuity becomes a
+///     real camera pan. This is a framework/library-level interaction, not
+///     something introduced by this app, and not something a plain
+///     [Listener] can prevent outright — a `Listener` observes events
+///     without competing in the gesture arena, so it has no way to cancel
+///     or filter pointer events flutter_map's own recognizer has already
+///     claimed. What it *can* do: continuously remember the camera's own
+///     center/zoom while a genuine 2+-finger touch is ongoing
+///     (`_lastStableCenter`/`_lastStableZoom`), and the instant the touch
+///     drops below 2 fingers, restore the camera to that last known-good
+///     state via `_settleMultiTouchRelease` — deferred to a microtask so it
+///     runs after whatever flutter_map's recognizer just did to the camera
+///     synchronously, but still before that frame is ever built/painted,
+///     so the jump is never actually visible. That same microtask *then*
+///     starts zoom inertia (point 2), in that fixed order, rather than the
+///     two being independent actions — they used to race (the correction's
+///     one-time `.move()` and the inertia animation's own recurring
+///     `.move()` calls both mutate the same camera, and whichever landed
+///     last for a given frame won), and the correction winning was what
+///     made the inertia animation appear to stop happening entirely after
+///     this fix first landed. Ordering them explicitly inside one
+///     microtask — correct once, *then* kick off inertia from that
+///     already-corrected basis — removes the race by construction. This is
+///     paired with a *targeted* cancellation of flutter_map's own native
+///     fling — the same focal-point discontinuity can also corrupt the
+///     gesture's *velocity* reading right as the whole touch ends, which
+///     independently risks a spurious fling in a similarly "random"
+///     direction. Blanket-disabling `InteractiveFlag.flingAnimation`
+///     (an earlier version of this fix) stopped that, but also killed the
+///     ordinary, wanted momentum glide after a plain single-finger drag —
+///     flutter_map doesn't distinguish "fling from a clean drag" from
+///     "fling from a corrupted multi-touch release", so an
+///     `InteractiveFlag` alone can't express "only sometimes". Instead,
+///     fling stays enabled, and `_multiFingerDropTime` records exactly when
+///     a touch dropped below 2 fingers; if the *final* release (all
+///     fingers up — the actual moment flutter_map's recognizer decides
+///     whether to start a fling, per `didStopTrackingLastPointer`) follows
+///     within `_flingCorruptionWindow`, `_cancelAnyNativeFling` fires a
+///     `MapController.move()` back to `_lastStableCenter`/
+///     `_lastStableZoom` — which, being a real move via the public API
+///     (tagged `MapEventSource.mapController`), makes flutter_map's own
+///     `interruptAnimatedMovement` stop the fling as a side effect (see
+///     `MapControllerImpl._emitMapEvent` in the flutter_map source). A
+///     plain single-finger drag never sets `_multiFingerDropTime` at all,
+///     so its fling is completely untouched.
 class EnhancedMapGestures extends StatefulWidget {
   final MapController mapController;
   final Widget child;
@@ -61,6 +124,31 @@ class _EnhancedMapGesturesState extends State<EnhancedMapGestures>
   // settles back to exactly two; zoom-inertia sampling is less strict and
   // just watches "2 or more fingers down" as "a pinch may be happening".
   final Map<int, Offset> _pointers = {};
+
+  // ── Multi-touch release jump correction ─────────────────────────────────
+  //
+  // See point 3 of the class doc comment above for the full rationale.
+  // Continuously refreshed to the camera's own center/zoom while a genuine
+  // 2+-finger touch is ongoing, so there's always a "last known-good"
+  // camera state to restore to the instant a finger lifts mid-gesture.
+  LatLng? _lastStableCenter;
+  double? _lastStableZoom;
+
+  /// Set the instant a 2+-finger touch drops below 2 fingers (see
+  /// `_settleMultiTouchRelease`); cleared once the whole touch fully ends.
+  /// Used only to decide whether the *final* release (the one remaining
+  /// finger lifting) is close enough in time to that transition to still
+  /// risk a fling computed from the corrupted velocity reading — a user
+  /// who keeps panning with the one remaining finger for a while after the
+  /// other lifts is doing a perfectly ordinary single-finger drag by the
+  /// time they release it, and its fling should be left completely alone.
+  DateTime? _multiFingerDropTime;
+
+  /// How soon after a multi-finger touch drops below 2 fingers a *full*
+  /// release still risks a fling built from the corrupted velocity —
+  /// matches roughly how far back a velocity tracker's recent-samples
+  /// window reaches, not an arbitrary guess.
+  static const Duration _flingCorruptionWindow = Duration(milliseconds: 300);
 
   // ── Rotation ────────────────────────────────────────────────────────────
   double? _rotationBaseAngleDeg;
@@ -137,9 +225,24 @@ class _EnhancedMapGesturesState extends State<EnhancedMapGestures>
     final wasMultiFinger = _pointers.length >= 2;
     _pointers.remove(event.pointer);
     _rearmOrClearRotationTracking();
+
     if (wasMultiFinger && _pointers.length < 2) {
-      _maybeStartZoomInertia();
-      _zoomSamples.clear();
+      _multiFingerDropTime = DateTime.now();
+      _settleMultiTouchRelease();
+    }
+
+    if (_pointers.isEmpty) {
+      // The whole touch has now fully ended — this is the exact moment
+      // flutter_map's own recognizer decides whether to start a native
+      // fling, from a velocity reading that's only at risk of being
+      // corrupted if a multi-finger drop happened moments ago (see
+      // `_flingCorruptionWindow`). A plain single-finger drag never sets
+      // `_multiFingerDropTime` at all, so its fling is never touched here.
+      final dropTime = _multiFingerDropTime;
+      if (dropTime != null && DateTime.now().difference(dropTime) < _flingCorruptionWindow) {
+        _cancelAnyNativeFling();
+      }
+      _multiFingerDropTime = null;
     }
   }
 
@@ -150,9 +253,62 @@ class _EnhancedMapGesturesState extends State<EnhancedMapGestures>
     if (_pointers.length >= 2) {
       _lastMultiFingerFocal = _averageOffset(_pointers.values);
       _recordZoomSample();
+      _lastStableCenter = widget.mapController.camera.center;
+      _lastStableZoom = widget.mapController.camera.zoom;
     }
 
     _updateRotation();
+  }
+
+  /// Called once, the instant a 2+-finger touch drops below 2 fingers.
+  /// Combines the release-jump correction and the zoom-inertia kickoff into
+  /// a single, strictly-ordered microtask — they used to be two independent
+  /// actions (a corrective `.move()` plus `_maybeStartZoomInertia`'s own
+  /// `.move()` calls via its animation), which could race: whichever landed
+  /// last for a given frame won, and the one-time correction winning masked
+  /// the inertia animation's visible start entirely. Ordering them
+  /// explicitly — correct first, *then* start inertia from that
+  /// already-corrected basis — removes the race by construction. Deferred
+  /// to a microtask (rather than run synchronously here) so it lands after
+  /// whatever flutter_map's own recognizer just did to the camera
+  /// synchronously (see the class doc comment, point 3), but still before
+  /// this frame is ever painted.
+  void _settleMultiTouchRelease() {
+    final center = _lastStableCenter;
+    final zoom = _lastStableZoom;
+    scheduleMicrotask(() {
+      if (!mounted) return;
+      if (center != null && zoom != null) {
+        widget.mapController.move(center, zoom);
+      }
+      _maybeStartZoomInertia();
+      _zoomSamples.clear();
+    });
+  }
+
+  /// Cancels a native fling that flutter_map's own recognizer may have just
+  /// started from a velocity reading corrupted by the release-jump
+  /// discontinuity (see the class doc comment, point 3). A plain
+  /// `MapController.move()` call — the public API, tagged
+  /// `MapEventSource.mapController` — is what does the cancelling:
+  /// flutter_map's `MapControllerImpl._emitMapEvent` calls
+  /// `interruptAnimatedMovement` (which stops its internal fling/
+  /// double-tap-zoom controllers) for exactly that event source, as a side
+  /// effect of it being a real, public-API-triggered move — not because of
+  /// anything specific to fling. Moving back to `_lastStableCenter`/
+  /// `_lastStableZoom` both supplies that real move (a move to the exact
+  /// current position emits no event at all, so this only works because
+  /// it's a move to a genuinely *different*, correct position) and
+  /// re-settles the camera if a fling had already nudged it before this
+  /// ran. No-ops harmlessly if no fling was actually started.
+  void _cancelAnyNativeFling() {
+    final center = _lastStableCenter;
+    final zoom = _lastStableZoom;
+    if (center == null || zoom == null) return;
+    scheduleMicrotask(() {
+      if (!mounted) return;
+      widget.mapController.move(center, zoom);
+    });
   }
 
   Offset _averageOffset(Iterable<Offset> offsets) {

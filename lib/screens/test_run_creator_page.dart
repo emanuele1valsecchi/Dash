@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
+import '../services/drawn_route_converter.dart';
 import '../services/routing_service.dart';
 import '../services/run_session_repository.dart';
 import '../utils/geometry_utils.dart';
@@ -292,7 +292,13 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
   /// straight-to-fallback version doesn't have.
   Future<void> _extendRouteTo(LatLng point) async {
     final prev = _waypoints.isNotEmpty ? _waypoints.last : null;
-    setState(() => _waypoints.add(point));
+    setState(() {
+      // A failed draw conversion leaves the raw stroke on screen as a
+      // retryable dashed trail — placing a pin means the user moved on,
+      // so drop the leftover ink.
+      _drawnPoints.clear();
+      _waypoints.add(point);
+    });
 
     if (prev == null) return; // first pin — nothing to route yet
 
@@ -347,133 +353,105 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
     setState(() {
       _isConvertingDrawing = false;
       // Only actually switch tools if the stroke produced a route — a too-
-      // short/jittery gesture is silently rejected by `_sampleDrawnPath`,
-      // leaving the canvas untouched, so let the user just try drawing
-      // again without reselecting the tool. Draw is one-shot
+      // short/jittery gesture is silently rejected (see
+      // DrawnRouteConverter.minStrokeLengthMeters) and a failed conversion
+      // just restores the raw trail, so in both cases let the user try
+      // drawing again without reselecting the tool. Draw is one-shot
       // (`_canUseDrawTool`), so once it *did* produce a route, switch back
       // to Pin automatically.
       if (_waypoints.isNotEmpty) _activeTool = _Tool.pinDrop;
     });
   }
 
-  // Kept modest — see RouteCreatePage's `_maxDrawSamples` for the full
-  // rationale (a shared, rate-limited ORS key means fewer requests per
-  // drawn route matters more than tight shape fidelity).
-  static const int _maxDrawSamples = 15;
-  static const double _minDrawSampleSpacingMeters = 40;
-  static const double _minDrawPathLengthMeters = 20;
-
-  /// Downsamples a raw finger path to a manageable number of waypoints —
-  /// see RouteCreatePage's `_sampleDrawnPath` for the full rationale.
-  List<LatLng> _sampleDrawnPath(List<LatLng> raw) {
-    if (raw.length < 2) return const [];
-    const dist = Distance();
-
-    double totalLength = 0;
-    for (int i = 1; i < raw.length; i++) {
-      totalLength += dist(raw[i - 1], raw[i]);
-    }
-    if (totalLength < _minDrawPathLengthMeters) return const [];
-
-    final spacing = math.max(
-      _minDrawSampleSpacingMeters,
-      totalLength / _maxDrawSamples,
-    );
-
-    final sampled = <LatLng>[raw.first];
-    double accumulated = 0;
-    for (int i = 1; i < raw.length; i++) {
-      accumulated += dist(raw[i - 1], raw[i]);
-      if (accumulated >= spacing) {
-        sampled.add(raw[i]);
-        accumulated = 0;
-      }
-    }
-    if (sampled.last != raw.last) sampled.add(raw.last);
-    return sampled;
-  }
-
-  /// Retries a single failed road-snap request before giving up on it — see
-  /// RouteCreatePage's `_fetchRoadRouteWithRetry` for the full rationale.
-  /// Never retries a 429 specifically.
-  static const int _drawRouteMaxRetries = 1;
-
-  /// If a hop still fails after retries, how many additional samples ahead
-  /// to try reaching in one longer hop before giving up on it — see
-  /// RouteCreatePage's `_drawRouteMaxSkipAhead` (kept small so a struggling
-  /// hop doesn't itself amplify request volume into more throttling).
-  static const int _drawRouteMaxSkipAhead = 2;
-
-  Future<RouteSegment?> _fetchRoadRouteWithRetry(LatLng from, LatLng to) async {
-    for (int attempt = 0; ; attempt++) {
-      final seg = await RoutingService.fetchRoute(
-        from,
-        to,
-        throwOnRateLimit: true,
-      );
-      if (seg != null || attempt >= _drawRouteMaxRetries) return seg;
-      await Future.delayed(const Duration(milliseconds: 350));
-    }
-  }
-
-  /// Converts a finished freehand stroke into an actual routed sequence of
-  /// waypoints — see RouteCreatePage's `_convertDrawingToRoute` for the full
-  /// rationale (retry + reach-further-ahead instead of falling back to a
-  /// raw straight line the moment one hop fails, so the drawn route stays
-  /// road-snapped even where the finger path itself wandered off any real
-  /// path). Pushes undo/redo history once for the whole conversion, not
-  /// once per sampled point.
+  /// Converts a finished freehand stroke via [DrawnRouteConverter.convert]
+  /// — one network operation for the whole stroke (at most 3 upstream
+  /// routing calls, vs. the old 15–90 chained point-to-point requests),
+  /// typed failures, and NO straight-line fallback. See RouteCreatePage's
+  /// `_convertDrawingToRoute` for the full rationale; the heavy lifting is
+  /// shared in DrawnRouteConverter so this dev page and the real builder
+  /// can't drift apart again.
   Future<void> _convertDrawingToRoute(List<LatLng> rawPoints) async {
-    final sampled = _sampleDrawnPath(rawPoints);
-    if (sampled.length < 2) return;
+    setState(() => _isRouting = true);
+    final result = await DrawnRouteConverter.convert(rawPoints);
+    if (!mounted) return;
+    setState(() => _isRouting = false);
 
-    setState(() {
-      _isRouting = true;
-      _waypoints.add(sampled.first);
-    });
+    switch (result) {
+      case DrawnRouteTooShort():
+        // Accidental tap/jitter — silently ignore, like before.
+        break;
 
-    int i = 1;
-    while (i < sampled.length) {
-      if (!mounted) return;
+      case DrawnRouteFailure failure:
+        // Keep the ink on screen so Retry is meaningful; a new stroke
+        // clears it via `_onDrawPanStart`, a pin via `_extendRouteTo`.
+        setState(() {
+          _drawnPoints
+            ..clear()
+            ..addAll(rawPoints);
+        });
+        _showDrawConversionError(failure, rawPoints);
 
-      RouteSegment? seg;
-      int target = i;
-      int skipped = 0;
-      while (true) {
-        try {
-          seg = await _fetchRoadRouteWithRetry(_waypoints.last, sampled[target]);
-        } on RoutingRateLimitedException {
-          // Actively throttled — don't reach further ahead into the same
-          // wall. Accept a straight line for this hop only and let the
-          // next one try fresh.
-          seg = null;
-          break;
+      case DrawnRouteSuccess success:
+        setState(() => _waypoints.add(success.waypoints.first));
+        for (int k = 0; k < success.segments.length; k++) {
+          setState(() {
+            _waypoints.add(success.waypoints[k + 1]);
+            _segments.add(success.segments[k]);
+          });
+          _checkSelfIntersection();
         }
-        if (seg != null) break;
-        if (skipped >= _drawRouteMaxSkipAhead || target == sampled.length - 1) {
-          break;
-        }
-        skipped++;
-        target++;
-      }
-      if (!mounted) return;
-
-      seg ??= RoutingService.straightLine(_waypoints.last, sampled[target]);
-
-      setState(() {
-        _waypoints.add(sampled[target]);
-        _segments.add(seg!);
-      });
-      _checkSelfIntersection();
-      i = target + 1;
+        setState(() => _drawnPointsCount = _waypoints.length);
+        _pushHistory();
     }
+  }
 
+  /// Mirrors RouteCreatePage's `_retryStrokeConversion` — snackbar Retry
+  /// entry point, same guards/lifecycle as `_onDrawPanEnd`.
+  Future<void> _retryStrokeConversion(List<LatLng> rawPoints) async {
+    if (!_canUseDrawTool || _isConvertingDrawing) return;
+    setState(() {
+      _drawnPoints.clear();
+      _isConvertingDrawing = true;
+    });
+    await _convertDrawingToRoute(rawPoints);
     if (!mounted) return;
     setState(() {
-      _isRouting = false;
-      _drawnPointsCount = _waypoints.length;
+      _isConvertingDrawing = false;
+      if (_waypoints.isNotEmpty) _activeTool = _Tool.pinDrop;
     });
-    _pushHistory();
+  }
+
+  void _showDrawConversionError(
+    DrawnRouteFailure failure,
+    List<LatLng> rawPoints,
+  ) {
+    final message = switch (failure.kind) {
+      DrawnRouteFailureKind.rateLimited =>
+        'Routing is busy right now — wait a few seconds and retry.',
+      DrawnRouteFailureKind.quotaExhausted =>
+        'The daily routing quota is used up — drawing will work again after '
+            'it resets.',
+      DrawnRouteFailureKind.noRoute =>
+        'Couldn\'t match the drawing to walkable paths. Try following roads '
+            'more closely.',
+      DrawnRouteFailureKind.network =>
+        'Couldn\'t reach the routing service. Check your connection and '
+            'retry.',
+      DrawnRouteFailureKind.serviceError =>
+        'The routing service had a problem. Please try again.',
+    };
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 6),
+        action: failure.isRetryable
+            ? SnackBarAction(
+                label: 'Retry',
+                onPressed: () => _retryStrokeConversion(rawPoints),
+              )
+            : null,
+      ),
+    );
   }
 
   Future<void> _routeAndCloseAtWaypoint(int waypointIdx) async {
@@ -770,7 +748,13 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> {
         options: MapOptions(
           initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
           initialZoom: _defaultZoom,
+          minZoom: MapStyle.minZoom,
+          cameraConstraint: CameraConstraint.contain(bounds: MapStyle.safeCameraBounds),
           interactionOptions: InteractionOptions(
+            // Fling stays enabled in the non-draw branch —
+            // EnhancedMapGestures cancels it specifically when triggered by
+            // a corrupted post-multi-touch velocity reading, rather than
+            // blanket-disabling it; see its class doc, point 3.
             flags: drawModeActive
                 ? InteractiveFlag.pinchZoom
                 : InteractiveFlag.all & ~InteractiveFlag.rotate,

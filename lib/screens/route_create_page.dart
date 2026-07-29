@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
+import '../services/drawn_route_converter.dart';
 import '../services/location_service.dart';
 import '../services/place_search_service.dart';
 import '../services/route_repository.dart';
@@ -171,9 +172,9 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   final List<LatLng> _drawnPoints = [];
 
   /// True only while a just-finished stroke is being converted into routed
-  /// waypoints (a handful of sequential network calls) — guards against
-  /// starting a second stroke mid-conversion. Distinct from `_isRouting`,
-  /// which toggles per individual segment fetch within that conversion.
+  /// waypoints (a single map-matching network call — see
+  /// DrawnRouteConverter) — guards against starting a second stroke
+  /// mid-conversion.
   bool _isConvertingDrawing = false;
 
   /// How many leading waypoints came from the last draw conversion — see
@@ -369,7 +370,13 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   /// straight-to-fallback version doesn't have.
   Future<void> _extendRouteTo(LatLng point) async {
     final prev = _waypoints.isNotEmpty ? _waypoints.last : null;
-    setState(() => _waypoints.add(point));
+    setState(() {
+      // A failed draw conversion leaves the raw stroke on screen as a
+      // retryable dashed trail — placing a pin means the user moved on,
+      // so drop the leftover ink.
+      _drawnPoints.clear();
+      _waypoints.add(point);
+    });
 
     if (prev == null) return; // first pin — nothing to route yet
 
@@ -457,9 +464,10 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     setState(() {
       _isConvertingDrawing = false;
       // Only actually switch tools if the stroke produced a route — a too-
-      // short/jittery gesture is silently rejected by `_sampleDrawnPath`
-      // (see `_minDrawPathLengthMeters`), leaving the canvas untouched, so
-      // let the user just try drawing again without reselecting the tool.
+      // short/jittery gesture is silently rejected (see
+      // DrawnRouteConverter.minStrokeLengthMeters), and a failed conversion
+      // leaves the canvas with just the raw trail restored, so in both
+      // cases let the user try drawing again without reselecting the tool.
       // Draw is one-shot (`_canUseDrawTool`), so once it *did* produce a
       // route, switch back to Pin automatically rather than leaving Draw
       // visually selected but now disabled.
@@ -467,173 +475,115 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     });
   }
 
-  /// Roughly how many road-snap requests a single drawn stroke should cost
-  /// — bounds worst-case latency for a large/detailed drawing regardless of
-  /// how long the raw finger path is. Kept modest (rather than higher, for
-  /// tighter shape fidelity) because ORS's free-tier key is shared across
-  /// the whole app/dev team — drawing several routes back-to-back chains
-  /// enough sequential requests on its own that a lower per-drawing budget
-  /// meaningfully cuts how often any throttling gets hit at all, and how
-  /// bad it looks if it does (see `_drawRouteMaxSkipAhead`).
-  static const int _maxDrawSamples = 15;
-
-  /// Never sample closer together than this, even for a tiny drawing —
-  /// avoids wasting routing calls on jitter within a small scribble.
-  static const double _minDrawSampleSpacingMeters = 40;
-
-  /// Below this total drawn length, the gesture is treated as an accidental
-  /// tap/jitter rather than a real shape and produces no waypoints at all.
-  static const double _minDrawPathLengthMeters = 20;
-
-  /// Downsamples a raw finger path (one point per pixel of movement, easily
-  /// hundreds of points) to a manageable number of waypoints — one road-snap
-  /// request per consecutive pair would otherwise be excessive both in API
-  /// calls and latency. Spacing adapts to the drawn path's own length so a
-  /// small scribble and a sprawling shape both land near `_maxDrawSamples`
-  /// points, never below `_minDrawSampleSpacingMeters` apart.
-  List<LatLng> _sampleDrawnPath(List<LatLng> raw) {
-    if (raw.length < 2) return const [];
-    const dist = Distance();
-
-    double totalLength = 0;
-    for (int i = 1; i < raw.length; i++) {
-      totalLength += dist(raw[i - 1], raw[i]);
-    }
-    if (totalLength < _minDrawPathLengthMeters) return const [];
-
-    final spacing = math.max(
-      _minDrawSampleSpacingMeters,
-      totalLength / _maxDrawSamples,
-    );
-
-    final sampled = <LatLng>[raw.first];
-    double accumulated = 0;
-    for (int i = 1; i < raw.length; i++) {
-      accumulated += dist(raw[i - 1], raw[i]);
-      if (accumulated >= spacing) {
-        sampled.add(raw[i]);
-        accumulated = 0;
-      }
-    }
-    if (sampled.last != raw.last) sampled.add(raw.last);
-    return sampled;
-  }
-
-  /// Retries a single failed road-snap request before giving up on it —
-  /// drawing chains many sequential ORS calls (one per sample), so a
-  /// transient blip on one of them is expected, not a sign that no road
-  /// exists there. Never retries a 429 specifically — see
-  /// `_fetchRoadRouteWithRetry`.
-  static const int _drawRouteMaxRetries = 1;
-
-  /// If a hop still fails after retries, how many *additional* samples
-  /// ahead to try reaching in a single longer hop before giving up on it.
-  /// This is the mechanism that keeps a drawn route road-snapped even when
-  /// the user's finger wandered off any real path for a sample or two: the
-  /// extended hop is still a genuine `RoutingService.fetchRoute` call (so
-  /// still confined to real roads/paths), it just skips past whatever
-  /// couldn't be reached directly — e.g. a sample that landed inside a
-  /// building or a field with no through-path — instead of drawing a raw
-  /// straight line across it. Kept small (not the point of this
-  /// mechanism to begin with) because each additional skip attempt is
-  /// itself up to `1 + _drawRouteMaxRetries` more requests — a bad value
-  /// here amplifies request volume on exactly the hops already struggling,
-  /// which is its own way of tripping throttling, not just a workaround
-  /// for it.
-  static const int _drawRouteMaxSkipAhead = 2;
-
-  /// Fetches one road-snapped hop, retrying once on an ordinary failure.
-  /// A 429 is deliberately *not* retried — every request in an active
-  /// rate-limit window will also be rejected, so retrying (or the caller's
-  /// skip-ahead reaching for yet more samples) only burns more of the
-  /// shared ORS quota for no better a result. Rethrows
-  /// [RoutingRateLimitedException] so the caller can stop probing entirely
-  /// for this hop rather than treating it like any other miss.
-  Future<RouteSegment?> _fetchRoadRouteWithRetry(LatLng from, LatLng to) async {
-    for (int attempt = 0; ; attempt++) {
-      final seg = await RoutingService.fetchRoute(
-        from,
-        to,
-        throwOnRateLimit: true,
-      );
-      if (seg != null || attempt >= _drawRouteMaxRetries) return seg;
-      await Future.delayed(const Duration(milliseconds: 350));
-    }
-  }
-
-  /// Converts a finished freehand stroke into an actual routed sequence of
-  /// waypoints: downsamples the raw path (see `_sampleDrawnPath`), then
-  /// road-snaps sample-to-sample via `RoutingService.fetchRoute` — retrying
-  /// a failed hop, then reaching further ahead past it (see
-  /// `_fetchRoadRouteWithRetry`/`_drawRouteMaxSkipAhead`) rather than
-  /// accepting `RoutingService.straightLine` the moment a single hop fails,
-  /// since an unsnapped straight line is exactly what can cut across
-  /// buildings/fields. A straight line is only ever used as the very last
-  /// resort, for the one unavoidable hop, if every reach attempt fails
-  /// (e.g. no network at all).
+  /// Converts a finished freehand stroke into a routed sequence of
+  /// waypoints + segments with a single network operation, via
+  /// [DrawnRouteConverter.convert] — which decimates the raw path, has the
+  /// backend map-match the WHOLE stroke at once (at most 3 upstream routing
+  /// calls, vs. the old 15–90 chained point-to-point requests per stroke
+  /// that exhausted the shared ORS quota), validates the result, and hands
+  /// back segments already split to this page's `waypoints`/`segments`
+  /// shape (junction vertices shared, lockstep counts).
   ///
-  /// Waypoints are committed to `_waypoints` only once their incoming
-  /// segment is resolved — a skipped sample never becomes a waypoint at
-  /// all, which is also why the pin *markers* for a drawn route look sparse
-  /// (see `_isHiddenWaypoint`): most of what's "hidden" was never a
-  /// committed point to begin with, and the ones that are simply aren't
-  /// rendered.
+  /// Failure now produces NO route at all — never a straight-line fallback
+  /// that could cut across water or buildings. The raw stroke is restored
+  /// as the dashed on-map trail so the user can see exactly what didn't
+  /// convert, and a snackbar explains why, with Retry where retrying can
+  /// actually help (see [DrawnRouteFailure.isRetryable]).
   ///
-  /// Pushes undo/redo history once for the whole conversion, not once per
-  /// sampled point, so undo reverts the entire drawn shape in one step.
+  /// On success the segments are committed one at a time with
+  /// `_checkSelfIntersection()` after each append — all synchronously, no
+  /// awaits in between — so loop closure (including several loops from one
+  /// stroke) behaves exactly as it did when every hop was its own fetch.
+  /// History is pushed once for the whole conversion, so a single undo
+  /// still reverts the entire drawn shape.
   Future<void> _convertDrawingToRoute(List<LatLng> rawPoints) async {
-    final sampled = _sampleDrawnPath(rawPoints);
-    if (sampled.length < 2) return;
+    setState(() => _isRouting = true);
+    final result = await DrawnRouteConverter.convert(rawPoints);
+    if (!mounted) return;
+    setState(() => _isRouting = false);
 
-    setState(() {
-      _isRouting = true;
-      _waypoints.add(sampled.first);
-    });
+    switch (result) {
+      case DrawnRouteTooShort():
+        // Accidental tap/jitter — silently ignore, leaving the canvas
+        // untouched so the user can just draw again (same behavior the old
+        // too-short rejection had).
+        break;
 
-    int i = 1;
-    while (i < sampled.length) {
-      if (!mounted) return;
+      case DrawnRouteFailure failure:
+        // Keep the user's ink on screen: it shows exactly what failed and
+        // makes Retry meaningful. Starting a new stroke clears it via
+        // `_onDrawPanStart`; placing a pin instead clears it via
+        // `_extendRouteTo`.
+        setState(() {
+          _drawnPoints
+            ..clear()
+            ..addAll(rawPoints);
+        });
+        _showDrawConversionError(failure, rawPoints);
 
-      RouteSegment? seg;
-      int target = i;
-      int skipped = 0;
-      while (true) {
-        try {
-          seg = await _fetchRoadRouteWithRetry(_waypoints.last, sampled[target]);
-        } on RoutingRateLimitedException {
-          // Being actively throttled — reaching further ahead would just
-          // fire more requests into the same wall. Accept a straight line
-          // for this one hop and let the *next* hop try fresh, in case the
-          // window has passed by then, rather than giving up on the whole
-          // rest of the conversion.
-          seg = null;
-          break;
+      case DrawnRouteSuccess success:
+        setState(() => _waypoints.add(success.waypoints.first));
+        for (int k = 0; k < success.segments.length; k++) {
+          setState(() {
+            _waypoints.add(success.waypoints[k + 1]);
+            _segments.add(success.segments[k]);
+          });
+          _checkSelfIntersection();
         }
-        if (seg != null) break;
-        if (skipped >= _drawRouteMaxSkipAhead || target == sampled.length - 1) {
-          break;
-        }
-        skipped++;
-        target++;
-      }
-      if (!mounted) return;
-
-      seg ??= RoutingService.straightLine(_waypoints.last, sampled[target]);
-
-      setState(() {
-        _waypoints.add(sampled[target]);
-        _segments.add(seg!);
-      });
-      _checkSelfIntersection();
-      i = target + 1;
+        setState(() => _drawnPointsCount = _waypoints.length);
+        _pushHistory();
     }
+  }
 
+  /// Re-runs the conversion of a stroke whose previous attempt failed —
+  /// wired to the error snackbar's Retry action. Mirrors `_onDrawPanEnd`'s
+  /// guards and `_isConvertingDrawing` lifecycle, since that handler is the
+  /// only other entry point into a conversion.
+  Future<void> _retryStrokeConversion(List<LatLng> rawPoints) async {
+    if (!_canUseDrawTool || _isConvertingDrawing) return;
+    setState(() {
+      _drawnPoints.clear();
+      _isConvertingDrawing = true;
+    });
+    await _convertDrawingToRoute(rawPoints);
     if (!mounted) return;
     setState(() {
-      _isRouting = false;
-      _drawnPointsCount = _waypoints.length;
+      _isConvertingDrawing = false;
+      if (_waypoints.isNotEmpty) _activeTool = _Tool.pinDrop;
     });
-    _pushHistory();
+  }
+
+  void _showDrawConversionError(
+    DrawnRouteFailure failure,
+    List<LatLng> rawPoints,
+  ) {
+    final message = switch (failure.kind) {
+      DrawnRouteFailureKind.rateLimited =>
+        'Routing is busy right now — wait a few seconds and retry.',
+      DrawnRouteFailureKind.quotaExhausted =>
+        'The daily routing quota is used up — drawing will work again after '
+            'it resets.',
+      DrawnRouteFailureKind.noRoute =>
+        'Couldn\'t match the drawing to walkable paths. Try following roads '
+            'more closely.',
+      DrawnRouteFailureKind.network =>
+        'Couldn\'t reach the routing service. Check your connection and '
+            'retry.',
+      DrawnRouteFailureKind.serviceError =>
+        'The routing service had a problem. Please try again.',
+    };
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 6),
+        action: failure.isRetryable
+            ? SnackBarAction(
+                label: 'Retry',
+                onPressed: () => _retryStrokeConversion(rawPoints),
+              )
+            : null,
+      ),
+    );
   }
 
   // ── Self-intersection detection ───────────────────────────────────────────
@@ -1180,6 +1130,7 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     // call path).
     if (_isConvertingDrawing) return;
     setState(() {
+      _drawnPoints.clear(); // leftover trail from a failed draw conversion
       _waypoints = [];
       _segments = [];
       _isDeleteMode = false;
@@ -1417,7 +1368,13 @@ class _RouteCreatePageState extends State<RouteCreatePage>
         options: MapOptions(
           initialCenter: _currentPosition ?? const LatLng(45.4642, 9.1900),
           initialZoom: _defaultZoom,
+          minZoom: MapStyle.minZoom,
+          cameraConstraint: CameraConstraint.contain(bounds: MapStyle.safeCameraBounds),
           interactionOptions: InteractionOptions(
+            // Fling stays enabled in the non-draw branch —
+            // EnhancedMapGestures cancels it specifically when triggered by
+            // a corrupted post-multi-touch velocity reading, rather than
+            // blanket-disabling it; see its class doc, point 3.
             flags: drawModeActive
                 ? InteractiveFlag.pinchZoom
                 : InteractiveFlag.all & ~InteractiveFlag.rotate,
