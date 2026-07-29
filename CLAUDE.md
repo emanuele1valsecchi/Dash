@@ -144,8 +144,10 @@ Keep this list current — update it whenever a feature moves between these buck
   wrapped screen also disables flutter_map's own rotate handling in its own
   `MapOptions.interactionOptions` (`flags: InteractiveFlag.all & ~InteractiveFlag.rotate`,
   adjusted for whatever else that screen already restricts — e.g. route create/test run
-  creator drop pan during freehand-draw mode, run tracking never allows pan at all). Two
-  refinements flutter_map doesn't offer on its own:
+  creator drop pan during freehand-draw mode, run tracking never allows pan at all), and
+  (all screens using `InteractiveFlag.all`, including `session_detail_screen.dart` which
+  isn't wrapped by this widget) excludes `InteractiveFlag.flingAnimation` — see the third
+  refinement below. Three refinements flutter_map doesn't offer/get right on its own:
   - **Rotation.** This was investigated at length on the explore page before landing here,
     and the history matters if anyone's tempted to reach for flutter_map's own
     `enableMultiFingerGestureRace` again: turning it on gates *starting* to move behind
@@ -183,6 +185,54 @@ Keep this list current — update it whenever a feature moves between these buck
     hard-capped (`_maxInertiaZoomLevels`, 0.5 zoom levels) continuation around the same focal
     point via `MapCamera.focusedZoomCenter` — deliberately subtle, not a full physical fling.
     Any new touch (even a single finger) cancels a still-running inertia animation.
+  - **Multi-touch release jump (a real Flutter/flutter_map bug, not something introduced by
+    this app).** A fast pinch released with the two fingers lifting even a few ms apart
+    (no real touch ever lifts both at the *exact* same instant) made the map jump sideways
+    in a seemingly-random direction in addition to the zoom, which was otherwise correct —
+    on both pinch-in and pinch-out. Root-caused against the actual Flutter SDK
+    (`packages/flutter/lib/src/gestures/scale.dart`, `ScaleGestureRecognizer`): its focal
+    point is the live average of *currently touching* pointers, recomputed synchronously
+    the instant a pointer is removed — jumping from "midpoint of two fingers" to "position
+    of the one remaining finger" in a single step — and it fires `onUpdate` with that
+    jumped value immediately, in the same event that removed the pointer. flutter_map's own
+    pan math (`MapInteractiveViewerState._calculatePinchZoomAndMove`) consumes that absolute
+    focal point directly, turning the discontinuity into a real camera pan; the same
+    discontinuity can also corrupt the gesture's end-of-touch velocity reading, risking an
+    independent, similarly "random" native fling. Confirmed via flutter_map's own issue
+    tracker that gesture-velocity corruption around multi-touch release is a known category
+    of bug there (e.g. fleaflet/flutter_map#2225, a related but distinct regression from a
+    later version this app doesn't use). Not fixable by simple composition — a `Listener`
+    observes pointer events without competing in the gesture arena, so it can't cancel or
+    filter events flutter_map's own recognizer has already claimed. The fix:
+    `EnhancedMapGestures` continuously remembers the camera's center/zoom while a genuine
+    2+-finger touch is ongoing (`_lastStableCenter`/`_lastStableZoom`), then the instant the
+    touch drops below 2 fingers, `_settleMultiTouchRelease` restores the camera to that last
+    known-good state and *then* starts zoom inertia (point 2 above), both inside one
+    `scheduleMicrotask` in that fixed order — late enough to run after whatever flutter_map's
+    recognizer just did to the camera synchronously, but still before that frame is ever
+    built/painted, so the jump is never actually visible. The correction and the inertia
+    kickoff used to be two independent actions and would race — the correction's one-time
+    `.move()` and the inertia animation's own recurring `.move()` calls both mutate the same
+    camera, and whichever landed last for a given frame won, which was silently canceling
+    the inertia animation's visible start entirely; combining them into one strictly-ordered
+    microtask removes that race by construction. Separately, native fling (single-finger drag
+    momentum, a real, wanted feature — `InteractiveFlag.flingAnimation`) stays enabled rather
+    than blanket-disabled, since flutter_map can't distinguish "fling from a clean drag" from
+    "fling from the corrupted multi-touch velocity" via a flag alone; an earlier version of
+    this fix disabled it outright and lost ordinary momentum panning as collateral damage.
+    Instead `_multiFingerDropTime` records when a touch last dropped below 2 fingers, and if
+    the *final* release (all fingers up — the actual moment flutter_map's recognizer decides
+    whether to fling, per `didStopTrackingLastPointer`) follows within
+    `_flingCorruptionWindow` (300ms), `_cancelAnyNativeFling` fires one more
+    `_lastStableCenter`/`_lastStableZoom` move — being a real move via the public
+    `MapController` API (tagged `MapEventSource.mapController`), this makes flutter_map's own
+    `MapControllerImpl._emitMapEvent` → `interruptAnimatedMovement` stop the fling as a side
+    effect, without touching the `InteractiveFlag` at all. A plain single-finger drag never
+    sets `_multiFingerDropTime`, so its fling is never touched. `session_detail_screen.dart`
+    isn't wrapped by `EnhancedMapGestures` (no rotation dead zone there, and no cancellation
+    mechanism available), so it keeps `InteractiveFlag.flingAnimation` disabled outright —
+    losing its own pan momentum is the accepted trade there in exchange for not needing to
+    wire up the full mechanism on a screen with a bounded, small-scale camera to begin with.
 - Route search/discovery by parameters ([lib/screens/route_search_page.dart](lib/screens/route_search_page.dart)). Its
   start/destination/stop address fields (`_AddressInputField`) use the same shared
   `PlaceSearchService` as the route-creation search bar (see above) for suggestions —
@@ -247,7 +297,24 @@ Keep this list current — update it whenever a feature moves between these buck
   (explore, route create/search, run tracking, test run creator, temp profile), with
   `retinaMode` enabled so tiles stay sharp on high-density phone screens. The Explore
   page's satellite/layer-toggle button was removed — it didn't fit the app's style, so
-  there is now only one map style, no picker.
+  there is now only one map style, no picker. Every zoomable map also shares one
+  `MapOptions.minZoom` floor (`MapStyle.minZoom`, currently 4 — roughly "a continent barely
+  fills the screen") so pinching out can't shrink the world down to several repeated
+  copies in one viewport; the non-interactive preview-card maps (run results, calendar,
+  temp profile) get it too even though they can't be zoomed, for consistency.
+  `session_detail_screen.dart` keeps its own tighter `minZoom: 11.0` instead, since that
+  map is always fitted to one specific route rather than freely browsable. Every genuinely
+  pannable map (explore, route create/search, run tracking's expanded map, test run
+  creator — not the three non-interactive preview cards, which can't be panned at all)
+  also sets `cameraConstraint: CameraConstraint.contain(bounds: MapStyle.safeCameraBounds)`,
+  clamped to the valid Web Mercator latitude range (±85.05°) so panning can't reach the
+  genuinely empty tile space beyond it (e.g. well north of Greenland). This correctly
+  accounts for map rotation with no extra work needed — flutter_map's `MapCamera.size`
+  (what `CameraConstraint.contain` measures the viewport against) is already the *rotated*
+  bounding-box size, not the raw widget size, and every camera mutation (pan, zoom,
+  `MapController.rotate()`/`moveAndRotate()` — including the programmatic calls
+  `EnhancedMapGestures` and run tracking's heading-follow make) is routed through the
+  configured `cameraConstraint` regardless of how it was triggered.
 - Water fountain markers (blue drop icon in a white circular badge), sourced live from
   OpenStreetMap's Overpass API (`amenity=drinking_water` nodes, no API key) via
   [lib/services/water_fountain_service.dart](lib/services/water_fountain_service.dart) and rendered with

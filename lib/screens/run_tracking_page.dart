@@ -1418,6 +1418,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
               options: MapOptions(
                 initialCenter: center,
                 initialZoom: _previewZoom,
+                minZoom: MapStyle.minZoom,
                 interactionOptions: const InteractionOptions(flags: InteractiveFlag.none),
                 // Tap detection is independent of the pan/zoom flags above,
                 // so this fires even with interactions fully disabled —
@@ -1508,6 +1509,8 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           initialCenter:
               _displayedPosition ?? _currentPosition ?? const LatLng(45.4642, 9.1900),
           initialZoom: _defaultZoom,
+          minZoom: MapStyle.minZoom,
+          cameraConstraint: CameraConstraint.contain(bounds: MapStyle.safeCameraBounds),
           interactionOptions: const InteractionOptions(
             flags: InteractiveFlag.pinchZoom | InteractiveFlag.doubleTapZoom,
           ),

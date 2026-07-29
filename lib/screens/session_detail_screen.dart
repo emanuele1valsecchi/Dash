@@ -120,8 +120,17 @@ class SessionDetailScreen extends StatelessWidget {
                       cameraConstraint: CameraConstraint.contain(
                         bounds: safeCameraLimits,
                       ),
+                      // Fling disabled: a fast pinch released with the two
+                      // fingers lifting even a few ms apart can corrupt
+                      // flutter_map's own velocity reading via a real
+                      // Flutter gesture-recognizer focal-point discontinuity,
+                      // risking an unwanted glide in a near-random direction
+                      // (see EnhancedMapGestures' class doc, point 3, for
+                      // the full root-cause trace — this screen doesn't use
+                      // that widget, but the same underlying flutter_map/
+                      // Flutter-framework mechanism still applies here).
                       interactionOptions: const InteractionOptions(
-                        flags: InteractiveFlag.all,
+                        flags: InteractiveFlag.all & ~InteractiveFlag.flingAnimation,
                       ),
                     ),
                     children: [

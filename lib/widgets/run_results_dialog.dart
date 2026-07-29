@@ -209,6 +209,7 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
             : null,
         initialCenter: widget.path.isNotEmpty ? widget.path.first : const LatLng(45.4642, 9.1900),
         initialZoom: 15,
+        minZoom: MapStyle.minZoom,
         interactionOptions: const InteractionOptions(flags: InteractiveFlag.none),
       ),
       children: [

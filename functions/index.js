@@ -142,6 +142,9 @@ exports.onRunningSessionCompleted = onDocumentCreated(
   }
 );
 
+exports.matchDrawnPath = require('./routing').matchDrawnPath;
+
+
 // XP formula constants (Cd/Ca/Cr from the design spec): Cd is XP per km, Ca
 // is m^2 of total claimed area per XP, Cr is m^2 of *stolen* area per XP — an
 // additional bonus stacked on top of Ca's area XP, not a replacement for it.
