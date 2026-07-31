@@ -1,11 +1,14 @@
 const functions = require("firebase-functions/v1"); // Modulo Gen 1
-const { onDocumentCreated } = require("firebase-functions/v2/firestore"); // Modulo Gen 2
+const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore"); // Modulo Gen 2
 const admin = require('firebase-admin');
+const { getFirestore } = require('firebase-admin/firestore'); // Import esplicito
 const geo = require('./geo');
 const territory = require('./territory');
 const routing = require('./routing');
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 
 admin.initializeApp();
+const db = getFirestore(); // Inizializzazione sicura
 
 // Server-side ORS proxy — see routing.js for why this exists (moves the
 // OpenRouteService API key out of the client entirely).
@@ -15,7 +18,6 @@ exports.orsRoute = routing.orsRoute;
 exports.seedUserProfileAndBadges = functions
   .region('europe-west1')
   .auth.user().onCreate(async (user) => {
-    const db = admin.firestore();
     const now = admin.firestore.FieldValue.serverTimestamp();
 
     const profileRef = db.collection('profiles').doc(user.uid);
@@ -30,6 +32,8 @@ exports.seedUserProfileAndBadges = functions
         email: user.email || null,
         displayName: user.displayName || null,
         totalPoints: 0,
+        followersCount: 0,
+        followingCount: 0,
         profileCompleted: false,
         createdAt: now,
         updatedAt: now,
@@ -56,37 +60,34 @@ exports.seedUserProfileAndBadges = functions
     return batch.commit();
   });
 
-// 2. CALCOLO AGGREGATO (Migrato a Gen 2 per supportare eur3 multi-region)
-exports.onRunningSessionCompleted = onDocumentCreated(
+// 2. CALCOLO AGGREGATO 
+// FIXED: Switched to onDocumentUpdated. Only runs when pointsEarned is finally processed.
+exports.onRunningSessionCompleted = onDocumentUpdated(
   {
     document: 'runningSessions/{sessionId}',
     region: 'europe-west1'
   }, 
   async (event) => {
-    const snapshot = event.data; 
-    if (!snapshot) return null;
+    const before = event.data.before.data();
+    const after = event.data.after.data();
 
-    const sessionData = snapshot.data();
-
-    if (!sessionData || sessionData.pointsEarned === undefined) {
+    // Only proceed if pointsProcessed just flipped to true
+    if (before.pointsProcessed === true || after.pointsProcessed !== true) {
       return null;
     }
 
+    const sessionData = after;
     const userId = sessionData.userId;
-    const db = admin.firestore();
     const statsRef = db.collection('userStats').doc(userId);
 
-    // Dati base
-    const currentDistance = Number(sessionData.distanceMeters || 0); // metri
-    const currentDuration = Number(sessionData.durationMs || 0);     // ms
+    const currentDistance = Number(sessionData.distanceMeters || 0);
+    const currentDuration = Number(sessionData.durationMs || 0); 
     const currentCalories = Number(sessionData.caloriesBurned || 0);
     const currentLoops = Number(sessionData.loopsCompleted || 0);
     
-    // Calcoli velocità
     const currentMaxPace = Number(sessionData.maxPaceMinPerKm || 0);
     const currentMaxSpeedKmh = currentMaxPace > 0 ? (60 / currentMaxPace) : 0;
     
-    // Calcolo Velocità Media della sessione (km/h)
     const durationHours = currentDuration / 3600000;
     const currentAvgSpeedKmh = durationHours > 0 ? (currentDistance / 1000) / durationHours : 0;
 
@@ -99,7 +100,7 @@ exports.onRunningSessionCompleted = onDocumentCreated(
           maxDistanceMeters: currentDistance,
           maxDurationMs: currentDuration,
           maxSpeedKmh: currentMaxSpeedKmh,
-          maxAvgSpeedKmh: currentAvgSpeedKmh, // <--- NUOVO RECORD
+          maxAvgSpeedKmh: currentAvgSpeedKmh,
           maxCaloriesBurned: currentCalories,
           maxLoopsCompleted: currentLoops
         },
@@ -129,14 +130,13 @@ exports.onRunningSessionCompleted = onDocumentCreated(
           maxDistanceMeters: Math.max(existingBest.maxDistanceMeters || 0, currentDistance),
           maxDurationMs: Math.max(existingBest.maxDurationMs || 0, currentDuration),
           maxSpeedKmh: Math.max(existingBest.maxSpeedKmh || 0, currentMaxSpeedKmh),
-          maxAvgSpeedKmh: Math.max(existingBest.maxAvgSpeedKmh || 0, currentAvgSpeedKmh), // <--- AGGIORNAMENTO
+          maxAvgSpeedKmh: Math.max(existingBest.maxAvgSpeedKmh || 0, currentAvgSpeedKmh),
           maxCaloriesBurned: Math.max(existingBest.maxCaloriesBurned || 0, currentCalories),
           maxLoopsCompleted: Math.max(existingBest.maxLoopsCompleted || 0, currentLoops)
         };
       }
 
       stats.updatedAt = admin.firestore.FieldValue.serverTimestamp();
-
       transaction.set(statsRef, stats, { merge: true });
     });
   }
@@ -144,46 +144,11 @@ exports.onRunningSessionCompleted = onDocumentCreated(
 
 exports.matchDrawnPath = require('./routing').matchDrawnPath;
 
+const XP_PER_KM = 100;
+const AREA_M2_PER_XP = 1000;
+const STOLEN_AREA_M2_PER_XP = 333;
 
-// XP formula constants (Cd/Ca/Cr from the design spec): Cd is XP per km, Ca
-// is m^2 of total claimed area per XP, Cr is m^2 of *stolen* area per XP — an
-// additional bonus stacked on top of Ca's area XP, not a replacement for it.
-const XP_PER_KM = 100; // Cd
-const AREA_M2_PER_XP = 1000; // Ca
-const STOLEN_AREA_M2_PER_XP = 333; // Cr
-
-// 3. CLAIM DELLE AREE (loop chiusi -> claimedAreas), con unione/sottrazione,
-//    e ASSEGNAZIONE PUNTI/TERRITORIO per l'intera sessione
-//
-// Per ogni loop chiuso della sessione:
-//   - trova le claimedAreas vicine tramite una query geohash (evita di
-//     scansionare l'intera collezione ad ogni corsa);
-//   - le aree già proprie dell'utente che si sovrappongono/toccano vengono
-//     unite (turf.union) nell'area appena conquistata — un loop
-//     completamente contenuto in un'area già propria produce quindi la
-//     stessa geometria di prima (nessun doppione visibile), un loop che la
-//     estende parzialmente produce un unico poligono senza bordo interno;
-//   - le aree di altri utenti che si sovrappongono vengono ridotte
-//     (turf.difference) — la parte in comune diventa dell'ultimo che ci ha
-//     corso sopra; se non rimane nulla, l'area viene marcata `deleted`.
-// La geometria pesante (union/difference/query) vive in geo.js, pura e
-// testabile senza Firestore — qui c'è solo l'I/O transazionale.
-//
-// Dopo aver processato tutti i loop (anche zero — una corsa senza loop
-// chiusi guadagna comunque XP per la sola distanza), la sessione riceve
-// `pointsEarned` (formula XP, vedi XP_PER_KM/AREA_M2_PER_XP/
-// STOLEN_AREA_M2_PER_XP sopra) e il territorio ("City"/"Broad", vedi
-// territory.js) risolto dal punto di partenza reale (path[0]), non dalla
-// stringa `startLocality` fornita dal client.
-//
-// L'ownership (aree, punti, territorio) deve essere assegnata lato server
-// (Admin SDK) e non dal client: firestore.rules nega `create`/`update` su
-// claimedAreas per lo stesso motivo per cui nega i write su userStats, e
-// forza pointsEarned/territoryCity/territoryBroad/territoryBroadType
-// invariati sui write client di runningSessions.
-//
-// Nota: niente colorHex — il colore ("mie" vs "altrui") è relativo a chi
-// guarda la mappa, calcolato lato client (ClaimedAreasLayer).
+// 3. CLAIM DELLE AREE E ASSEGNAZIONE PUNTI
 exports.onRunningSessionCreateClaimedAreas = onDocumentCreated(
   {
     document: 'runningSessions/{sessionId}',
@@ -202,9 +167,6 @@ exports.onRunningSessionCreateClaimedAreas = onDocumentCreated(
     let sessionTotalAreaM2 = 0;
     let sessionStolenAreaM2 = 0;
 
-    // Processed sequentially (not Promise.all) so a second loop in the same
-    // session sees the first loop's already-committed result, and so we
-    // never have two overlapping transactions racing on the same documents.
     for (let index = 0; index < closedLoops.length; index++) {
       const points = closedLoops[index] && closedLoops[index].points;
       if (!Array.isArray(points) || points.length < 3) continue;
@@ -213,8 +175,6 @@ exports.onRunningSessionCreateClaimedAreas = onDocumentCreated(
         sessionTotalAreaM2 += loopResult.totalAreaM2;
         sessionStolenAreaM2 += loopResult.stolenAreaM2;
       } catch (e) {
-        // One malformed/degenerate loop shouldn't stop the rest of the
-        // session's loops from being claimed/scored.
         console.error(`claimLoop failed for ${sessionId}_${index}:`, e);
       }
     }
@@ -231,17 +191,12 @@ exports.onRunningSessionCreateClaimedAreas = onDocumentCreated(
 );
 
 /** Computes this session's XP, resolves its scoreboard territory from its
- * real start coordinates, and writes both onto the session doc plus the
- * user's running `profiles.totalPoints` total — in a single batch, since
- * FieldValue.increment() is safe outside a transaction. */
+ * real start coordinates, updates the user's per-city point total, checks
+ * if the user just entered that city's Top 10, and writes everything
+ * (session doc, profile total, city stats, rank, notification) atomically
+ * where it matters. */
 async function awardSessionPoints({userId, sessionId, sessionData, totalAreaM2, stolenAreaM2}) {
   const distanceKm = Number(sessionData.distanceMeters || 0) / 1000;
-  // Named separately (not just inlined into the sum) so they can be
-  // persisted below — the client-facing "why did I get this many XP"
-  // breakdown reads these back rather than re-deriving them from
-  // XP_PER_KM/AREA_M2_PER_XP/STOLEN_AREA_M2_PER_XP, which are
-  // server-authoritative game-balance constants that shouldn't be
-  // duplicated client-side.
   const xpFromDistance = distanceKm * XP_PER_KM;
   const xpFromArea = totalAreaM2 / AREA_M2_PER_XP;
   const xpFromStolenArea = stolenAreaM2 / STOLEN_AREA_M2_PER_XP;
@@ -249,25 +204,27 @@ async function awardSessionPoints({userId, sessionId, sessionData, totalAreaM2, 
 
   const path = sessionData.path;
   const start = Array.isArray(path) && path.length > 0 ? path[0] : null;
-  const resolved = start ?
-    await territory.resolveTerritory(start.latitude, start.longitude) :
-    {city: null, broad: null, broadType: null};
 
-  const db = admin.firestore();
+  // Usa startLocality (stessa fonte della leaderboard) invece di
+  // richiamare territory.resolveTerritory per la città.
+  const startLocality = sessionData.startLocality || null;
+  const resolvedBroad = start ?
+    await territory.resolveTerritory(start.latitude, start.longitude) :
+    {broad: null, broadType: null};
+
+  const city = startLocality; // ← ora coerente con la leaderboard
+
   const batch = db.batch();
   batch.update(db.collection('runningSessions').doc(sessionId), {
     pointsEarned: xp,
-    territoryCity: resolved.city,
-    territoryBroad: resolved.broad,
-    territoryBroadType: resolved.broadType,
+    territoryCity: city,
+    territoryBroad: resolvedBroad.broad,
+    territoryBroadType: resolvedBroad.broadType,
     totalAreaM2,
     stolenAreaM2,
     xpFromDistance,
     xpFromArea,
     xpFromStolenArea,
-    // Explicit completion sentinel — pointsEarned alone can legitimately be
-    // 0 for a negligible session, so clients waiting on this write (the run
-    // results popup) can't use "pointsEarned != 0" to mean "done".
     pointsProcessed: true,
   });
   batch.set(
@@ -276,18 +233,70 @@ async function awardSessionPoints({userId, sessionId, sessionData, totalAreaM2, 
     {merge: true}
   );
   await batch.commit();
+
+  if (city) {
+    await updateCityRankAndNotify({userId, city, xp});
+  }
+}
+
+/** Increments the user's point total for this specific city, computes their
+ * new rank in that city's leaderboard via a count() aggregation query, and
+ * fires a "leaderboardCityEntry" notification the first time */
+async function updateCityRankAndNotify({userId, city, xp}) {
+  const cityUserRef = db.collection('cityStats').doc(city).collection('users').doc(userId);
+
+  const {newTotal, previousRank} = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(cityUserRef);
+    const existing = snap.exists ? snap.data() : {};
+    const newTotal = (existing.totalPoints || 0) + xp;
+    const previousRank = existing.lastKnownRank || Infinity;
+
+    tx.set(cityUserRef, {
+      userId,
+      totalPoints: newTotal,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    return {newTotal, previousRank};
+  });
+
+  const higherScoreSnap = await db.collection('cityStats').doc(city).collection('users')
+    .where('totalPoints', '>', newTotal)
+    .count()
+    .get();
+  const newRank = higherScoreSnap.data().count + 1;
+
+  const TOP_N = 10;
+  if (newRank <= TOP_N && previousRank > TOP_N) {
+    const profileDoc = await db.collection('profiles').doc(userId).get();
+    const profileData = profileDoc.exists ? profileDoc.data() : {};
+    const displayName = profileData.displayName || profileData.username || 'Someone';
+
+    await db.collection('notifications').add({
+      userId,
+      type: 'leaderboardCityEntry',
+      actorName: '',
+      message: `Congratulations, ${displayName}! You entered the Top 10 leaderboard for ${city}.`,
+      cityName: city,
+      rank: newRank,
+      actorId: 'system',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      isRead: false,
+    });
+  }
+
+  await cityUserRef.set({lastKnownRank: newRank}, {merge: true});
 }
 
 async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
-  const db = admin.firestore();
   const areasRef = db.collection('claimedAreas');
+  const notificationsRef = db.collection('notifications');
+  const profilesRef = db.collection('profiles'); 
   const areaId = `${sessionId}_${loopIndex}`;
   const bounds = geo.geohashBoundsForLoop(points);
 
   return db.runTransaction(async (tx) => {
-    // ── Reads first — a Firestore transaction requires every read to
-    // happen before any write. Sequential (not Promise.all) to keep the
-    // transaction's read-tracking straightforward.
+    // ── Reads first ──
     const candidateDocs = new Map();
     for (const [start, end] of bounds) {
       const snap = await tx.get(areasRef.orderBy('geohash').startAt(start).endAt(end));
@@ -314,6 +323,11 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
       });
     }
 
+    const thiefDoc = await tx.get(profilesRef.doc(userId));
+    const thiefData = thiefDoc.data();
+    const thiefName = thiefData ? (thiefData.displayName || thiefData.username || "Someone") : "Someone";
+    const thiefImageUrl = thiefData ? (thiefData.profileImageUrl || "") : "";
+
     // ── Pure geometry computation (no Firestore calls) ──────────────────
     const result = geo.computeClaim({
       newLoopPoints: points,
@@ -324,14 +338,6 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
       sessionData,
       now: Date.now(),
     });
-
-    console.log(
-      `claimLoop ${result.areaId}: ${candidates.length} candidate(s) found ` +
-      `(${candidates.filter((c) => c.userId === userId).length} same-owner, ` +
-      `${candidates.filter((c) => c.userId !== userId).length} other-owner) -> ` +
-      `${result.newArea.polygon.length} piece(s), absorbed ${result.deletes.length} own doc(s), ` +
-      `touched ${result.otherOwnerUpdates.length} other-owner doc(s)`
-    );
 
     // ── Writes ────────────────────────────────────────────────────────
     const toGeoPoint = (p) => new admin.firestore.GeoPoint(p.latitude, p.longitude);
@@ -347,8 +353,6 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
         sessionId: c.sessionId,
         durationMs: c.durationMs,
         avgPaceMinPerKm: c.avgPaceMinPerKm,
-        // FieldValue.serverTimestamp() isn't allowed inside array elements —
-        // a concrete timestamp is the best available substitute.
         conquestDate: admin.firestore.Timestamp.fromMillis(c.conquestDateMillis),
       })),
       startLocality: result.newArea.startLocality,
@@ -365,6 +369,24 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
     }
 
     for (const u of result.otherOwnerUpdates) {
+      const originalCandidate = candidates.find(c => c.id === u.id);
+      const victimId = originalCandidate ? originalCandidate.userId : null;
+
+      if (victimId && victimId !== userId) {
+         const notifRef = notificationsRef.doc();
+         tx.set(notifRef, {
+            userId: victimId, 
+            type: "areaStolen", 
+            actorName: thiefName,
+            message: "has stolen a piece of your territory.", 
+            actorImageUrl: thiefImageUrl,
+            actorId: userId,
+            sessionId: sessionId, 
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            isRead: false,
+         });
+      }
+
       if (u.deleted) {
         tx.update(areasRef.doc(u.id), {
           deleted: true,
@@ -383,3 +405,318 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
     return {totalAreaM2: result.totalAreaM2, stolenAreaM2: result.stolenAreaM2};
   });
 }
+
+// ==============================================================================
+// ── NOTIFICATIONS (Gen 2) ──
+// ==============================================================================
+
+exports.notifyNewFollower = onDocumentCreated(
+    {
+        document: "follows/{followId}",
+        region: "europe-west1"
+    },
+    async (event) => {
+        const followData = event.data.data();
+        if (!followData) return null;
+
+        const followerId = followData.followerId;
+        const followingId = followData.followingId;
+
+        try {
+            const followerDoc = await db.collection("profiles").doc(followerId).get();
+            if (!followerDoc.exists) return null;
+
+            const followerProfile = followerDoc.data();
+            const followerName = followerProfile.displayName || followerProfile.username || "Someone";
+            const followerImageUrl = followerProfile.profileImageUrl || "";
+
+            await db.collection("notifications").add({
+                userId: followingId, 
+                type: "newFollower", 
+                actorName: followerName, 
+                message: "started following you.", 
+                actorImageUrl: followerImageUrl,
+                actorId: followerId, 
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                isRead: false,
+            });
+
+            console.log(`Notification 'newFollower' created for ${followingId}`);
+            return null;
+
+        } catch (error) {
+            console.error("Error in notifyNewFollower:", error);
+            return null;
+        }
+    }
+);
+
+
+exports.notifyRouteSaved = onDocumentCreated(
+    {
+        document: "favoriteRoutes/{favId}",
+        region: "europe-west1"
+    },
+    async (event) => {
+        const favData = event.data.data();
+        if (!favData) return null;
+
+        const saverId = favData.userId; 
+        const routeId = favData.routeId; 
+
+        try {
+            const routeDoc = await db.collection("routes").doc(routeId).get();
+            if (!routeDoc.exists) return null;
+            const routeData = routeDoc.data();
+            const authorId = routeData.userId;
+            const routeName = routeData.name || "Untitled";
+
+            if (authorId === saverId) return null;
+
+            const saverProfileDoc = await db.collection("profiles").doc(saverId).get();
+            if (!saverProfileDoc.exists) return null;
+            const saverProfile = saverProfileDoc.data();
+            const saverName = saverProfile.displayName || saverProfile.username || "Someone";
+            const saverImageUrl = saverProfile.profileImageUrl || "";
+
+            await db.collection("notifications").add({
+                userId: authorId, 
+                type: "routeSaved", 
+                actorName: saverName, 
+                message: `saved your route '${routeName}' to their favorites.`, 
+                actorImageUrl: saverImageUrl,
+                actorId: saverId,
+                routeId: routeId, 
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                isRead: false,
+            });
+
+            console.log(`Notification 'routeSaved' created for author ${authorId}`);
+            return null;
+
+        } catch (error) {
+            console.error("Error in notifyRouteSaved:", error);
+            return null;
+        }
+    }
+);
+
+
+exports.notifyNewRouteFromFollowing = onDocumentCreated(
+    {
+        document: "routes/{routeId}",
+        region: "europe-west1"
+    },
+    async (event) => {
+        const routeData = event.data.data();
+        if (!routeData) return null;
+
+        if (routeData.isPublic !== true) return null;
+
+        const authorId = routeData.userId;
+        const routeId = event.params.routeId;
+        const routeName = routeData.name || "Untitled";
+
+        try {
+            const authorDoc = await db.collection("profiles").doc(authorId).get();
+            if (!authorDoc.exists) return null;
+            const authorData = authorDoc.data();
+            const authorName = authorData.displayName || authorData.username || "Someone";
+            const authorImageUrl = authorData.profileImageUrl || "";
+
+            const followersSnap = await db.collection("follows")
+                .where("followingId", "==", authorId)
+                .get();
+
+            if (followersSnap.empty) return null;
+
+            console.log(`Sending 'newRoutePublished' notifications to ${followersSnap.size} followers of ${authorId}`);
+
+            let batch = db.batch();
+            let count = 0;
+            const now = admin.firestore.FieldValue.serverTimestamp();
+
+            for (const followDoc of followersSnap.docs) {
+                const followerId = followDoc.data().followerId;
+                
+                if (followerId === authorId) continue;
+
+                const notifRef = db.collection("notifications").doc();
+                batch.set(notifRef, {
+                    userId: followerId, 
+                    type: "newRoutePublished", 
+                    actorName: authorName, 
+                    message: `published a new public route: '${routeName}'.`, 
+                    actorImageUrl: authorImageUrl,
+                    actorId: authorId,
+                    routeId: routeId, 
+                    createdAt: now,
+                    isRead: false,
+                });
+
+                count++;
+                if (count === 499) {
+                    await batch.commit();
+                    batch = db.batch();
+                    count = 0;
+                }
+            }
+
+            if (count > 0) {
+                await batch.commit();
+            }
+            return null;
+
+        } catch (error) {
+            console.error("Error in notifyNewRouteFromFollowing:", error);
+            return null;
+        }
+    }
+);
+
+// FIXED: Switched to onDocumentUpdated & added Transaction to prevent race conditions
+// FIXED: Reads before writes inside the transaction
+exports.notifyRouteRunFaster = onDocumentUpdated(
+    {
+        document: "runningSessions/{sessionId}",
+        region: "europe-west1"
+    },
+    async (event) => {
+        const before = event.data.before.data();
+        const after = event.data.after.data();
+
+        // Only proceed if pointsProcessed just flipped to true
+        if (before.pointsProcessed === true || after.pointsProcessed !== true) return null;
+        if (!after.routeId || !after.durationMs) return null;
+
+        const runnerId = after.userId;
+        const routeId = after.routeId;
+        const currentDuration = Number(after.durationMs);
+
+        try {
+            const db = admin.firestore();
+            const routeRef = db.collection("routes").doc(routeId);
+            const runnerProfileRef = db.collection("profiles").doc(runnerId); // Reference ready
+
+            await db.runTransaction(async (transaction) => {
+                // ── 1. ALL READS FIRST ──
+                const routeDoc = await transaction.get(routeRef);
+                
+                if (!routeDoc.exists) return;
+                const routeData = routeDoc.data();
+                const authorId = routeData.userId;
+                const routeName = routeData.name || "Untitled";
+                
+                if (authorId === runnerId) return;
+
+                const previousBest = routeData.bestDurationMs ? Number(routeData.bestDurationMs) : Infinity;
+
+                if (currentDuration < previousBest) {
+                    // Read runner profile BEFORE any writes
+                    const runnerProfileSnap = await transaction.get(runnerProfileRef);
+                    const runnerName = runnerProfileSnap.exists ? (runnerProfileSnap.data().displayName || runnerProfileSnap.data().username) : "Someone";
+                    const runnerImage = runnerProfileSnap.exists ? (runnerProfileSnap.data().profileImageUrl || "") : "";
+
+                    // ── 2. ALL WRITES SECOND ──
+                    transaction.update(routeRef, {
+                        bestDurationMs: currentDuration,
+                        recordHolderId: runnerId
+                    });
+
+                    const notifRef = db.collection("notifications").doc();
+                    transaction.set(notifRef, {
+                        userId: authorId,
+                        type: "routeRunFaster", 
+                        actorName: runnerName,
+                        message: `set a new record on your route '${routeName}'!`,
+                        actorImageUrl: runnerImage,
+                        actorId: runnerId,
+                        routeId: routeId,
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        isRead: false,
+                    });
+                }
+            });
+            return null;
+        } catch (error) {
+            console.error("Error in notifyRouteRunFaster:", error);
+            return null;
+        }
+    }
+);
+
+// FIXED: Corrected batch variable scope to prevent write reuse after commit
+exports.processLeaderboards = onSchedule({
+    schedule: "0 2 * * *", 
+    timeZone: "Europe/Rome",
+    region: "europe-west1"
+}, async (event) => {
+    try {
+        const profilesSnap = await db.collection("profiles")
+            .orderBy("totalPoints", "desc")
+            .get();
+
+        let currentRank = 1;
+        let batch = db.batch(); // Replaced const with let
+        let operations = 0;
+        const now = admin.firestore.FieldValue.serverTimestamp();
+
+        for (const doc of profilesSnap.docs) {
+            const userData = doc.data();
+            const userId = doc.id;
+            const previousRank = userData.lastKnownGlobalRank || 999999;
+
+            if (currentRank <= 10 && previousRank > 10) {
+                const notifRef = db.collection("notifications").doc();
+                batch.set(notifRef, {
+                    userId: userId,
+                    type: "leaderboardGlobalEntry", 
+                    actorName: "",
+                    message: `Congratulations! You've entered the Global Top 10!`,
+                    actorImageUrl: "",
+                    actorId: "system",
+                    createdAt: now,
+                    isRead: false,
+                });
+                operations++;
+            }
+
+            if (currentRank < previousRank && currentRank <= 100 && previousRank !== 999999) {
+                const notifRef = db.collection("notifications").doc();
+                batch.set(notifRef, {
+                    userId: userId,
+                    type: "leaderboardOvertake",
+                    actorName: "System",
+                    message: `You moved up in the leaderboard! You are now rank #${currentRank}.`,
+                    actorImageUrl: "",
+                    actorId: "system",
+                    createdAt: now,
+                    isRead: false,
+                });
+                operations++;
+            }
+
+            batch.update(db.collection("profiles").doc(userId), {
+                lastKnownGlobalRank: currentRank
+            });
+            operations++;
+
+            if (operations >= 490) {
+                await batch.commit();
+                batch = db.batch(); // Successfully re-instantiate batch object
+                operations = 0;
+            }
+            
+            currentRank++;
+        }
+
+        if (operations > 0) {
+            await batch.commit();
+        }
+
+        console.log("Leaderboard calculation completed successfully!");
+        
+    } catch (error) {
+        console.error("Error in leaderboards processing:", error);
+    }
+});
