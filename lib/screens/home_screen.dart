@@ -22,6 +22,7 @@ import '../widgets/home/start_run_overlay.dart';
 import '../widgets/home/monthly_stats_section.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'leaderboard_screen.dart';
+import 'notifications_screen.dart';
 
 class _NoOverscrollBehavior extends ScrollBehavior {
   const _NoOverscrollBehavior();
@@ -434,7 +435,12 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _openNotifications() {}
+  void _openNotifications() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const NotificationsScreen()),
+    );
+  }
+
   void _openHistory() {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const CalendarScreen()),
