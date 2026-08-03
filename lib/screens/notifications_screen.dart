@@ -14,6 +14,7 @@ enum NotificationType {
   newRoutePublished,   // Nuovo percorso pubblicato da seguito
   leaderboardOvertake, // Sorpasso / cambio posizione
   leaderboardCityEntry,// Ingresso nella leaderboard di una città
+  leaderboardGlobalEntry, // Ingresso nella leaderboard globale
   areaStolen,          // Qualcuno ha sottratto la tua area
   routeSaved,          // Qualcuno ha salvato il tuo percorso
   routeRunFaster,      // Qualcuno ha corso più velocemente il tuo percorso
@@ -197,7 +198,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Widget _buildNotificationTile(NotificationItem item) {
-    // Il formato richiesto dal design: "13 March 2026 - 14:57"
     final dateStr = DateFormat("d MMMM yyyy - HH:mm").format(item.createdAt);
 
     return InkWell(
@@ -210,7 +210,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         switch (item.type) {
           case NotificationType.newFollower:
             if (item.actorId != null) {
-              // Decommenta e metti la tua schermata profilo
               // Navigator.of(context).push(MaterialPageRoute(builder: (_) => UserProfileScreen(userId: item.actorId!)));
             }
             break;
@@ -219,7 +218,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           case NotificationType.newRoutePublished:
           case NotificationType.routeRunFaster:
             if (item.routeId != null) {
-              // Decommenta e metti la tua schermata del percorso
               // Navigator.of(context).push(MaterialPageRoute(builder: (_) => RouteDetailsScreen(routeId: item.routeId!)));
             }
             break;
@@ -236,7 +234,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
           case NotificationType.leaderboardCityEntry:
             if (item.cityName != null) {
-              // Naviga usando il parametro cityFilter!
               Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) => LeaderboardScreen(cityFilter: item.cityName!),
@@ -245,11 +242,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             }
             break;
 
+          case NotificationType.leaderboardGlobalEntry:
           case NotificationType.leaderboardOvertake:
-            // Naviga alla leaderboard globale
             Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => const LeaderboardScreen(cityFilter: 'Global'), // Oppure il parametro che usi per la globale
+                builder: (_) => const LeaderboardScreen(cityFilter: 'Global Leaderboard'), 
               ),
             );
             break;
@@ -338,9 +335,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
       case NotificationType.leaderboardOvertake:
       case NotificationType.leaderboardCityEntry:
+      case NotificationType.leaderboardGlobalEntry: 
         innerIcon = const Icon(Icons.bar_chart_rounded, color: Colors.white, size: 24);
         break;
-      
+
       case NotificationType.areaStolen:
         innerIcon = const Icon(Icons.share_location_rounded, color: Colors.white, size: 24);
         break;
@@ -348,7 +346,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
     return CircleAvatar(
       radius: 24,
-      backgroundColor: const Color(0xFF5C6B59), // Grigio/Verde scuro standard
+      backgroundColor: const Color(0xFF5C6B59),
       child: innerIcon,
     );
   }
