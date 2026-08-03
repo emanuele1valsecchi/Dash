@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math; // <--- AGGIUNTO PER IL TAP SIMULATO
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -18,7 +19,9 @@ import 'leaderboard_screen.dart';
 import '../widgets/map/enhanced_map_gestures.dart';
 
 class ExplorePage extends StatefulWidget {
-  const ExplorePage({super.key});
+  final String? targetSessionId; // <--- AGGIUNTO PER INTERCETTARE LA NOTIFICA
+
+  const ExplorePage({super.key, this.targetSessionId});
 
   @override
   State<ExplorePage> createState() => _ExplorePageState();
@@ -36,6 +39,7 @@ class _ExplorePageState extends State<ExplorePage> {
 
   // ── Claimed areas from Firestore ────────────────────────────────────────
   List<ClaimedArea> _allAreas = [];
+  // Il notifier si aspetta un LayerHitResult, non una semplice String
   final LayerHitNotifier<String> _areaHitNotifier = ValueNotifier(null);
 
   // ── Map settings ──────────────────────────────────────────────────────────
@@ -75,7 +79,10 @@ class _ExplorePageState extends State<ExplorePage> {
     });
     
     if (cached != null) {
-      _mapController.move(cached, _defaultZoom);
+      // Centra sull'utente SOLO se non stiamo cercando un'area rubata dalla notifica
+      if (widget.targetSessionId == null) {
+        _mapController.move(cached, _defaultZoom);
+      }
       await _updateCityForCurrentLocation(cached);
     }
 
@@ -126,6 +133,67 @@ class _ExplorePageState extends State<ExplorePage> {
     final areas = await ClaimedAreaRepository.instance.fetchAllAreas();
     if (!mounted) return;
     setState(() => _allAreas = areas);
+
+    // Se arriviamo da una notifica "areaStolen", cerchiamo l'area
+    if (widget.targetSessionId != null) {
+      _focusOnStolenArea(widget.targetSessionId!);
+    }
+  }
+
+  void _focusOnStolenArea(String targetSessionId) {
+    try {
+      // 1. Cerca l'area incriminata
+      final targetArea = _allAreas.firstWhere(
+        (area) => area.contributions.any((c) => c.sessionId == targetSessionId)
+      );
+
+      // 2. Assicurati che le aree degli altri siano visibili
+      if (!_showOtherAreas) {
+        setState(() => _showOtherAreas = true);
+      }
+
+      // 3. Calcola il centro esatto dell'area (bounding box)
+      LatLng centerPoint;
+      if (targetArea.polygons.isNotEmpty && targetArea.polygons.first.outer.isNotEmpty) {
+        final outerPoints = targetArea.polygons.first.outer;
+        
+        double minLat = outerPoints.first.latitude;
+        double maxLat = outerPoints.first.latitude;
+        double minLng = outerPoints.first.longitude;
+        double maxLng = outerPoints.first.longitude;
+
+        for (var p in outerPoints) {
+          if (p.latitude < minLat) minLat = p.latitude;
+          if (p.latitude > maxLat) maxLat = p.latitude;
+          if (p.longitude < minLng) minLng = p.longitude;
+          if (p.longitude > maxLng) maxLng = p.longitude;
+        }
+
+        centerPoint = LatLng((minLat + maxLat) / 2, (minLng + maxLng) / 2);
+      } else {
+        // Se per qualche motivo il poligono è vuoto
+        centerPoint = const LatLng(45.4642, 9.1900); 
+      }
+      
+      // 4. Sposta la telecamera con uno zoom minore per allargare la vista (16.0 o 16.5)
+      _mapController.move(centerPoint, 14.0);
+
+      // 5. Apre la tendina simulando il tocco
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          // ignore: invalid_use_of_internal_member
+          _areaHitNotifier.value = LayerHitResult<String>(
+            hitValues: [targetArea.id],
+            coordinate: centerPoint,
+            point: const math.Point(0, 0),
+          );
+
+          handleAreaTap(context, _areaHitNotifier, _visibleAreas);
+        }
+      });
+    } catch (e) {
+      debugPrint('Area rubata non trovata o già riconquistata.');
+    }
   }
 
   List<ClaimedArea> get _visibleAreas {
@@ -209,11 +277,6 @@ class _ExplorePageState extends State<ExplorePage> {
           minZoom: MapStyle.minZoom,
           cameraConstraint: CameraConstraint.contain(bounds: MapStyle.safeCameraBounds),
           interactionOptions: const InteractionOptions(
-            // Fling stays enabled (single-finger drag momentum is a real,
-            // wanted feature) — EnhancedMapGestures cancels it specifically
-            // when it was triggered by the corrupted post-multi-touch
-            // velocity reading instead of blanket-disabling it; see that
-            // widget's class doc, point 3.
             flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
           ),
           onTap: (_, _) {

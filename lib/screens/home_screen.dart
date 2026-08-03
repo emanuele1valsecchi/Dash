@@ -556,14 +556,48 @@ class _HomeScreenState extends State<HomeScreen> {
                               Row(
                                 children: [
                                   const Spacer(),
-                                  IconButton(
-                                    onPressed: _openNotifications,
-                                    icon: const Icon(
-                                      Icons.notifications_none_rounded,
-                                      color: Color(0xFF495348),
-                                      size: 28,
-                                    ),
+                                  
+                                  // --- NOTIFICATION ICON CON PALLINO ---
+                                  StreamBuilder<QuerySnapshot>(
+                                    stream: FirebaseFirestore.instance
+                                        .collection('notifications')
+                                        .where('userId', isEqualTo: FirebaseAuth.instance.currentUser?.uid)
+                                        .where('isRead', isEqualTo: false) // Solo quelle non lette
+                                        .snapshots(),
+                                    builder: (context, snapshot) {
+                                      // Controlla se la query ha restituito dei documenti
+                                      final bool hasUnread = snapshot.hasData && snapshot.data!.docs.isNotEmpty;
+
+                                      return Stack(
+                                        alignment: Alignment.center,
+                                        children: [
+                                          IconButton(
+                                            onPressed: _openNotifications,
+                                            icon: const Icon(
+                                              Icons.notifications_none_rounded,
+                                              color: Color(0xFF495348),
+                                              size: 28,
+                                            ),
+                                          ),
+                                          if (hasUnread) // Mostra il pallino solo se ci sono notifiche non lette
+                                            Positioned(
+                                              right: 12, 
+                                              top: 12,
+                                              child: Container(
+                                                width: 10,
+                                                height: 10,
+                                                decoration: const BoxDecoration(
+                                                  color: Color.fromARGB(255, 5, 188, 8),// Colore del pallino
+                                                  shape: BoxShape.circle,
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      );
+                                    },
                                   ),
+                                  // ------------------------------------
+
                                   IconButton(
                                     onPressed: _openHistory,
                                     icon: const Icon(

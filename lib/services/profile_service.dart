@@ -79,6 +79,8 @@ class ProfileService {
               ? (existingData['profileImageUrl'] ?? '')
               : ''),
       'profileCompleted': true,
+      'followersCount': existingData?['followersCount'] ?? 0, 
+      'followingCount': existingData?['followingCount'] ?? 0, 
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }

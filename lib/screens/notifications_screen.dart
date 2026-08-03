@@ -1,31 +1,75 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:intl/intl.dart';
+import 'leaderboard_screen.dart';
+//import 'home_screen.dart';
+import 'explore_page.dart';
 
 // ==========================================
 // MODELLI DATI
 // ==========================================
 enum NotificationType {
-  userLeaderboard, // Es: L'utente raggiunge la top 5
-  friendRequest,   // Es: Richiesta di amicizia
-  systemLeaderboard, // Es: La classifica è cambiata
-  systemArea,      // Es: La tua area è cambiata
+  newFollower,         // Nuovo follower
+  newRoutePublished,   // Nuovo percorso pubblicato da seguito
+  leaderboardOvertake, // Sorpasso / cambio posizione
+  leaderboardCityEntry,// Ingresso nella leaderboard di una città
+  areaStolen,          // Qualcuno ha sottratto la tua area
+  routeSaved,          // Qualcuno ha salvato il tuo percorso
+  routeRunFaster,      // Qualcuno ha corso più velocemente il tuo percorso
 }
 
 class NotificationItem {
   final String id;
   final NotificationType type;
-  final String boldText; // Il nome dell'utente o la parte in grassetto
-  final String regularText; // L'azione ("just reached the top 5")
-  final String timestamp;
-  final String? imageUrl; // Per gli avatar degli utenti
+  final String boldText;    // Es: L'utente che ha compiuto l'azione
+  final String regularText; // L'azione ("ha salvato il tuo percorso")
+  final DateTime createdAt;
+  final bool isRead;
+  final String? imageUrl;   // Avatar utente
+  final String? routeId;    // Payload extra se clicchi sulla notifica
+  final String? actorId;    // Chi ha causato la notifica (utile per follow back)
+  final String? cityName;   // Payload extra per la leaderboard cittadina
+  final String? sessionId;  // Payload extra per l'area rubata
 
   NotificationItem({
     required this.id,
     required this.type,
     required this.boldText,
     required this.regularText,
-    required this.timestamp,
+    required this.createdAt,
+    this.isRead = false,
     this.imageUrl,
+    this.routeId,
+    this.actorId,
+    this.cityName,
+    this.sessionId,
   });
+
+  // Metodo per convertire un documento Firestore in un NotificationItem
+  factory NotificationItem.fromFirestore(DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>? ?? {};
+    
+    // Converti la stringa del DB nell'enum corretto (con un fallback di sicurezza)
+    NotificationType type = NotificationType.values.firstWhere(
+      (e) => e.name == data['type'],
+      orElse: () => NotificationType.newFollower,
+    );
+
+    return NotificationItem(
+      id: doc.id,
+      type: type,
+      boldText: data['actorName'] ?? '',
+      regularText: data['message'] ?? '',
+      createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      isRead: data['isRead'] ?? false,
+      imageUrl: data['actorImageUrl'],
+      routeId: data['routeId'],
+      actorId: data['actorId'],
+      cityName: data['cityName'],
+      sessionId: data['sessionId'],
+    );
+  }
 }
 
 // ==========================================
@@ -39,65 +83,56 @@ class NotificationsScreen extends StatefulWidget {
 }
 
 class _NotificationsScreenState extends State<NotificationsScreen> {
-  // Lista di mock basata esattamente sul tuo design
-  final List<NotificationItem> _notifications = [
-    NotificationItem(
-      id: '1',
-      type: NotificationType.userLeaderboard,
-      boldText: 'Name',
-      regularText: ' just reached the top 5',
-      timestamp: '13 March 2026 - 14:57',
-      imageUrl: 'https://i.pravatar.cc/150?img=11', // Sostituisci con URL reali
-    ),
-    NotificationItem(
-      id: '2',
-      type: NotificationType.userLeaderboard,
-      boldText: 'Name',
-      regularText: ' has entered the podium',
-      timestamp: '12 March 2026 - 14:57',
-      imageUrl: 'https://i.pravatar.cc/150?img=12',
-    ),
-    NotificationItem(
-      id: '3',
-      type: NotificationType.friendRequest,
-      boldText: 'Name Surname',
-      regularText: ' added\nyou as friend',
-      timestamp: '13 March 2026 - 14:57',
-    ),
-    NotificationItem(
-      id: '4',
-      type: NotificationType.systemLeaderboard,
-      boldText: '',
-      regularText: 'The leader board is changed',
-      timestamp: '13 March 2026 - 14:57',
-    ),
-    NotificationItem(
-      id: '5',
-      type: NotificationType.systemLeaderboard,
-      boldText: '',
-      regularText: 'The leader board is changed',
-      timestamp: '13 March 2026 - 14:57',
-    ),
-    NotificationItem(
-      id: '6',
-      type: NotificationType.systemLeaderboard,
-      boldText: '',
-      regularText: 'The leader board is changed',
-      timestamp: '13 March 2026 - 14:57',
-    ),
-    NotificationItem(
-      id: '7',
-      type: NotificationType.systemArea,
-      boldText: '',
-      regularText: 'Your area has changed',
-      timestamp: '13 March 2026 - 14:57',
-    ),
-  ];
+  final String _currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
+
+  // Questa funzione marca una notifica come letta
+  Future<void> _markAsRead(String notificationId) async {
+    try {
+      await _db.collection('notifications').doc(notificationId).update({
+        'isRead': true,
+        'readAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      debugPrint('Errore durante la marcatura come letta: $e');
+    }
+  }
+
+  // Gestione rudimentale del follow-back
+  Future<void> _handleFollowBack(String targetUserId) async {
+    if (_currentUserId.isEmpty) return;
+    
+    final followId = '${_currentUserId}_$targetUserId';
+    final followRef = _db.collection('follows').doc(followId);
+    final currentUserRef = _db.collection('profiles').doc(_currentUserId);
+    final targetUserRef = _db.collection('profiles').doc(targetUserId);
+
+    final batch = _db.batch();
+    
+    batch.set(followRef, {
+      'followerId': _currentUserId,
+      'followingId': targetUserId,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    batch.update(currentUserRef, {'followingCount': FieldValue.increment(1)});
+    batch.update(targetUserRef, {'followersCount': FieldValue.increment(1)});
+
+    try {
+      await batch.commit();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ora segui anche tu questo utente!')),
+        );
+      }
+    } catch (e) {
+      debugPrint("Errore follow back: $e");
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F6F0), // Sfondo in linea con il design
+      backgroundColor: const Color(0xFFF5F6F0),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -109,33 +144,119 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         title: const Text(
           'Notification',
           style: TextStyle(
-            color: Color(0xFF4A8C52), // Verde del titolo
+            color: Color(0xFF4A8C52),
             fontSize: 15,
             fontWeight: FontWeight.w700,
           ),
         ),
       ),
-      body: ListView.separated(
-        itemCount: _notifications.length,
-        separatorBuilder: (context, index) => Divider(
-          height: 1,
-          thickness: 1,
-          color: Colors.black.withValues(alpha: 0.06), // Linea divisoria leggera
-        ),
-        itemBuilder: (context, index) {
-          final notification = _notifications[index];
-          return _buildNotificationTile(notification);
-        },
-      ),
+      body: _currentUserId.isEmpty 
+          ? const Center(child: Text("Non sei loggato."))
+          : StreamBuilder<QuerySnapshot>(
+              stream: _db
+                  .collection('notifications')
+                  .where('userId', isEqualTo: _currentUserId)
+                  .orderBy('createdAt', descending: true)
+                  .limit(50)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(child: Text('Errore: ${snapshot.error}'));
+                }
+
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator(color: Color(0xFF4A8C52)));
+                }
+
+                final docs = snapshot.data?.docs ?? [];
+                
+                if (docs.isEmpty) {
+                  return const Center(
+                    child: Text(
+                      'There\'s nothing new',
+                      style: TextStyle(color: Color(0xFF8A9389), fontSize: 16),
+                    )
+                  );
+                }
+
+                return ListView.separated(
+                  itemCount: docs.length,
+                  separatorBuilder: (context, index) => Divider(
+                    height: 1,
+                    thickness: 1,
+                    color: Colors.black.withValues(alpha: 0.06),
+                  ),
+                  itemBuilder: (context, index) {
+                    final item = NotificationItem.fromFirestore(docs[index]);
+                    return _buildNotificationTile(item);
+                  },
+                );
+              },
+            ),
     );
   }
 
   Widget _buildNotificationTile(NotificationItem item) {
+    // Il formato richiesto dal design: "13 March 2026 - 14:57"
+    final dateStr = DateFormat("d MMMM yyyy - HH:mm").format(item.createdAt);
+
     return InkWell(
       onTap: () {
-        // TODO: Gestisci il tap sulla notifica
+        if (!item.isRead) {
+          _markAsRead(item.id);
+        }
+        
+        // ── GESTIONE NAVIGAZIONE IN BASE AL TIPO ──
+        switch (item.type) {
+          case NotificationType.newFollower:
+            if (item.actorId != null) {
+              // Decommenta e metti la tua schermata profilo
+              // Navigator.of(context).push(MaterialPageRoute(builder: (_) => UserProfileScreen(userId: item.actorId!)));
+            }
+            break;
+
+          case NotificationType.routeSaved:
+          case NotificationType.newRoutePublished:
+          case NotificationType.routeRunFaster:
+            if (item.routeId != null) {
+              // Decommenta e metti la tua schermata del percorso
+              // Navigator.of(context).push(MaterialPageRoute(builder: (_) => RouteDetailsScreen(routeId: item.routeId!)));
+            }
+            break;
+
+          case NotificationType.areaStolen:
+            if (item.sessionId != null) {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ExplorePage(targetSessionId: item.sessionId),
+                ),
+              );
+            }
+            break;
+
+          case NotificationType.leaderboardCityEntry:
+            if (item.cityName != null) {
+              // Naviga usando il parametro cityFilter!
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => LeaderboardScreen(cityFilter: item.cityName!),
+                ),
+              );
+            }
+            break;
+
+          case NotificationType.leaderboardOvertake:
+            // Naviga alla leaderboard globale
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const LeaderboardScreen(cityFilter: 'Global'), // Oppure il parametro che usi per la globale
+              ),
+            );
+            break;
+        }
       },
-      child: Padding(
+      child: Container(
+        color: item.isRead ? Colors.transparent : const Color(0xFFCAF0B8).withValues(alpha: 0.15),
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -160,17 +281,20 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
                         TextSpan(
-                          text: item.regularText,
+                          text: item.regularText.startsWith(' ') 
+                              ? item.regularText 
+                              : ' ${item.regularText}',
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    item.timestamp,
-                    style: const TextStyle(
+                    dateStr,
+                    style: TextStyle(
                       fontSize: 13,
-                      color: Color(0xFF8A9389),
+                      color: item.isRead ? const Color(0xFF8A9389) : const Color(0xFF4A8C52),
+                      fontWeight: item.isRead ? FontWeight.normal : FontWeight.w600,
                     ),
                   ),
                 ],
@@ -184,57 +308,65 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     );
   }
 
-  // Costruisce l'icona o l'avatar a sinistra in base al tipo di notifica
   Widget _buildLeadingIcon(NotificationItem item) {
+    Widget innerIcon;
+
     switch (item.type) {
-      case NotificationType.userLeaderboard:
-        return CircleAvatar(
-          radius: 24,
-          backgroundColor: Colors.grey.shade300,
-          backgroundImage: item.imageUrl != null ? NetworkImage(item.imageUrl!) : null,
-          child: item.imageUrl == null ? const Icon(Icons.person, color: Colors.white) : null,
-        );
+      case NotificationType.newFollower:
+        if (item.imageUrl != null && item.imageUrl!.isNotEmpty) {
+          return CircleAvatar(
+            radius: 24,
+            backgroundColor: Colors.grey.shade300,
+            backgroundImage: NetworkImage(item.imageUrl!),
+          );
+        }
+        innerIcon = const Icon(Icons.person_add_alt_1_rounded, color: Colors.white, size: 22);
+        break;
       
-      case NotificationType.friendRequest:
-        return const CircleAvatar(
-          radius: 24,
-          backgroundColor: Color(0xFF5C6B59), // Grigio/Verde scuro
-          child: Icon(Icons.person_add_alt_1_rounded, color: Colors.white, size: 22),
-        );
+      case NotificationType.newRoutePublished:
+      case NotificationType.routeSaved:
+      case NotificationType.routeRunFaster:
+        if (item.imageUrl != null && item.imageUrl!.isNotEmpty) {
+          return CircleAvatar(
+            radius: 24,
+            backgroundColor: Colors.grey.shade300,
+            backgroundImage: NetworkImage(item.imageUrl!),
+          );
+        }
+        innerIcon = const Icon(Icons.map_rounded, color: Colors.white, size: 22);
+        break;
+
+      case NotificationType.leaderboardOvertake:
+      case NotificationType.leaderboardCityEntry:
+        innerIcon = const Icon(Icons.bar_chart_rounded, color: Colors.white, size: 24);
+        break;
       
-      case NotificationType.systemLeaderboard:
-        return const CircleAvatar(
-          radius: 24,
-          backgroundColor: Color(0xFF5C6B59), // Grigio/Verde scuro
-          child: Icon(Icons.bar_chart_rounded, color: Colors.white, size: 24),
-        );
-      
-      case NotificationType.systemArea:
-        return const CircleAvatar(
-          radius: 24,
-          backgroundColor: Color(0xFF5C6B59), // Grigio/Verde scuro
-          child: Icon(Icons.route_rounded, color: Colors.white, size: 24),
-        );
+      case NotificationType.areaStolen:
+        innerIcon = const Icon(Icons.share_location_rounded, color: Colors.white, size: 24);
+        break;
     }
+
+    return CircleAvatar(
+      radius: 24,
+      backgroundColor: const Color(0xFF5C6B59), // Grigio/Verde scuro standard
+      child: innerIcon,
+    );
   }
 
-  // Costruisce la freccia a destra o il bottone "Follow back"
   Widget _buildTrailingWidget(NotificationItem item) {
-    if (item.type == NotificationType.friendRequest) {
+    if (item.type == NotificationType.newFollower && item.actorId != null) {
       return GestureDetector(
-        onTap: () {
-          // TODO: Logica per accettare l'amicizia
-        },
+        onTap: () => _handleFollowBack(item.actorId!),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
-            color: const Color(0xFFCAF0B8), // Verde chiaro
+            color: const Color(0xFFCAF0B8),
             borderRadius: BorderRadius.circular(20),
           ),
           child: const Text(
             'Follow back',
             style: TextStyle(
-              color: Color(0xFF2E4029), // Testo scuro
+              color: Color(0xFF2E4029),
               fontSize: 12,
               fontWeight: FontWeight.bold,
             ),
