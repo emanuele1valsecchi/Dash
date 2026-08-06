@@ -35,12 +35,47 @@ Keep this list current — update it whenever a feature moves between these buck
   ([lib/screens/route_create_page.dart](lib/screens/route_create_page.dart), [lib/services/routing_service.dart](lib/services/routing_service.dart), [lib/utils/geometry_utils.dart](lib/utils/geometry_utils.dart)). A route
   isn't limited to a single closed loop — placing more pins (or, previously, hitting a
   block) after one closes now continues the route, and each additional loop the path
-  goes on to close is kept, not overwritten (`_loopPolygons`/`_loopAreasM2`, both lists);
-  self-intersection/snap-to-waypoint checks are scoped to only the segments added since
-  the last loop closed (`_activeLoopStartSegment`), so a new segment can't get matched
-  against an already-finalised loop's own geometry. Deleting any pin still conservatively
-  clears every loop closed so far, rather than trying to work out which ones a given
-  deletion actually invalidated. Freehand drawing is one-shot per route — only usable
+  goes on to close is kept, not overwritten (`_loopPolygons`/`_loopAreasM2`, both lists,
+  paired with `_loopRangeStart`/`_loopRangeEnd` recording the `_segments` index range
+  each polygon spans). Self-intersection/snap-to-waypoint checks are run against the
+  *entire* route every time, not just segments added since the last loop closed — an
+  earlier version scoped the search to only the newest segments specifically to stop a
+  new segment matching its own just-finalised loop, but that also meant a bigger loop
+  drawn around an already-closed smaller one, or a new line crossing back into an
+  earlier loop's own boundary, could never be detected at all, only by snapping all the
+  way back to that shape's original starting pin. The shared-junction false-positive
+  concern turned out to only ever apply to the single literal previous segment (routing
+  always continues from the current tip, so no other, older segment can share an exact
+  coordinate with a new one) — trimming vertices near *that* segment's end is enough,
+  and every other, older segment is genuinely separate geometry where a match is a real
+  crossing. When a new segment produces more than one valid crossing, the one enclosing
+  the *largest* polygon wins (`_checkSelfIntersection`), not whichever was found first —
+  and a newly-finalised loop supersedes (removes) any already-recorded loop whose own
+  segment range overlaps its own, since the new one — built by walking as far back along
+  the route as still validly closes — is always at least as large as anything sharing
+  its ground. Deleting any pin still conservatively clears every loop closed so far,
+  rather than trying to work out which ones a given deletion actually invalidated (no
+  re-detection pass runs afterward, even though the rebuilt bridge segment could in
+  principle re-trigger some of them). **Snap-to-waypoint closes go through the same
+  search, not just the direct target**: tapping back onto an *earlier* waypoint
+  (`_routeAndCloseAtWaypoint`) used to always build its polygon by walking from that
+  waypoint straight to the tip (`_polygonFromWaypointIndex`), even though the new
+  closing segment it just added is exactly the kind of segment `_checkSelfIntersection`
+  already knows how to search — so if that closing line also cuts back through even
+  *earlier* ground than the snap target itself (e.g. closing to a middle pin with a line
+  that happens to pass through the route's actual start pin, leaving a dangling
+  unclaimed tail before that middle pin), the bigger polygon was silently missed.
+  `_routeAndCloseAtWaypoint` now also runs `_findBestSelfIntersection` (the search
+  logic factored out of `_checkSelfIntersection` for exactly this reuse) and keeps
+  whichever of the two candidates encloses more area. That search itself gained a third
+  strategy alongside vertex proximity and geometric edge crossing:
+  `GeometryUtils.pointToSegmentDistanceMeters` catches a real waypoint sitting exactly
+  *on* another edge's interior — distinct from a true transversal crossing, which
+  `segmentIntersection` deliberately excludes right at a segment's own endpoint (to
+  avoid false positives at shared junctions), which is exactly where "a vertex lies on
+  this line" registers. Without it, a closing line passing precisely through an earlier
+  pin (collinear, not crossing at an angle) still wouldn't be found even with the
+  waypoint-snap search wired in. Freehand drawing is one-shot per route — only usable
   while it's completely empty, never to append a second stroke onto an already-drawn (or
   already-pinned) route — and works by disabling the map's own pan interaction for the
   duration (a transparent `GestureDetector` overlay captures the stroke instead, since a
@@ -315,7 +350,16 @@ Keep this list current — update it whenever a feature moves between these buck
   breadcrumb recording (distance-filtered position stream, not a timer poll), a
   stopwatch, rolling-window pace, live self-crossing loop-closure detection with a lit
   indicator, and an expandable live map that paints the run trail and fills closed loop
-  polygons ([lib/screens/run_tracking_page.dart](lib/screens/run_tracking_page.dart), loop-closure math in [lib/utils/geometry_utils.dart](lib/utils/geometry_utils.dart)). On finish the user names
+  polygons ([lib/screens/run_tracking_page.dart](lib/screens/run_tracking_page.dart), loop-closure math in [lib/utils/geometry_utils.dart](lib/utils/geometry_utils.dart)). Closure detection
+  (`GeometryUtils.findLoopClosureIndex`) searches the *whole* breadcrumb trail on every
+  fix, not just points recorded since the last closure, and returns the farthest-back
+  qualifying point rather than the nearest one — so it always reports the biggest loop
+  currently closable, the same fix applied to route creation's segment-based detection
+  above (see that bullet for the full rationale). `_checkLoopClosure` then supersedes
+  (removes) any already-closed loop whose own breadcrumb-index range overlaps the new
+  one's, keyed on `_loopRangeStart`/`_loopRangeEnd`, so re-detecting a bigger loop around
+  the same ground replaces the smaller one instead of piling both on top of each other.
+  On finish the user names
   the run and reviews time/distance/avg pace/max pace/calories/elevation before choosing
   Save (persists via `RunSessionRepository` to `runningSessions`, see below) or Discard
   (re-confirms, then nothing is written). The screen only tracks in the foreground — no

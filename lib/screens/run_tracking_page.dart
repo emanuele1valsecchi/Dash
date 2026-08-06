@@ -228,9 +228,17 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   bool _hasAltitudeSample = false;
 
   // ── Loop detection ───────────────────────────────────────────────────────
-  int _activeLoopStart = 0;
   final List<List<LatLng>> _closedLoops = [];
-  int _loopsCompleted = 0;
+
+  /// The `[_breadcrumb]` index range each entry in [_closedLoops] was built
+  /// from — used only to detect when a newly-closed loop supersedes an
+  /// earlier one (see `_checkLoopClosure`); `GeometryUtils.findLoopClosureIndex`
+  /// itself always searches the whole trail, so re-crossing ground from an
+  /// already-closed loop (e.g. a bigger loop run around a smaller one) is
+  /// always caught, however far back it reaches.
+  final List<int> _loopRangeStart = [];
+  final List<int> _loopRangeEnd = [];
+  int get _loopsCompleted => _closedLoops.length;
   static const double _minLoopAreaM2 = 50.0;
 
   // ── Derived stats (used both live and in the finish summary) ────────────
@@ -788,16 +796,31 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
   void _checkLoopClosure() {
     final points = _breadcrumb.map((t) => t.point).toList(growable: false);
-    final idx = GeometryUtils.findLoopClosureIndex(points, activeStart: _activeLoopStart);
+    final idx = GeometryUtils.findLoopClosureIndex(points);
     if (idx == null) return;
 
     final polygon = points.sublist(idx);
     final area = GeometryUtils.polygonAreaM2(polygon);
     if (area < _minLoopAreaM2) return;
 
+    // A bigger loop supersedes any already-closed loop it overlaps with —
+    // `findLoopClosureIndex` always walks as far back along the trail as
+    // still closes a loop, so it's always at least as large as anything
+    // sharing its ground (e.g. a bigger loop run around one already closed).
+    final rangeStart = idx;
+    final rangeEnd = points.length - 1;
+    for (int i = _closedLoops.length - 1; i >= 0; i--) {
+      final overlaps =
+          _loopRangeStart[i] <= rangeEnd && rangeStart <= _loopRangeEnd[i];
+      if (!overlaps) continue;
+      _closedLoops.removeAt(i);
+      _loopRangeStart.removeAt(i);
+      _loopRangeEnd.removeAt(i);
+    }
+
     _closedLoops.add(polygon);
-    _loopsCompleted++;
-    _activeLoopStart = points.length - 1;
+    _loopRangeStart.add(rangeStart);
+    _loopRangeEnd.add(rangeEnd);
   }
 
   // ── Controls ──────────────────────────────────────────────────────────────
