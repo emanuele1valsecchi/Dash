@@ -63,10 +63,17 @@ class PlaceSearchService {
   /// a network failure at either stage just means no more emissions (an
   /// empty first emission on total Nominatim failure, or no second emission
   /// if only the Overpass fallback fails).
+  ///
+  /// [limit] caps how many ranked results are actually returned; [rawLimit]
+  /// caps how many raw candidates are pulled from Nominatim before ranking
+  /// — raising just [limit] past [rawLimit] can't surface more results than
+  /// were fetched to begin with, so a caller wanting a bigger results list
+  /// needs to raise both.
   static Stream<List<Place>> search(
     String query, {
     LatLng? near,
     int limit = 10,
+    int rawLimit = 15,
   }) async* {
     List<Place> places = [];
 
@@ -77,15 +84,15 @@ class PlaceSearchService {
                 '${near.longitude + _viewboxDegrees},'
                 '${near.latitude - _viewboxDegrees}'
           : '';
-      // Over-fetch (15, not the ~10 we'll actually show) — Nominatim's own
-      // ranking for an ambiguous query (e.g. plain "London", which also
-      // matches London, Ontario and a handful of small US towns) can bury a
-      // globally-famous place outside a small results window; the more raw
-      // candidates pulled in, the better chance [rank] actually has the
-      // right one to promote.
+      // Over-fetch ([rawLimit], not the ~[limit] we'll actually show) —
+      // Nominatim's own ranking for an ambiguous query (e.g. plain
+      // "London", which also matches London, Ontario and a handful of
+      // small US towns) can bury a globally-famous place outside a small
+      // results window; the more raw candidates pulled in, the better
+      // chance [rank] actually has the right one to promote.
       final uri = Uri.parse(
         'https://nominatim.openstreetmap.org/search'
-        '?q=${Uri.encodeComponent(query)}&format=json&limit=15$viewbox',
+        '?q=${Uri.encodeComponent(query)}&format=json&limit=$rawLimit$viewbox',
       );
       final res = await http
           .get(uri, headers: {'User-Agent': 'DashApp/1.0'})

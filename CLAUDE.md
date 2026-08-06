@@ -103,7 +103,7 @@ Keep this list current — update it whenever a feature moves between these buck
   second, merged emission if the slower Overpass fallback (only tried when Nominatim
   returned fewer than 3 results — measured anywhere from ~7s-504 to 37s for the same shape
   of query on the public instance) turns up anything new — **non-blocking**, never gating
-  what's already on screen. Used by both of the screens below so they share identical
+  what's already on screen. Used by all three screens below so they share identical
   search behaviour instead of drifting apart; each caller does its own staleness check
   (has the field's text moved on to a different query since this emission?) around the
   stream, since that's inherently per-field state the service itself can't know about.
@@ -116,6 +116,58 @@ Keep this list current — update it whenever a feature moves between these buck
   `PlaceSearchService` above. Selecting a result flies the camera there (`_flyTo`, see
   below) and also drops a pin at that spot via the same `_onMapTap` pin logic a real map
   tap would use.
+- Place search on the Explore page's top bar (`lib/screens/explore_page.dart`) — the same
+  `PlaceSearchService`/ranking and full-screen white-takeover UI as route creation's search
+  above (state living directly on `_ExplorePageState` the same way, for the same reason),
+  ported from an earlier, much simpler single-Nominatim-result "search a city" bar. Two
+  differences from route creation's version, both specific to what Explore actually needs:
+  selecting a result plain-moves the camera there (`MapController.move`, no `_flyTo` dip
+  animation — not carried over, since only route creation asked for that flourish) and, in
+  place of dropping a route waypoint, drops a small standalone `_SearchResultPin` marker at
+  the result (`Marker.alignment: Alignment.topCenter`, so the icon's bottom tip lands
+  exactly on the point rather than its center) and re-derives `_activeCityFilter` (what the
+  leaderboard button reads) via `_updateCityForCurrentLocation` on the selected point —
+  reusing the same reverse-geocode already used for "current GPS position → current city"
+  — rather than the old behaviour of just capitalizing whatever text was typed, which broke
+  down for a multi-word or partial query. The pin persists until the next selection
+  replaces it; nothing currently clears it early (e.g. clearing the search field). It's
+  drawn with no drop shadow: an earlier version added one via `Icon.shadows`, but that
+  paints through `TextStyle`'s own shadow mechanism, which — for reasons not fully pinned
+  down, but consistently reproducible — doesn't get repositioned every frame as flutter_map
+  moves the marker during a pan, leaving the shadow visibly stuck at the screen position
+  the marker first appeared at (dead center, right where the post-selection
+  `MapController.move` had just centered the camera) while the icon itself moved normally.
+  `BoxShadow` (the mechanism `_LocationDot` below uses successfully, tied directly to a
+  `Container`'s own paint) doesn't have this problem, but needs a boxy shape to decorate
+  and so doesn't suit a teardrop pin glyph — simplest fix was just not drawing a shadow.
+  The close button that replaces the leaderboard button while search is active (top bar has
+  no other "back" affordance the rest of the time) uses the same circular white-button
+  treatment as route creation's back arrow. Explore also raises `PlaceSearchService`'s own
+  defaults — `limit`/`rawLimit` both to 20 (`_searchResultsLimit`), vs. the defaults of
+  10/15 that route creation and route search still use — since a browse-the-map page
+  benefits more from a longer results list than the route-planning screens do; the service
+  method takes both as independent parameters specifically so raising one page's result
+  count doesn't affect any other caller.
+  **Double-tap-to-open-keyboard bug and its actual fix**: the first tap on the search field
+  focused it (confirmed by the white takeover appearing, since that's gated on
+  `_searchFocusNode.hasFocus`) but never raised the system keyboard — a second tap on the
+  by-then-stable field was needed. The true cause turned out to be one layer *below* the
+  outer `Stack`: `_buildTopControls`'s `Row` conditionally prepends a close button in place
+  of the leaderboard button, which shifts `Expanded(child: _buildSearchField())`'s *index*
+  in that Row's children the instant `_searchActive` flips — and `Row`, like `Stack`,
+  reconciles unkeyed children by index, not identity. That index mismatch tore down and
+  recreated the `TextField`'s element in the very same `setState` triggered by the focus
+  change that was *also* supposed to raise the keyboard — destroying the in-flight
+  keyboard-show request before it could complete. Giving `Expanded` a stable `key` (it
+  takes one directly — no `KeyedSubtree` wrapper, since `Row`/`Column` only recognize
+  `Expanded`/`Flexible` sizing on *direct* children) let Flutter match it by identity
+  across the index shift and update in place instead of rebuilding it. Keying the outer
+  `Stack`'s children (kept, since it's correct and harmless) turned out not to be the actual
+  fix — the real bug was always one level deeper, on the `Row` directly wrapping the field.
+  Worth remembering if a similar "focus works but the keyboard doesn't" report shows up
+  elsewhere: check the *narrowest* conditionally-reordered ancestor of the field, not just
+  the outermost one. Route creation's search has a similarly-shaped conditional top bar
+  and hasn't been audited for the same issue — check there too if it's ever reported.
 - Two camera animations shared by the route-creation map: `_flyTo` (search-result
   selection and the "my location" button) does a proportional "zoom out, pan, zoom back
   in" flourish for search selection (`CameraFit.coordinates` sizes the dip to how far
