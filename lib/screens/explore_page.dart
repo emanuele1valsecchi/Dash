@@ -13,6 +13,7 @@ import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
+import '../services/place_search_service.dart';
 import '../widgets/map/area_details_sheet.dart';
 import '../widgets/map/claimed_areas_layer.dart';
 import 'leaderboard_screen.dart';
@@ -29,7 +30,6 @@ class ExplorePage extends StatefulWidget {
 
 class _ExplorePageState extends State<ExplorePage> {
   final MapController _mapController = MapController();
-  final TextEditingController _searchController = TextEditingController();
 
   // ── Location ──────────────────────────────────────────────────────────────
   LatLng? _currentPosition;
@@ -46,9 +46,23 @@ class _ExplorePageState extends State<ExplorePage> {
   bool _showOtherAreas = true;
   bool _showMyAreas = true;
 
-  // ── Search & City Context for Leaderboard ─────────────────────────────────
-  bool _isSearching = false;
-  String _activeCityFilter = 'Global Leaderboard'; 
+  // ── City context for leaderboard ────────────────────────────────────────
+  String _activeCityFilter = 'Global Leaderboard';
+
+  // ── Place search (same PlaceSearchService/ranking/full-screen-takeover
+  // UI as RouteCreatePage's search bar and RouteSearchPage's address
+  // fields — see place_search_service.dart) ───────────────────────────────
+  final TextEditingController _searchCtrl = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+  Timer? _searchDebounce;
+  List<Place> _searchSuggestions = [];
+  bool _searchSuppressNext = false;
+
+  bool get _searchActive => _searchFocusNode.hasFocus;
+
+  /// The most recently selected search result, shown as a small pin on the
+  /// map — replaced by the next selection, never auto-cleared otherwise.
+  LatLng? _searchResultPin;
 
   static const double _defaultZoom = 16.0;
 
@@ -57,13 +71,17 @@ class _ExplorePageState extends State<ExplorePage> {
     super.initState();
     _initLocation();
     _loadClaimedAreas();
+    _searchCtrl.addListener(_onSearchChanged);
+    _searchFocusNode.addListener(_onSearchFocusChanged);
   }
 
   @override
   void dispose() {
     _positionSub?.cancel();
     _mapController.dispose();
-    _searchController.dispose();
+    _searchDebounce?.cancel();
+    _searchCtrl.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -206,63 +224,155 @@ class _ExplorePageState extends State<ExplorePage> {
 
   void _resetNorth() => _mapController.rotate(0);
 
-  // ── City search (Nominatim) ───────────────────────────────────────────────
+  // ── Place search ─────────────────────────────────────────────────────────
+  //
+  // Same PlaceSearchService/ranking as RouteCreatePage's search bar and
+  // RouteSearchPage's address fields (Nominatim + Overpass POI fallback,
+  // re-ranked by text-match quality/importance/proximity — see that
+  // service for why), and the same full-screen white takeover look —
+  // state lives directly on this State like RouteCreatePage's does, since
+  // the results list (`_buildSearchOverlay`) is a Stack sibling of the
+  // search field, not a descendant of it.
 
-  Future<void> _searchCity(String query) async {
-    if (query.trim().isEmpty) return;
-    FocusScope.of(context).unfocus();
-    setState(() => _isSearching = true);
-    
-    final cleanQuery = query.trim();
+  void _onSearchFocusChanged() {
+    if (!mounted) return;
+    setState(() {
+      if (!_searchFocusNode.hasFocus) _searchSuggestions = [];
+    });
+  }
 
-    try {
-      final uri = Uri.parse(
-        'https://nominatim.openstreetmap.org/search'
-        '?q=${Uri.encodeComponent(cleanQuery)}&format=json&limit=1',
-      );
-      final response = await http
-          .get(uri, headers: {'User-Agent': 'DashApp/1.0'})
-          .timeout(const Duration(seconds: 8));
-          
-      if (response.statusCode == 200) {
-        final results = jsonDecode(response.body) as List<dynamic>;
-        if (results.isNotEmpty) {
-          final first = results[0] as Map<String, dynamic>;
-          final lat = double.parse(first['lat'] as String);
-          final lon = double.parse(first['lon'] as String);
-          
-          _mapController.move(LatLng(lat, lon), 13.0);
-          
-          setState(() {
-            _activeCityFilter = cleanQuery[0].toUpperCase() + cleanQuery.substring(1).toLowerCase();
-          });
-        } else if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('City "$cleanQuery" not found')),
-          );
-        }
-      }
-    } catch (_) {
-      // Silently ignore network errors
-    } finally {
-      if (mounted) setState(() => _isSearching = false);
+  void _onSearchChanged() {
+    if (_searchSuppressNext) {
+      _searchSuppressNext = false;
+      return;
     }
+    _searchDebounce?.cancel();
+    final text = _searchCtrl.text.trim();
+    if (text.length < 3) {
+      if (mounted) setState(() => _searchSuggestions = []);
+      return;
+    }
+    _searchDebounce = Timer(
+      const Duration(milliseconds: 350),
+      () => _fetchSearchResults(text),
+    );
+  }
+
+  /// Delegates to [PlaceSearchService.search] and applies each emission as
+  /// it arrives, bailing out if the field's text has moved on to a
+  /// different query since. Raised past the service's own defaults (10
+  /// ranked / 15 raw) — Explore is a browse-the-map page where a longer
+  /// results list is more useful than on the route-planning screens, which
+  /// stay at the defaults.
+  static const int _searchResultsLimit = 20;
+
+  Future<void> _fetchSearchResults(String query) async {
+    await for (final places in PlaceSearchService.search(
+      query,
+      near: _currentPosition,
+      limit: _searchResultsLimit,
+      rawLimit: _searchResultsLimit,
+    )) {
+      if (!mounted || _searchCtrl.text.trim() != query) return;
+      setState(() => _searchSuggestions = places);
+    }
+  }
+
+  void _selectSearchResult(Place place) {
+    // Any pending debounced fetch (e.g. from text typed just before this tap
+    // landed) is now for a stale query — don't let it resolve later and
+    // repopulate the list right after we've moved on.
+    _searchDebounce?.cancel();
+    _searchSuppressNext = true;
+    // Set text + selection together in one `.value` assignment rather than
+    // as two separate `.text =` / `.selection =` assignments — see
+    // RouteCreatePage's `_selectSearchResult` for why (each fires the
+    // controller's listener independently, and `_searchSuppressNext` only
+    // survives the first).
+    _searchCtrl.value = TextEditingValue(
+      text: place.displayName,
+      selection: TextSelection.collapsed(offset: place.displayName.length),
+    );
+    setState(() {
+      _searchSuggestions = [];
+      _searchResultPin = place.latLng;
+    });
+    _searchFocusNode.unfocus();
+    _mapController.move(place.latLng, _defaultZoom);
+    // Re-derive the leaderboard city filter from wherever the search
+    // actually landed (a street/POI's *containing* city, via the same
+    // reverse-geocode already used for "current position → current city"),
+    // rather than just capitalizing the raw typed query — correct for any
+    // kind of result, not just a plain city name.
+    _updateCityForCurrentLocation(place.latLng);
+  }
+
+  /// Backs out of the full-screen search takeover without leaving the page —
+  /// used by the top-bar close button and the system back gesture (see
+  /// [build]'s `PopScope`) whenever search is active.
+  void _closeSearch() {
+    _searchFocusNode.unfocus();
+    setState(() => _searchSuggestions = []);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Stack(
-        children: [
-          _buildMap(),
-          SafeArea(child: _buildTopControls()),
-          _buildVerticalButtonPanel(),
-          if (_isLoadingLocation) _buildLoadingOverlay(),
-          if (!_locationPermissionGranted && !_isLoadingLocation)
-            _buildPermissionBanner(),
-        ],
+    return PopScope(
+      // System/gesture back closes an active search instead of leaving the
+      // page — same principle as RouteCreatePage's PopScope.
+      canPop: !_searchActive,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _closeSearch();
+      },
+      child: Scaffold(
+        body: Stack(
+          // Every child carries a stable Key: the search overlay is only
+          // conditionally present, which shifts the top bar's *index* in
+          // this list the instant search becomes active. Without keys,
+          // Stack's list reconciliation matches old/new children by index,
+          // not identity — an index shift reads as "this is a different
+          // widget", so it tears down and recreates everything from the
+          // insertion point onward (the top bar/search field included)
+          // instead of just updating it in place. That teardown was
+          // destroying the TextField's freshly-focused EditableText mid
+          // keyboard-show request — the field still ended up focused, but
+          // the platform keyboard never actually appeared, needing a
+          // second tap on the (by-then-stable) field to ask again. Keys
+          // let Flutter recognize each child by identity across the index
+          // shift and update it in place instead.
+          children: [
+            KeyedSubtree(key: const ValueKey('map'), child: _buildMap()),
+            KeyedSubtree(
+              key: const ValueKey('verticalButtons'),
+              child: _buildVerticalButtonPanel(),
+            ),
+            // Covers the map/vertical buttons while searching — a Stack
+            // sibling of the top bar (painted after it below), so the top
+            // bar itself always stays on top and interactive.
+            if (_searchActive)
+              KeyedSubtree(
+                key: const ValueKey('searchOverlay'),
+                child: _buildSearchOverlay(),
+              ),
+            KeyedSubtree(
+              key: const ValueKey('topControls'),
+              child: SafeArea(child: _buildTopControls()),
+            ),
+            if (_isLoadingLocation)
+              KeyedSubtree(
+                key: const ValueKey('loading'),
+                child: _buildLoadingOverlay(),
+              ),
+            if (!_locationPermissionGranted && !_isLoadingLocation)
+              KeyedSubtree(
+                key: const ValueKey('permissionBanner'),
+                child: _buildPermissionBanner(),
+              ),
+          ],
+        ),
+        bottomNavigationBar: _buildBottomNav(),
       ),
-      bottomNavigationBar: _buildBottomNav(),
     );
   }
 
@@ -303,6 +413,21 @@ class _ExplorePageState extends State<ExplorePage> {
                 ),
               ],
             ),
+          if (_searchResultPin != null)
+            MarkerLayer(
+              markers: [
+                Marker(
+                  point: _searchResultPin!,
+                  width: 34,
+                  height: 34,
+                  // Anchors the icon's bottom tip (not its center) to the
+                  // point — a drop-pin shape should visually point exactly
+                  // at the searched location, not sit centered over it.
+                  alignment: Alignment.topCenter,
+                  child: const _SearchResultPin(),
+                ),
+              ],
+            ),
         ],
       ),
     );
@@ -311,17 +436,61 @@ class _ExplorePageState extends State<ExplorePage> {
   Widget _buildTopControls() {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      // Every child is keyed for the same reason the outer Stack's children
+      // are (see `build`): the close button's conditional presence shifts
+      // the search field's *index* in this Row the instant `_searchActive`
+      // flips, and this turned out to be the actual site of the
+      // double-tap-for-keyboard bug the Stack-level keys didn't fix — this
+      // Row sits directly between the Stack and the TextField, and Row
+      // reconciles its children by index just like Stack does. `Expanded`
+      // takes `key` directly (it's a plain `Widget` param) rather than
+      // needing a `KeyedSubtree` wrapper, which would break its flex
+      // sizing — `Row`/`Column` only special-case *direct* children that
+      // are `Expanded`/`Flexible`.
       child: Row(
         children: [
-          Expanded(child: _buildSearchBar()),
-          const SizedBox(width: 8),
-          _buildLeaderboardButton(),
+          if (_searchActive) ...[
+            KeyedSubtree(
+              key: const ValueKey('searchCloseButton'),
+              child: _buildSearchCloseButton(),
+            ),
+            const SizedBox(width: 10),
+          ],
+          Expanded(
+            key: const ValueKey('searchField'),
+            child: _buildSearchField(),
+          ),
+          if (!_searchActive) ...[
+            const SizedBox(width: 8),
+            KeyedSubtree(
+              key: const ValueKey('leaderboardButton'),
+              child: _buildLeaderboardButton(),
+            ),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildSearchBar() {
+  /// Shown only while search is active, in place of the leaderboard button —
+  /// same circular white-button treatment as RouteCreatePage's back arrow.
+  Widget _buildSearchCloseButton() {
+    return Material(
+      color: Colors.white,
+      shape: const CircleBorder(),
+      elevation: 2,
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: _closeSearch,
+        child: const Padding(
+          padding: EdgeInsets.all(10),
+          child: Icon(Icons.arrow_back, color: Color(0xFF425143), size: 22),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchField() {
     return Container(
       height: 46,
       decoration: BoxDecoration(
@@ -333,38 +502,158 @@ class _ExplorePageState extends State<ExplorePage> {
       ),
       alignment: Alignment.center,
       child: TextField(
-        controller: _searchController,
-        onSubmitted: _searchCity,
+        controller: _searchCtrl,
+        focusNode: _searchFocusNode,
         textAlignVertical: TextAlignVertical.center,
         style: const TextStyle(fontSize: 14),
         decoration: InputDecoration(
-          hintText: 'Search a city…',
+          // isCollapsed drops InputDecorator's own implicit vertical
+          // padding, which — combined with this fixed-height 46px
+          // container — would otherwise push the text off-centre.
+          isCollapsed: true,
+          hintText: 'Search a place…',
           hintStyle: const TextStyle(color: Colors.grey, fontSize: 14),
-          prefixIcon: _isSearching
-              ? const Padding(
-                  padding: EdgeInsets.all(12),
-                  child: SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                )
-              : const Icon(Icons.search, color: Colors.grey, size: 20),
-          suffixIcon: _searchController.text.isNotEmpty
+          prefixIcon: const Icon(Icons.search, color: Colors.grey, size: 20),
+          prefixIconConstraints: const BoxConstraints(
+            minWidth: 40,
+            minHeight: 20,
+          ),
+          suffixIcon: _searchCtrl.text.isNotEmpty
               ? IconButton(
                   icon: const Icon(Icons.close, size: 18, color: Colors.grey),
                   onPressed: () {
-                    _searchController.clear();
+                    _searchCtrl.clear();
+                    setState(() => _searchSuggestions = []);
                     if (_currentPosition != null) {
                       _updateCityForCurrentLocation(_currentPosition!);
                     }
                   },
                 )
               : null,
+          suffixIconConstraints: const BoxConstraints(
+            minWidth: 40,
+            minHeight: 20,
+          ),
           border: InputBorder.none,
           contentPadding: EdgeInsets.zero,
         ),
-        onChanged: (_) => setState(() {}),
+      ),
+    );
+  }
+
+  // ── Full-screen search overlay ───────────────────────────────────────────
+  //
+  // Same "whole page goes white" takeover as RouteCreatePage's search —
+  // map, vertical button panel, and leaderboard button all covered — so
+  // there's a full screen of room for results instead of a cramped strip.
+
+  /// Matches the top bar's own on-screen height (12 top padding + 46 field
+  /// height) so the results list starts right below the search field
+  /// (rendered separately, on top of this overlay — see `build`) instead of
+  /// underneath it.
+  static const double _searchOverlayTopGap = 58.0;
+
+  Widget _buildSearchOverlay() {
+    return Positioned.fill(
+      child: Container(
+        color: Colors.white,
+        child: SafeArea(
+          child: Column(
+            children: [
+              const SizedBox(height: _searchOverlayTopGap),
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => FocusScope.of(context).unfocus(),
+                  child: _searchSuggestions.isEmpty
+                      ? _buildSearchEmptyState()
+                      : ListView.separated(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          itemCount: _searchSuggestions.length,
+                          separatorBuilder: (_, _) => const Divider(
+                            height: 1,
+                            indent: 20,
+                            endIndent: 20,
+                          ),
+                          itemBuilder: (_, i) =>
+                              _buildSearchResultTile(_searchSuggestions[i]),
+                        ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchEmptyState() {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.search, size: 40, color: Color(0xFFB9C2B5)),
+            SizedBox(height: 12),
+            Text(
+              'Search for a place, city, or landmark',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey, fontSize: 14),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchResultTile(Place place) {
+    final parts = place.displayName.split(',');
+    final primary = parts.first.trim();
+    final secondary = parts.skip(1).join(',').trim();
+
+    return InkWell(
+      onTap: () => _selectSearchResult(place),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(top: 2),
+              child: Icon(
+                Icons.location_on_outlined,
+                size: 18,
+                color: Color(0xFF4A8C52),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    primary,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF1F3020),
+                    ),
+                  ),
+                  if (secondary.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      secondary,
+                      style: const TextStyle(fontSize: 13, color: Colors.grey),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -641,5 +930,26 @@ class _LocationDot extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+/// Small drop-pin marker for the currently selected search result — paired
+/// with `alignment: Alignment.topCenter` on its `Marker` (see `_buildMap`)
+/// so the icon's bottom tip, not its center, lands on the actual point.
+class _SearchResultPin extends StatelessWidget {
+  const _SearchResultPin();
+
+  @override
+  Widget build(BuildContext context) {
+    // Deliberately no drop shadow: `Icon.shadows` paints via TextStyle's
+    // own shadow mechanism, which doesn't get repositioned correctly on
+    // every frame as flutter_map moves this marker during a pan — it was
+    // visibly left behind at the screen position the marker first appeared
+    // at (dead center, right after the post-search `MapController.move`)
+    // instead of tracking the icon. A `BoxShadow` (the pattern `_LocationDot`
+    // above already uses successfully) would need a boxy backing shape to
+    // decorate, which doesn't suit a teardrop pin glyph — simplest correct
+    // fix is just not drawing a shadow here at all.
+    return const Icon(Icons.location_on, size: 34, color: Color(0xFF4A8C52));
   }
 }
