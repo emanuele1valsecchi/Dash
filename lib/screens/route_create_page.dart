@@ -28,10 +28,11 @@ class _RouteSnapshot {
   final List<RouteSegment> segments;
 
   /// Every loop closed so far — plural, since a route can close more than
-  /// one separate area (see `_activeLoopStartSegment`).
+  /// one separate area (see `_RouteCreatePageState._loopRangeStart`).
   final List<List<LatLng>> loopPolygons;
   final List<double> loopAreasM2;
-  final int activeLoopStartSegment;
+  final List<int> loopRangeStart;
+  final List<int> loopRangeEnd;
 
   /// How many *leading* waypoints came from the most recent freehand-draw
   /// conversion (0 if the route was built purely by tapping pins). Used only
@@ -43,7 +44,8 @@ class _RouteSnapshot {
     required this.segments,
     this.loopPolygons = const [],
     this.loopAreasM2 = const [],
-    this.activeLoopStartSegment = 0,
+    this.loopRangeStart = const [],
+    this.loopRangeEnd = const [],
     this.drawnPointsCount = 0,
   });
 }
@@ -124,17 +126,17 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   List<List<LatLng>> _loopPolygons = [];
   List<double> _loopAreasM2 = [];
 
-  /// Index into [_segments] (equivalently, into [_waypoints] — the two stay
-  /// in lockstep at `segments.length == waypoints.length - 1`) where the
-  /// *current*, not-yet-closed loop starts. Self-intersection checks and
-  /// snap-to-waypoint closing both only look at segments/waypoints from
-  /// here onward, so a new segment can't get spuriously matched against an
-  /// already-finalised loop's own geometry — which would otherwise either
-  /// wrongly re-close it or produce a polygon that spans across two
-  /// unrelated loops. Reset to 0 whenever all loops are cleared (pin
-  /// deletion, Cancel), and advanced to `_segments.length` every time a
-  /// loop successfully closes (see `_finaliseLoop`).
-  int _activeLoopStartSegment = 0;
+  /// The `[_segments]` index range (inclusive, equivalently a `[_waypoints]`
+  /// range since the two stay in lockstep at
+  /// `segments.length == waypoints.length - 1`) each entry in [_loopPolygons]
+  /// was built from — i.e. how far back along the route it reaches. Used
+  /// purely to detect when a newly-closed loop supersedes an earlier one
+  /// (see `_finaliseLoop`); not consulted by the intersection search itself,
+  /// which always looks at the *entire* route so that re-crossing ground
+  /// from an already-closed loop (e.g. a bigger loop drawn around a smaller
+  /// one) is always caught, however far back it reaches.
+  List<int> _loopRangeStart = [];
+  List<int> _loopRangeEnd = [];
 
   // ── Undo / redo ───────────────────────────────────────────────────────────
   final List<_RouteSnapshot> _history = [
@@ -293,7 +295,8 @@ class _RouteCreatePageState extends State<RouteCreatePage>
         segments: List<RouteSegment>.from(_segments),
         loopPolygons: _loopPolygons.map(List<LatLng>.from).toList(),
         loopAreasM2: List<double>.from(_loopAreasM2),
-        activeLoopStartSegment: _activeLoopStartSegment,
+        loopRangeStart: List<int>.from(_loopRangeStart),
+        loopRangeEnd: List<int>.from(_loopRangeEnd),
         drawnPointsCount: _drawnPointsCount,
       ),
     );
@@ -306,7 +309,8 @@ class _RouteCreatePageState extends State<RouteCreatePage>
       _segments = List<RouteSegment>.from(snap.segments);
       _loopPolygons = snap.loopPolygons.map(List<LatLng>.from).toList();
       _loopAreasM2 = List<double>.from(snap.loopAreasM2);
-      _activeLoopStartSegment = snap.activeLoopStartSegment;
+      _loopRangeStart = List<int>.from(snap.loopRangeStart);
+      _loopRangeEnd = List<int>.from(snap.loopRangeEnd);
       _drawnPointsCount = snap.drawnPointsCount;
     });
   }
@@ -331,8 +335,8 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     FocusScope.of(context).unfocus();
 
     // Block new pins while routing or in delete mode — a closed loop no
-    // longer blocks placing more (see `_activeLoopStartSegment`): a route
-    // can close as many separate areas as the user wants to draw.
+    // longer blocks placing more: a route can close as many separate areas
+    // as the user wants to draw.
     if (_isRouting || _isDeleteMode) return;
 
     if (_activeTool == _Tool.freeDraw) {
@@ -343,12 +347,13 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     }
 
     // ── Snap to an existing waypoint if close enough ───────────────────────
-    // Only waypoints that are part of the *current*, not-yet-closed loop —
-    // snapping back into an earlier, already-closed loop would produce a
-    // polygon spanning both, since `_polygonFromWaypointIndex` just walks
-    // segments from that index to the tip.
+    // Any earlier waypoint is a valid snap target, including one that's
+    // already part of a closed loop — snapping back into it is exactly how
+    // a bigger loop enclosing an earlier, smaller one gets detected. See
+    // `_finaliseLoop` for how the resulting polygon supersedes whatever it
+    // now encloses instead of being counted alongside it.
     if (_waypoints.length >= 2) {
-      for (int i = _activeLoopStartSegment; i < _waypoints.length - 1; i++) {
+      for (int i = 0; i < _waypoints.length - 1; i++) {
         if (const Distance()(_waypoints[i], tapPoint) <= _snapThresholdMeters) {
           await _routeAndCloseAtWaypoint(i);
           return;
@@ -416,7 +421,30 @@ class _RouteCreatePageState extends State<RouteCreatePage>
       _waypoints.add(to);
     });
 
-    _finaliseLoop(_polygonFromWaypointIndex(waypointIdx));
+    // The snap target itself is always a valid closure, but the new closing
+    // segment (routed or straight-line) might *also* cut back through even
+    // earlier ground than the snap target reaches — e.g. closing back to a
+    // middle waypoint with a line that happens to pass through the route's
+    // actual start pin — in which case that bigger polygon should win, the
+    // same "biggest shape" rule ordinary self-intersections already follow.
+    final directPolygon = _polygonFromWaypointIndex(waypointIdx);
+    final crossing = _findBestSelfIntersection();
+
+    if (crossing != null &&
+        GeometryUtils.polygonAreaM2(crossing.polygon) >
+            GeometryUtils.polygonAreaM2(directPolygon)) {
+      _finaliseLoop(
+        crossing.polygon,
+        rangeStart: crossing.rangeStart,
+        rangeEnd: _segments.length - 1,
+      );
+    } else {
+      _finaliseLoop(
+        directPolygon,
+        rangeStart: waypointIdx,
+        rangeEnd: _segments.length - 1,
+      );
+    }
     _pushHistory();
   }
 
@@ -588,25 +616,67 @@ class _RouteCreatePageState extends State<RouteCreatePage>
 
   // ── Self-intersection detection ───────────────────────────────────────────
   //
-  // Two strategies, matching the OpenMap component:
+  // Three strategies (the first two matching the OpenMap component):
   //
   // 1. Vertex proximity — ORS routes share exact OSM node coordinates when two
   //    segments pass through the same junction.  5 m catches identical nodes.
   //
   // 2. Geometric edge crossing — catches true geometric intersections (e.g.
   //    diagonal cuts or straight-line fallback segments).
+  //
+  // 3. Vertex-on-edge distance — catches a real waypoint sitting exactly on
+  //    another edge's interior (not just near it, and not a transversal
+  //    crossing), which strategy 2 deliberately excludes since that's where
+  //    a shared-junction false positive would land. See
+  //    `GeometryUtils.pointToSegmentDistanceMeters` for the motivating case.
 
   void _checkSelfIntersection() {
-    // Scoped to segments added since the last loop closed (see
-    // `_activeLoopStartSegment`) — otherwise a new segment could get matched
-    // against an already-finalised loop's own geometry, either wrongly
-    // re-triggering it or producing a polygon spanning two unrelated loops.
-    if (_segments.length - _activeLoopStartSegment < 2) return;
+    final best = _findBestSelfIntersection();
+    if (best != null) {
+      _finaliseLoop(
+        best.polygon,
+        rangeStart: best.rangeStart,
+        rangeEnd: _segments.length - 1,
+      );
+    }
+  }
+
+  /// Searches the most recently added segment (`_segments.last`) against
+  /// every other segment in the route for a self-intersection, and returns
+  /// the one enclosing the largest polygon — or null if none reaches
+  /// [_minLoopAreaM2]. Pure search, no side effects: shared by
+  /// [_checkSelfIntersection] (an ordinary pin/drawn segment) and
+  /// [_routeAndCloseAtWaypoint] (a snap-to-waypoint close), since the newly
+  /// added *closing* segment can itself cross back through even earlier
+  /// ground the snap target doesn't reach — e.g. closing back to a middle
+  /// waypoint with a routed/straight line that happens to pass through an
+  /// earlier pin — and that bigger polygon must still win over the smaller,
+  /// direct "snap target to tip" one.
+  ({List<LatLng> polygon, int rangeStart})? _findBestSelfIntersection() {
+    if (_segments.length < 2) return null;
 
     final newPoly = _segments.last.polyline;
     final prevCount = _segments.length - 1;
 
-    for (int si = _activeLoopStartSegment; si < prevCount; si++) {
+    // Every candidate crossing found against the *entire* route (not just
+    // segments added since the last loop closed) is considered, and the one
+    // enclosing the largest area wins — always the biggest shape the route's
+    // current geometry can produce, rather than whichever crossing happened
+    // to be found first. This is also what lets a bigger loop drawn around
+    // an already-closed smaller one register at all: the old scoping used to
+    // exclude that smaller loop's own segments from the search entirely.
+    //
+    // The only segment that can share an exact coordinate with the new one
+    // is the literal previous segment (`_extendRouteTo`/the drawing
+    // converter always route from the current tip), so the shared-junction
+    // false-positive guards below only need to trim vertices/edges near
+    // that one segment — every other, older segment is genuinely separate
+    // geometry, and a match against it is a real crossing.
+    List<LatLng>? bestPolygon;
+    double bestArea = 0;
+    int bestStartSegment = 0;
+
+    for (int si = 0; si < prevCount; si++) {
       final existPoly = _segments[si].polyline;
       final isAdjacent = si == prevCount - 1;
 
@@ -618,24 +688,39 @@ class _RouteCreatePageState extends State<RouteCreatePage>
 
       if (newStart >= newPoly.length || existEnd <= 0) continue;
 
+      void considerCandidate(List<LatLng> polygon) {
+        if (polygon.length < 3) return;
+        final area = GeometryUtils.polygonAreaM2(polygon);
+        if (area < _minLoopAreaM2 || area <= bestArea) return;
+        bestArea = area;
+        bestPolygon = polygon;
+        bestStartSegment = si;
+      }
+
       // ── 1. Vertex proximity ──────────────────────────────────────────────
       for (int ni = newStart; ni < newPoly.length; ni++) {
         for (int ei = 0; ei < existEnd; ei++) {
           if (const Distance()(newPoly[ni], existPoly[ei]) <=
               _proximityThresholdMeters) {
-            _finaliseLoop(_polygonFromIntersection(existPoly[ei], si, ei, ni));
-            return;
+            considerCandidate(_polygonFromIntersection(existPoly[ei], si, ei, ni));
           }
         }
       }
 
       // ── 2. Geometric edge crossing ───────────────────────────────────────
+      // The new segment's very first edge is only excluded when `si` is the
+      // literal adjacent segment (shares its start point) — for any other,
+      // older segment there's no shared-junction concern, and a straight-
+      // line closing segment (only 2 points, e.g. the routing fallback) has
+      // no *other* edge to test, so skipping it unconditionally would mean
+      // never checking it against anything.
       final edgeEnd = isAdjacent
           ? (existPoly.length - 2).clamp(0, existPoly.length - 1)
           : existPoly.length - 1;
+      final crossNewStart = isAdjacent ? 1 : 0;
 
       for (int ei = 0; ei < edgeEnd; ei++) {
-        for (int ni = 1; ni < newPoly.length - 1; ni++) {
+        for (int ni = crossNewStart; ni < newPoly.length - 1; ni++) {
           final pt = GeometryUtils.segmentIntersection(
             existPoly[ei],
             existPoly[ei + 1],
@@ -643,12 +728,50 @@ class _RouteCreatePageState extends State<RouteCreatePage>
             newPoly[ni + 1],
           );
           if (pt != null) {
-            _finaliseLoop(_polygonFromIntersection(pt, si, ei, ni));
-            return;
+            considerCandidate(_polygonFromIntersection(pt, si, ei, ni));
+          }
+        }
+      }
+
+      // ── 3. Vertex lying on the other polyline's interior ─────────────────
+      // Neither check above catches a real waypoint sitting exactly *on*
+      // (not just near, and not crossing) another edge — e.g. a closing line
+      // that happens to pass straight through an earlier pin. Proximity
+      // only compares vertex-to-vertex, and edge crossing deliberately
+      // excludes matches at a segment's own endpoints (which is exactly
+      // where an existing vertex sitting on a line registers, since it's
+      // that line's nearest point to itself). A plain distance-to-segment
+      // check catches it from both sides: an old vertex on a new edge, and
+      // a new vertex on an old edge.
+      for (int ei = 0; ei < existEnd; ei++) {
+        for (int ni = crossNewStart; ni < newPoly.length - 1; ni++) {
+          if (GeometryUtils.pointToSegmentDistanceMeters(
+                existPoly[ei],
+                newPoly[ni],
+                newPoly[ni + 1],
+              ) <=
+              _proximityThresholdMeters) {
+            considerCandidate(_polygonFromIntersection(existPoly[ei], si, ei, ni));
+          }
+        }
+      }
+      for (int ni = newStart; ni < newPoly.length; ni++) {
+        for (int ei = 0; ei < edgeEnd; ei++) {
+          if (GeometryUtils.pointToSegmentDistanceMeters(
+                newPoly[ni],
+                existPoly[ei],
+                existPoly[ei + 1],
+              ) <=
+              _proximityThresholdMeters) {
+            considerCandidate(_polygonFromIntersection(newPoly[ni], si, ei, ni));
           }
         }
       }
     }
+
+    final polygon = bestPolygon;
+    if (polygon == null) return null;
+    return (polygon: polygon, rangeStart: bestStartSegment);
   }
 
   // ── Loop polygon extraction ───────────────────────────────────────────────
@@ -697,17 +820,45 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     return poly;
   }
 
-  /// Validates the polygon area, records the closed loop, and advances the
-  /// active-loop window so the *next* loop starts fresh from here — the
-  /// path can keep going (more pins, more loops) instead of being stuck.
-  void _finaliseLoop(List<LatLng> polygon) {
+  /// Validates the polygon area and records the closed loop, superseding any
+  /// already-closed loop whose own `[rangeStart, rangeEnd]` segment span
+  /// overlaps this one's. [rangeStart]/[rangeEnd] cover every segment this
+  /// polygon was built from — so an old loop entirely inside a new, bigger
+  /// one (same start further back, or a wholly later start reached by
+  /// re-crossing part of the old loop's boundary) always gets replaced
+  /// rather than kept alongside it, which would double-count the shared
+  /// ground and draw two overlapping fills. Loops with disjoint ranges (two
+  /// separate blocks claimed by the same route) are untouched.
+  void _finaliseLoop(
+    List<LatLng> polygon, {
+    required int rangeStart,
+    required int rangeEnd,
+  }) {
     if (polygon.length < 3) return;
     final area = GeometryUtils.polygonAreaM2(polygon);
     if (area < _minLoopAreaM2) return;
     setState(() {
-      _loopPolygons = [..._loopPolygons, polygon];
-      _loopAreasM2 = [..._loopAreasM2, area];
-      _activeLoopStartSegment = _segments.length;
+      final newPolygons = <List<LatLng>>[];
+      final newAreas = <double>[];
+      final newRangeStart = <int>[];
+      final newRangeEnd = <int>[];
+      for (int i = 0; i < _loopPolygons.length; i++) {
+        final overlaps =
+            _loopRangeStart[i] <= rangeEnd && rangeStart <= _loopRangeEnd[i];
+        if (overlaps) continue;
+        newPolygons.add(_loopPolygons[i]);
+        newAreas.add(_loopAreasM2[i]);
+        newRangeStart.add(_loopRangeStart[i]);
+        newRangeEnd.add(_loopRangeEnd[i]);
+      }
+      newPolygons.add(polygon);
+      newAreas.add(area);
+      newRangeStart.add(rangeStart);
+      newRangeEnd.add(rangeEnd);
+      _loopPolygons = newPolygons;
+      _loopAreasM2 = newAreas;
+      _loopRangeStart = newRangeStart;
+      _loopRangeEnd = newRangeEnd;
     });
   }
 
@@ -729,7 +880,8 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     setState(() {
       _loopPolygons = [];
       _loopAreasM2 = [];
-      _activeLoopStartSegment = 0;
+      _loopRangeStart = [];
+      _loopRangeEnd = [];
       _drawnPointsCount = 0;
     });
 
@@ -1136,7 +1288,8 @@ class _RouteCreatePageState extends State<RouteCreatePage>
       _isDeleteMode = false;
       _loopPolygons = [];
       _loopAreasM2 = [];
-      _activeLoopStartSegment = 0;
+      _loopRangeStart = [];
+      _loopRangeEnd = [];
       _drawnPointsCount = 0;
     });
     _history

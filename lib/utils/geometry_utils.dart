@@ -35,6 +35,40 @@ class GeometryUtils {
     return null;
   }
 
+  /// Distance in metres from [p] to the nearest point on segment [a]-[b].
+  ///
+  /// Uses the same local-planar (longitude/latitude-as-Cartesian, scaled to
+  /// metres at the segment's own latitude) approximation as
+  /// [segmentIntersection] — accurate for the short distances loop-closure
+  /// checks operate over.
+  ///
+  /// This exists specifically to catch a case [segmentIntersection] can't:
+  /// an existing waypoint sitting exactly on (not just crossing) another
+  /// segment's interior — e.g. a loop's closing line happening to pass
+  /// straight through an earlier pin. That point coincides with one
+  /// segment's endpoint (the waypoint itself) by construction, which
+  /// [segmentIntersection]'s endpoint exclusion deliberately filters out to
+  /// avoid false positives at shared junctions — a real "point lies on this
+  /// line" needs a distance check instead of a two-line-crossing one.
+  static double pointToSegmentDistanceMeters(LatLng p, LatLng a, LatLng b) {
+    final centerLat = (a.latitude + b.latitude) / 2;
+    const metersPerDegreeLat = 110540.0;
+    final metersPerDegreeLng = 111320.0 * cos(centerLat * pi / 180);
+
+    final px = (p.longitude - a.longitude) * metersPerDegreeLng;
+    final py = (p.latitude - a.latitude) * metersPerDegreeLat;
+    final bx = (b.longitude - a.longitude) * metersPerDegreeLng;
+    final by = (b.latitude - a.latitude) * metersPerDegreeLat;
+
+    final segLenSq = bx * bx + by * by;
+    var t = segLenSq > 0 ? (px * bx + py * by) / segLenSq : 0.0;
+    t = t.clamp(0.0, 1.0);
+
+    final dx = px - t * bx;
+    final dy = py - t * by;
+    return sqrt(dx * dx + dy * dy);
+  }
+
   /// Computes the area of a geographic polygon in square metres.
   ///
   /// Uses the planar Shoelace formula on locally-projected Cartesian
@@ -81,8 +115,8 @@ class GeometryUtils {
     return '${km2.toStringAsFixed(4)} km²';
   }
 
-  /// Scans a live GPS breadcrumb trail for a point that closes a loop with
-  /// the trail's current tip.
+  /// Scans a live GPS breadcrumb trail for the point that closes the
+  /// *biggest* loop with the trail's current tip.
   ///
   /// Walks backward from the end of [breadcrumb] accumulating on-trail
   /// distance; once that distance passes [minPathMeters] it starts testing
@@ -91,31 +125,38 @@ class GeometryUtils {
   /// back close enough) avoids flagging consecutive noisy GPS fixes — which
   /// are already close together — as a false "loop".
   ///
-  /// Only points from index [activeStart] onward are considered, so a
-  /// previously-closed loop can't be re-closed against the same trail.
+  /// The whole trail is considered, including points that already belong to
+  /// a previously-closed loop — re-crossing old ground (e.g. running a
+  /// bigger loop around one already closed) must still register. Every
+  /// qualifying point is checked, not just the first one found, and the
+  /// *earliest* one (farthest back along the trail) wins, since that's the
+  /// point that encloses the most area — callers that need to avoid
+  /// double-counting against a loop already recorded for an overlapping
+  /// stretch of trail should dedupe on the returned range themselves (see
+  /// `RunTrackingPage._checkLoopClosure`).
   ///
   /// Returns the index of the closing point, or null if no loop is closed.
   static int? findLoopClosureIndex(
     List<LatLng> breadcrumb, {
-    required int activeStart,
     double radiusMeters = 18,
     double minPathMeters = 80,
   }) {
     final n = breadcrumb.length;
-    if (n - activeStart < 4) return null;
+    if (n < 4) return null;
 
     const dist = Distance();
     final tip = breadcrumb[n - 1];
 
     double pathBehind = 0;
-    for (int i = n - 2; i >= activeStart; i--) {
+    int? earliestClosure;
+    for (int i = n - 2; i >= 0; i--) {
       pathBehind += dist(breadcrumb[i], breadcrumb[i + 1]);
       if (pathBehind < minPathMeters) continue;
       if (dist(breadcrumb[i], tip) <= radiusMeters) {
-        return i;
+        earliestClosure = i;
       }
     }
-    return null;
+    return earliestClosure;
   }
 
   /// Cosmetic Catmull-Rom smoothing for polyline rendering — inserts curved
