@@ -110,13 +110,12 @@ Keep this list current — update it whenever a feature moves between these buck
   `debugPrint` in `RoutingService.fetchRoute` so a recurrence can be diagnosed from real
   status codes instead of guessing. A drawn shape closes loops (including several, if it
   crosses itself more than once) the same way a tapped-out one does, and the whole
-  conversion is a single undo step, not one per sampled point. Only the start and finish
-  waypoint of a drawn segment render a pin marker — every interior sample point is still a
-  real waypoint (routing/undo/loop-detection all still see it) but is deliberately not drawn,
-  since the individual sample points aren't independently meaningful or user-placed the way a
-  tapped pin is (`_isHiddenWaypoint`, driven by `_drawnPointsCount`, which is reset to 0 by
-  anything — clearing, deleting a pin — that invalidates "the first N waypoints are exactly
-  what drawing produced"). **Known limitation**: this is retry/reach-ahead tuning on top of
+  conversion is a single undo step, not one per sampled point. Every waypoint — including a
+  drawn shape's interior road-snap samples, not just its start/finish — renders a pin marker,
+  so any of them can be grabbed for drag-to-edit (see below); an earlier version hid interior
+  drawn-segment points to avoid cluttering the map with one pin per sample, but that also made
+  them impossible to individually adjust, so the hiding was removed in favour of always-visible,
+  always-editable pins. **Known limitation**: this is retry/reach-ahead tuning on top of
   point-to-point routing, not true map-matching — if two consecutive samples end up on
   opposite sides of a large obstacle with no reasonably short walkable connection, ORS may
   produce a long real detour (correct, but visually surprising) rather than a shortcut, and a
@@ -125,6 +124,35 @@ Keep this list current — update it whenever a feature moves between these buck
   app-wide (loop-closure banners, claimed-area details, run results)
   show km² consistently, with decimal precision scaling by magnitude
   (`GeometryUtils.formatAreaKm2`) rather than switching between m²/ha/km² by size.
+- **Pin drag-to-edit** on the route-creation map: long-pressing any waypoint pin (pin-dropped
+  or drawn — see above) turns it yellow and lets it be dragged to a new spot; releasing
+  re-routes only the segment(s) touching that pin (`RouteCreatePage._movePin`), reusing the
+  same fetch-with-straight-line-fallback pattern `_deletePin`'s middle-pin bridge already used,
+  rather than anything new. A translucent straight preview line stands in for the real segment(s)
+  for the duration of the drag and the re-route that follows it (`_dragPreviewSegments`), the
+  same visual device already used for "straight-line preview while ORS call is in flight" on a
+  freshly-placed tip pin. A drag's `globalPosition` is converted to a `LatLng` via the map's own
+  `RenderBox` (anchored by a `GlobalKey` on the `EnhancedMapGestures` wrapper, which — being a
+  bare `Listener` around `FlutterMap` with no size of its own — shares the map's exact bounds)
+  and `MapCamera.offsetToCrs`, since a marker's own local gesture coordinates are relative to its
+  small 36×36 hit box, not the map. Unlike `_deletePin` (which shifts every later waypoint's
+  index and so conservatively wipes every closed loop with no re-detection), a move keeps every
+  index stable, so only loops reaching into the touched segment(s) are dropped
+  (`_clearLoopsOverlappingRange`) and re-detection runs scoped to just those segment(s)
+  afterward (`_checkLoopsAfterPinMove`/`_findLoopThroughSegment`) — a move can close a brand new
+  loop, or re-close a bigger/smaller one, exactly like placing a new pin can. This reuses the
+  same "biggest enclosed polygon wins" three-strategy search (vertex proximity, geometric edge
+  crossing, vertex-on-edge) `_checkSelfIntersection`/`_findBestSelfIntersection` already run for
+  a freshly-appended segment, generalized (`_findLoopThroughSegment`/`_polygonBetweenSegments`)
+  to a segment that can sit anywhere in the route rather than always at the tip — kept as
+  entirely separate methods, so the original tip-only search (and everything built by tapping or
+  drawing) is untouched. Blocked in delete mode (where a pin tap already means something else)
+  and while any other async route mutation is in flight (`_canDragPins`). Discoverability: the
+  first time a pin ever lands on the map (tap, search selection, or a completed drawing —
+  `_maybeShowPinDragHint`, called from `_onMapTap` and `_convertDrawingToRoute`'s success case),
+  a snackbar reads "Tip: hold and drag a pin to move it." Shown at most once, ever — gated on a
+  `SharedPreferences` bool (`route_create_pin_drag_hint_seen_v1`), not per-route or per-session
+  state, so it survives clearing the route or leaving and re-entering route creation.
 - **Shared place search** ([lib/services/place_search_service.dart](lib/services/place_search_service.dart), `PlaceSearchService`) — Nominatim
   (primary) + an Overpass POI fallback for informally-named places Nominatim's address
   search misses (e.g. "Edificio 25 Polimi"), re-ranked client-side by a strict

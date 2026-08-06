@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
@@ -34,11 +35,6 @@ class _RouteSnapshot {
   final List<int> loopRangeStart;
   final List<int> loopRangeEnd;
 
-  /// How many *leading* waypoints came from the most recent freehand-draw
-  /// conversion (0 if the route was built purely by tapping pins). Used only
-  /// to decide which pin markers to hide — see `_isHiddenWaypoint`.
-  final int drawnPointsCount;
-
   _RouteSnapshot({
     required this.waypoints,
     required this.segments,
@@ -46,7 +42,6 @@ class _RouteSnapshot {
     this.loopAreasM2 = const [],
     this.loopRangeStart = const [],
     this.loopRangeEnd = const [],
-    this.drawnPointsCount = 0,
   });
 }
 
@@ -119,6 +114,14 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   List<RouteSegment> _segments = [];
   bool _isRouting = false;
 
+  /// True while a drag-to-edit move (see "Pin drag-to-edit" below) is
+  /// re-routing the segment(s) touching a relocated pin. Kept separate from
+  /// `_isRouting` so the tip-extension "straight-line preview while ORS is
+  /// in flight" polyline below (which only ever spans the *last* two
+  /// waypoints) doesn't also render — misleadingly — while a pin somewhere
+  /// in the middle of the route is what's actually being re-routed.
+  bool _isMovingPin = false;
+
   // ── Loop state ────────────────────────────────────────────────────────────
   // Plural: placing more pins after a loop closes is allowed, and each
   // closure is kept rather than overwritten, so a single route can claim
@@ -149,13 +152,18 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   // `_isRouting` alone flickers false between its sequential fetches — if
   // history already had entries to step through (e.g. pins were deleted
   // back down to empty, then a shape drawn from there), undo/redo could
-  // otherwise fire concurrently with the still-in-progress conversion.
+  // otherwise fire concurrently with the still-in-progress conversion. Same
+  // reasoning applies to `_isMovingPin` — a drag-to-edit move.
   bool get _canUndo =>
-      _historyIndex > 0 && !_isRouting && !_isConvertingDrawing;
+      _historyIndex > 0 &&
+      !_isRouting &&
+      !_isConvertingDrawing &&
+      !_isMovingPin;
   bool get _canRedo =>
       _historyIndex < _history.length - 1 &&
       !_isRouting &&
-      !_isConvertingDrawing;
+      !_isConvertingDrawing &&
+      !_isMovingPin;
 
   // ── Tools ─────────────────────────────────────────────────────────────────
   _Tool _activeTool = _Tool.pinDrop;
@@ -179,22 +187,54 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   /// mid-conversion.
   bool _isConvertingDrawing = false;
 
-  /// How many leading waypoints came from the last draw conversion — see
-  /// `_RouteSnapshot.drawnPointsCount`. Reset to 0 by anything that breaks
-  /// the assumption that this prefix is still exactly what drawing produced
-  /// (clearing, deleting a pin).
-  int _drawnPointsCount = 0;
-
-  /// A waypoint drawn as part of a freehand stroke, other than its very
-  /// first or last point, is never rendered as a pin — the user only wants
-  /// to see a start/finish marker and a line for a drawn shape, not one pin
-  /// per road-snap sample (see `_convertDrawingToRoute`). The point itself
-  /// stays in `_waypoints` (still needed for routing/undo), only the marker
-  /// is skipped.
-  bool _isHiddenWaypoint(int index) =>
-      _drawnPointsCount > 2 && index > 0 && index < _drawnPointsCount - 1;
-
   bool get _canUseDrawTool => _waypoints.isEmpty;
+
+  // ── Pin drag-to-edit ──────────────────────────────────────────────────────
+  // Long-pressing any waypoint pin — including ones a freehand stroke
+  // produced, now that every one of them renders a marker (see the pin
+  // builder in `_buildMap`) rather than just a drawn shape's start/finish —
+  // turns it yellow and lets it be dragged to a new spot; releasing
+  // re-routes only the segment(s) touching that pin (`_movePin`), reusing
+  // the same fetch-with-straight-line-fallback pattern `_deletePin`'s
+  // middle-pin bridge already uses. Purely a display/re-routing concern —
+  // doesn't touch how a drawn stroke itself gets converted into a route.
+
+  /// Anchors the map's own [RenderBox] so a drag's `globalPosition` can be
+  /// converted to a map-local pixel offset for `MapCamera.offsetToCrs` —
+  /// attached to `EnhancedMapGestures` in `_buildMap`, which (being a bare
+  /// `Listener` wrapping `FlutterMap` with no size of its own) shares the
+  /// map's exact bounds, the same way `_onDrawPanUpdate`'s full-map overlay
+  /// gesture already relies on being aligned with the map to feed
+  /// `details.localPosition` straight into `offsetToCrs`.
+  final GlobalKey _mapAreaKey = GlobalKey();
+
+  /// Index of the waypoint currently being dragged, or null if none is.
+  int? _draggingPinIndex;
+
+  /// Live position of the pin being dragged — updated on every
+  /// `onLongPressMoveUpdate`, and kept (not cleared) through `_movePin`'s
+  /// re-route so the marker/preview lines don't jump before the real
+  /// segments land; cleared once that settles.
+  LatLng? _draggingPinPosition;
+
+  /// A drag needs `_waypoints`/`_segments` to stay still underneath it, so
+  /// it's blocked while any other async mutation (routing a new pin, a draw
+  /// conversion, another pin move) is in flight, or in delete mode (where a
+  /// pin tap already means something else).
+  bool get _canDragPins =>
+      !_isDeleteMode && !_isRouting && !_isConvertingDrawing && !_isMovingPin;
+
+  /// Persisted (device-wide, not per-route) flag key for the one-time
+  /// "hold and drag a pin to move it" hint — see `_maybeShowPinDragHint`.
+  static const String _pinDragHintPrefsKey = 'route_create_pin_drag_hint_seen_v1';
+
+  /// Guards `_maybeShowPinDragHint` against starting a second, redundant
+  /// `SharedPreferences` read if several pins land in quick succession
+  /// before the first read resolves — set the instant a check starts, not
+  /// only once the hint has actually been shown, since either outcome
+  /// (already seen, or just now shown) means this screen instance never
+  /// needs to check again.
+  bool _pinDragHintChecked = false;
 
   // ── Form ──────────────────────────────────────────────────────────────────
   final TextEditingController _trackNameCtrl = TextEditingController();
@@ -297,7 +337,6 @@ class _RouteCreatePageState extends State<RouteCreatePage>
         loopAreasM2: List<double>.from(_loopAreasM2),
         loopRangeStart: List<int>.from(_loopRangeStart),
         loopRangeEnd: List<int>.from(_loopRangeEnd),
-        drawnPointsCount: _drawnPointsCount,
       ),
     );
     _historyIndex++;
@@ -311,7 +350,6 @@ class _RouteCreatePageState extends State<RouteCreatePage>
       _loopAreasM2 = List<double>.from(snap.loopAreasM2);
       _loopRangeStart = List<int>.from(snap.loopRangeStart);
       _loopRangeEnd = List<int>.from(snap.loopRangeEnd);
-      _drawnPointsCount = snap.drawnPointsCount;
     });
   }
 
@@ -334,10 +372,10 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     // keyboard regardless of whether this tap goes on to place a pin.
     FocusScope.of(context).unfocus();
 
-    // Block new pins while routing or in delete mode — a closed loop no
-    // longer blocks placing more: a route can close as many separate areas
-    // as the user wants to draw.
-    if (_isRouting || _isDeleteMode) return;
+    // Block new pins while routing, in delete mode, or mid-drag on an
+    // existing pin — a closed loop no longer blocks placing more: a route
+    // can close as many separate areas as the user wants to draw.
+    if (_isRouting || _isDeleteMode || _isMovingPin) return;
 
     if (_activeTool == _Tool.freeDraw) {
       // Drawing is a press-and-drag gesture handled separately (see
@@ -365,6 +403,35 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     await _extendRouteTo(tapPoint);
     if (!mounted) return;
     _pushHistory();
+    _maybeShowPinDragHint();
+  }
+
+  /// Shows a one-time snackbar teaching drag-to-edit ("hold and drag a pin
+  /// to move it") the first time a pin ever appears on the map — persisted
+  /// device-wide via `SharedPreferences` (not scoped to this route or
+  /// session), so it's shown at most once, ever, across every route the
+  /// user creates. Called after any pin first lands, whether by tap,
+  /// search-result selection (which itself calls into `_onMapTap`), or a
+  /// completed freehand drawing. Safe to call unconditionally on every pin
+  /// placement — `_pinDragHintChecked` short-circuits every call after the
+  /// first, and the `SharedPreferences` read itself is the authority on
+  /// whether it's already been shown in an earlier session.
+  Future<void> _maybeShowPinDragHint() async {
+    if (_pinDragHintChecked || _waypoints.isEmpty) return;
+    _pinDragHintChecked = true;
+
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    if (prefs.getBool(_pinDragHintPrefsKey) ?? false) return;
+    await prefs.setBool(_pinDragHintPrefsKey, true);
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Tip: hold and drag a pin to move it.'),
+        duration: Duration(seconds: 4),
+      ),
+    );
   }
 
   /// Adds [point] as the next waypoint — routing from the current route tip
@@ -558,8 +625,8 @@ class _RouteCreatePageState extends State<RouteCreatePage>
           });
           _checkSelfIntersection();
         }
-        setState(() => _drawnPointsCount = _waypoints.length);
         _pushHistory();
+        _maybeShowPinDragHint();
     }
   }
 
@@ -868,21 +935,18 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     // `_isRouting` alone isn't enough while a drawn stroke is converting —
     // it flickers false between that conversion's sequential fetches (see
     // `_isConvertingDrawing`'s doc comment), which would otherwise let a
-    // delete race with waypoints still being appended.
-    if (_isRouting || _isConvertingDrawing) return;
+    // delete race with waypoints still being appended. Also blocked mid-drag
+    // on another pin, for the same reason.
+    if (_isRouting || _isConvertingDrawing || _isMovingPin) return;
 
     // Deleting any pin breaks the current topology — clear every loop
     // closed so far and restart loop-detection from scratch, rather than
     // trying to work out which specific loop(s) the deletion invalidated.
-    // Also un-hides any drawn-segment interior points: once indices shift
-    // under a deletion, "the first N waypoints came from drawing" is no
-    // longer a safe assumption to render off of.
     setState(() {
       _loopPolygons = [];
       _loopAreasM2 = [];
       _loopRangeStart = [];
       _loopRangeEnd = [];
-      _drawnPointsCount = 0;
     });
 
     final newWaypoints = List<LatLng>.from(_waypoints);
@@ -933,6 +997,361 @@ class _RouteCreatePageState extends State<RouteCreatePage>
       });
       _pushHistory();
     }
+  }
+
+  // ── Pin drag-to-edit ──────────────────────────────────────────────────────
+
+  void _onPinDragStart(int index) {
+    if (!_canDragPins) return;
+    setState(() {
+      _draggingPinIndex = index;
+      _draggingPinPosition = _waypoints[index];
+    });
+  }
+
+  void _onPinDragUpdate(int index, LongPressMoveUpdateDetails details) {
+    if (_draggingPinIndex != index) return;
+    final pos = _globalOffsetToLatLng(details.globalPosition);
+    if (pos == null) return;
+    setState(() => _draggingPinPosition = pos);
+  }
+
+  Future<void> _onPinDragEnd(int index, LongPressEndDetails details) async {
+    if (_draggingPinIndex != index) return;
+    final newPos =
+        _globalOffsetToLatLng(details.globalPosition) ?? _draggingPinPosition;
+    if (newPos == null) {
+      setState(() {
+        _draggingPinIndex = null;
+        _draggingPinPosition = null;
+      });
+      return;
+    }
+    // Keep the pin rendered (yellow) at the drop position, with the preview
+    // lines to its neighbours, until `_movePin`'s re-route actually lands —
+    // cleared there, not here, so the marker never has to jump between "drag
+    // position" and "stale waypoint position" while the fetch is in flight.
+    setState(() => _draggingPinPosition = newPos);
+    await _movePin(index, newPos);
+  }
+
+  /// Converts a drag's `globalPosition` to a `LatLng` via the map's own
+  /// [RenderBox] (anchored by `_mapAreaKey`) — a marker's own local
+  /// coordinates are relative to its small 36×36 hit box, not the map, so
+  /// they can't be fed to `MapCamera.offsetToCrs` directly the way
+  /// `_onDrawPanUpdate`'s full-map overlay gesture can.
+  LatLng? _globalOffsetToLatLng(Offset globalPosition) {
+    final box = _mapAreaKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.attached) return null;
+    final local = box.globalToLocal(globalPosition);
+    try {
+      return _mapController.camera.offsetToCrs(local);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Re-routes the segment(s) touching [index] after drag-to-edit relocates
+  /// it to [newPoint] — the same fetch-with-straight-line-fallback pattern
+  /// `_deletePin`'s middle-pin bridge uses, except the pin itself is kept,
+  /// just moved, so both neighbouring segments (or the single one, at
+  /// either end of the route) get rebuilt instead of one being dropped.
+  Future<void> _movePin(int index, LatLng newPoint) async {
+    if (_isRouting || _isConvertingDrawing || _isMovingPin) {
+      setState(() {
+        _draggingPinIndex = null;
+        _draggingPinPosition = null;
+      });
+      return;
+    }
+
+    final newWaypoints = List<LatLng>.from(_waypoints);
+    newWaypoints[index] = newPoint;
+    final newSegments = List<RouteSegment>.from(_segments);
+
+    // The segment(s) that actually change shape — unlike `_deletePin`
+    // (which shifts every later waypoint's index and so conservatively
+    // wipes every closed loop), a move keeps every index stable, so only
+    // loops reaching into this range can possibly be affected.
+    final touchedSegments = <int>[
+      if (index > 0) index - 1,
+      if (index < newWaypoints.length - 1) index,
+    ];
+    if (touchedSegments.isNotEmpty) {
+      _clearLoopsOverlappingRange(touchedSegments.first, touchedSegments.last);
+    }
+
+    setState(() {
+      _waypoints = newWaypoints;
+      _isMovingPin = true;
+    });
+
+    try {
+      if (index > 0) {
+        final seg =
+            await RoutingService.fetchRoute(
+              newWaypoints[index - 1],
+              newPoint,
+            ) ??
+            RoutingService.straightLine(newWaypoints[index - 1], newPoint);
+        if (!mounted) return;
+        newSegments[index - 1] = seg;
+      }
+      if (index < newWaypoints.length - 1) {
+        final seg =
+            await RoutingService.fetchRoute(
+              newPoint,
+              newWaypoints[index + 1],
+            ) ??
+            RoutingService.straightLine(newPoint, newWaypoints[index + 1]);
+        if (!mounted) return;
+        newSegments[index] = seg;
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _segments = newSegments;
+          _isMovingPin = false;
+          _draggingPinIndex = null;
+          _draggingPinPosition = null;
+        });
+        // Now that the touched segment(s) have their final, re-routed
+        // shape, see whether the move closed (or re-closed) a loop over
+        // them — see "Loop re-detection after a pin move" below.
+        _checkLoopsAfterPinMove(touchedSegments);
+      }
+    }
+    _pushHistory();
+  }
+
+  /// The straight preview line(s) from the dragged pin's immediate
+  /// neighbour(s) to its live position — same translucent styling as the
+  /// "straight-line preview while ORS call is in flight" used for a new
+  /// tip-extension pin, reused here for the same reason: a stand-in for the
+  /// real route until it's actually re-fetched.
+  List<List<LatLng>> _dragPreviewSegments() {
+    final idx = _draggingPinIndex;
+    final pos = _draggingPinPosition;
+    if (idx == null || pos == null) return const [];
+    final lines = <List<LatLng>>[];
+    if (idx > 0) lines.add([_waypoints[idx - 1], pos]);
+    if (idx < _waypoints.length - 1) lines.add([pos, _waypoints[idx + 1]]);
+    return lines;
+  }
+
+  // ── Loop re-detection after a pin move ────────────────────────────────────
+  // A drag-to-edit move can create — or break — a closed loop just as
+  // easily as placing a new pin can (e.g. dragging a pin so its two
+  // neighbouring segments now cross an older part of the route). This
+  // generalizes the same "biggest enclosed polygon wins" self-intersection
+  // search `_checkSelfIntersection`/`_findBestSelfIntersection` already run
+  // for a freshly-appended segment — which always assumes that segment is
+  // the route's *last* one — to a segment that can sit anywhere in the
+  // route, since the segment(s) a pin move touches usually aren't at the
+  // tip. Deliberately kept as separate methods rather than folded into the
+  // tip-only search above, which stays exactly as it was.
+
+  /// Re-validates closed loops around [touchedSegments] — the segment(s) a
+  /// drag-to-edit move just re-routed. Called after `_movePin` has already
+  /// dropped any loop overlapping that range (`_clearLoopsOverlappingRange`)
+  /// and committed the new segment geometry to `_segments`. Picks the
+  /// largest polygon found across every touched segment, the same "biggest
+  /// shape wins" rule used everywhere else a loop closure is detected.
+  void _checkLoopsAfterPinMove(List<int> touchedSegments) {
+    List<LatLng>? bestPolygon;
+    double bestArea = 0;
+    int bestRangeStart = 0;
+    int bestRangeEnd = 0;
+    for (final ti in touchedSegments) {
+      final found = _findLoopThroughSegment(ti);
+      if (found == null) continue;
+      final area = GeometryUtils.polygonAreaM2(found.polygon);
+      if (area <= bestArea) continue;
+      bestArea = area;
+      bestPolygon = found.polygon;
+      bestRangeStart = found.rangeStart;
+      bestRangeEnd = found.rangeEnd;
+    }
+    final polygon = bestPolygon;
+    if (polygon != null) {
+      _finaliseLoop(
+        polygon,
+        rangeStart: bestRangeStart,
+        rangeEnd: bestRangeEnd,
+      );
+    }
+  }
+
+  /// Drops every closed loop whose own `[rangeStart, rangeEnd]` segment
+  /// span overlaps `[rangeStart, rangeEnd]` — the counterpart, for an
+  /// in-place pin move, of the overlap check `_finaliseLoop` already runs
+  /// when a *new* loop supersedes an old one. Needed here because a moved
+  /// pin's touched segment(s) no longer exist in their old shape, so any
+  /// loop built from them is stale regardless of whether the move goes on
+  /// to close a new loop over the same ground.
+  void _clearLoopsOverlappingRange(int rangeStart, int rangeEnd) {
+    setState(() {
+      final newPolygons = <List<LatLng>>[];
+      final newAreas = <double>[];
+      final newRangeStart = <int>[];
+      final newRangeEnd = <int>[];
+      for (int i = 0; i < _loopPolygons.length; i++) {
+        final overlaps =
+            _loopRangeStart[i] <= rangeEnd && rangeStart <= _loopRangeEnd[i];
+        if (overlaps) continue;
+        newPolygons.add(_loopPolygons[i]);
+        newAreas.add(_loopAreasM2[i]);
+        newRangeStart.add(_loopRangeStart[i]);
+        newRangeEnd.add(_loopRangeEnd[i]);
+      }
+      _loopPolygons = newPolygons;
+      _loopAreasM2 = newAreas;
+      _loopRangeStart = newRangeStart;
+      _loopRangeEnd = newRangeEnd;
+    });
+  }
+
+  /// Searches segment [testIdx] against every *other* segment in the route
+  /// (both earlier and later — unlike the tip-only search, which only ever
+  /// needs to look backwards from the last segment) for a self-
+  /// intersection, returning the one enclosing the largest polygon, or
+  /// null. Mirrors `_findBestSelfIntersection`'s three strategies (vertex
+  /// proximity, geometric edge crossing, vertex-on-edge) exactly, just
+  /// without the "the new segment is always last" assumption baked in.
+  ({List<LatLng> polygon, int rangeStart, int rangeEnd})?
+  _findLoopThroughSegment(int testIdx) {
+    List<LatLng>? bestPolygon;
+    double bestArea = 0;
+    int bestA = 0;
+    int bestB = 0;
+
+    for (int si = 0; si < _segments.length; si++) {
+      if (si == testIdx) continue;
+      final a = math.min(si, testIdx);
+      final b = math.max(si, testIdx);
+      final polyA = _segments[a].polyline;
+      final polyB = _segments[b].polyline;
+      final isAdjacent = b == a + 1;
+
+      // Trim vertices right at the shared junction when the two segments
+      // are literally consecutive (segment `a` ends exactly where `b`
+      // begins) — same reasoning as `_findBestSelfIntersection`'s own
+      // adjacency trim, just applicable on either side here instead of
+      // always "the previous segment".
+      final aEnd = isAdjacent
+          ? (polyA.length - 3).clamp(0, polyA.length)
+          : polyA.length;
+      final bStart = isAdjacent ? 3 : 0;
+      if (bStart >= polyB.length || aEnd <= 0) continue;
+
+      void considerCandidate(LatLng point, int edgeA, int edgeB) {
+        final polygon = _polygonBetweenSegments(point, a, edgeA, b, edgeB);
+        if (polygon.length < 3) return;
+        final area = GeometryUtils.polygonAreaM2(polygon);
+        if (area < _minLoopAreaM2 || area <= bestArea) return;
+        bestArea = area;
+        bestPolygon = polygon;
+        bestA = a;
+        bestB = b;
+      }
+
+      // 1. Vertex proximity
+      for (int ai = 0; ai < aEnd; ai++) {
+        for (int bi = bStart; bi < polyB.length; bi++) {
+          if (const Distance()(polyA[ai], polyB[bi]) <=
+              _proximityThresholdMeters) {
+            considerCandidate(polyA[ai], ai, bi);
+          }
+        }
+      }
+
+      // 2. Geometric edge crossing
+      final aEdgeEnd = isAdjacent
+          ? (polyA.length - 2).clamp(0, polyA.length - 1)
+          : polyA.length - 1;
+      final bEdgeStart = isAdjacent ? 1 : 0;
+      for (int ai = 0; ai < aEdgeEnd; ai++) {
+        for (int bi = bEdgeStart; bi < polyB.length - 1; bi++) {
+          final pt = GeometryUtils.segmentIntersection(
+            polyA[ai],
+            polyA[ai + 1],
+            polyB[bi],
+            polyB[bi + 1],
+          );
+          if (pt != null) considerCandidate(pt, ai, bi);
+        }
+      }
+
+      // 3. Vertex lying on the other polyline's interior
+      for (int ai = 0; ai < aEnd; ai++) {
+        for (int bi = bEdgeStart; bi < polyB.length - 1; bi++) {
+          if (GeometryUtils.pointToSegmentDistanceMeters(
+                polyA[ai],
+                polyB[bi],
+                polyB[bi + 1],
+              ) <=
+              _proximityThresholdMeters) {
+            considerCandidate(polyA[ai], ai, bi);
+          }
+        }
+      }
+      for (int bi = bStart; bi < polyB.length; bi++) {
+        for (int ai = 0; ai < aEdgeEnd; ai++) {
+          if (GeometryUtils.pointToSegmentDistanceMeters(
+                polyB[bi],
+                polyA[ai],
+                polyA[ai + 1],
+              ) <=
+              _proximityThresholdMeters) {
+            considerCandidate(polyB[bi], ai, bi);
+          }
+        }
+      }
+    }
+
+    final polygon = bestPolygon;
+    if (polygon == null) return null;
+    return (polygon: polygon, rangeStart: bestA, rangeEnd: bestB);
+  }
+
+  /// Builds the loop polygon between two crossing segments, order-
+  /// independent — walks the route from whichever crossing point comes
+  /// first (in segment-index order) through every segment in between to
+  /// the other crossing point. Generalizes `_polygonFromIntersection`
+  /// (which assumed the "new" segment was always the route's last one) to
+  /// two segments that can sit anywhere in the route relative to each
+  /// other.
+  List<LatLng> _polygonBetweenSegments(
+    LatLng intersection,
+    int segA,
+    int edgeA,
+    int segB,
+    int edgeB,
+  ) {
+    final lo = math.min(segA, segB);
+    final hi = math.max(segA, segB);
+    final loEdge = segA == lo ? edgeA : edgeB;
+    final hiEdge = segA == hi ? edgeA : edgeB;
+
+    final poly = <LatLng>[intersection];
+
+    final loPoly = _segments[lo].polyline;
+    for (int i = loEdge + 1; i < loPoly.length; i++) {
+      poly.add(loPoly[i]);
+    }
+
+    for (int s = lo + 1; s < hi; s++) {
+      for (final p in _segments[s].polyline) {
+        poly.add(p);
+      }
+    }
+
+    final hiPoly = _segments[hi].polyline;
+    for (int i = 0; i <= hiEdge; i++) {
+      poly.add(hiPoly[i]);
+    }
+
+    return poly;
   }
 
   // ── Clear all ─────────────────────────────────────────────────────────────
@@ -1279,8 +1698,8 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     // history push at the end — clearing mid-conversion would race with
     // that, so this is a no-op until it settles (the Cancel button is
     // disabled for the same reason, but guard here too against any other
-    // call path).
-    if (_isConvertingDrawing) return;
+    // call path). Also blocked mid-drag on a pin, for the same reason.
+    if (_isConvertingDrawing || _isMovingPin) return;
     setState(() {
       _drawnPoints.clear(); // leftover trail from a failed draw conversion
       _waypoints = [];
@@ -1290,7 +1709,8 @@ class _RouteCreatePageState extends State<RouteCreatePage>
       _loopAreasM2 = [];
       _loopRangeStart = [];
       _loopRangeEnd = [];
-      _drawnPointsCount = 0;
+      _draggingPinIndex = null;
+      _draggingPinPosition = null;
     });
     _history
       ..clear()
@@ -1515,6 +1935,7 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     final drawModeActive = _activeTool == _Tool.freeDraw && _canUseDrawTool;
 
     return EnhancedMapGestures(
+      key: _mapAreaKey,
       mapController: _mapController,
       child: FlutterMap(
         mapController: _mapController,
@@ -1616,26 +2037,54 @@ class _RouteCreatePageState extends State<RouteCreatePage>
               ],
             ),
 
+          // ── Drag preview — straight lines from the dragged pin's
+          // neighbours to its live position, standing in for the real
+          // (routed) segments until the drag ends and they're re-fetched.
+          if (_draggingPinIndex != null && _draggingPinPosition != null)
+            PolylineLayer(
+              polylines: [
+                for (final p in _dragPreviewSegments())
+                  Polyline(
+                    points: p,
+                    color: const Color(0xFF4A8C52).withValues(alpha: 0.35),
+                    strokeWidth: 3.0,
+                  ),
+              ],
+            ),
+
           // ── Waypoint pins ─────────────────────────────────────────────────
-          // Interior points of a drawn segment are excluded here — see
-          // `_isHiddenWaypoint` — so a drawn shape only ever shows a start and
-          // finish pin, never one per road-snap sample.
+          // Every waypoint gets a pin, including a drawn stroke's interior
+          // road-snap samples — so any of them can be grabbed for
+          // drag-to-edit (long-press, see `_PinMarker`/`_movePin`), not just
+          // a shape's start/finish.
           if (_waypoints.isNotEmpty)
             MarkerLayer(
               markers: _waypoints
                   .asMap()
                   .entries
-                  .where((e) => !_isHiddenWaypoint(e.key))
                   .map((e) {
                     final idx = e.key;
+                    final isDragging = _draggingPinIndex == idx;
                     return Marker(
-                      point: e.value,
+                      point: isDragging
+                          ? (_draggingPinPosition ?? e.value)
+                          : e.value,
                       width: 36,
                       height: 36,
                       child: _PinMarker(
                         index: idx,
                         isDeleteMode: _isDeleteMode,
+                        isDragging: isDragging,
                         onTap: _isDeleteMode ? () => _deletePin(idx) : null,
+                        onLongPressStart: _canDragPins
+                            ? (_) => _onPinDragStart(idx)
+                            : null,
+                        onLongPressMoveUpdate: _canDragPins
+                            ? (details) => _onPinDragUpdate(idx, details)
+                            : null,
+                        onLongPressEnd: _canDragPins
+                            ? (details) => _onPinDragEnd(idx, details)
+                            : null,
                       ),
                     );
                   })
@@ -2403,20 +2852,35 @@ class _ToolButton extends StatelessWidget {
 class _PinMarker extends StatelessWidget {
   final int index;
   final bool isDeleteMode;
+  final bool isDragging;
   final VoidCallback? onTap;
+  final GestureLongPressStartCallback? onLongPressStart;
+  final GestureLongPressMoveUpdateCallback? onLongPressMoveUpdate;
+  final GestureLongPressEndCallback? onLongPressEnd;
 
   const _PinMarker({
     required this.index,
     required this.isDeleteMode,
+    this.isDragging = false,
     this.onTap,
+    this.onLongPressStart,
+    this.onLongPressMoveUpdate,
+    this.onLongPressEnd,
   });
 
   @override
   Widget build(BuildContext context) {
-    final bg = isDeleteMode ? const Color(0xFFD32F2F) : const Color(0xFF4A8C52);
+    final bg = isDragging
+        ? const Color(0xFFFFC107)
+        : isDeleteMode
+        ? const Color(0xFFD32F2F)
+        : const Color(0xFF4A8C52);
 
     return GestureDetector(
       onTap: onTap,
+      onLongPressStart: onLongPressStart,
+      onLongPressMoveUpdate: onLongPressMoveUpdate,
+      onLongPressEnd: onLongPressEnd,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         decoration: BoxDecoration(
