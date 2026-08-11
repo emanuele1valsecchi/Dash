@@ -14,6 +14,7 @@ import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
 import '../services/place_search_service.dart';
 import '../services/routing_service.dart';
+import '../utils/geometry_utils.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
 import '../widgets/map/enhanced_map_gestures.dart';
@@ -27,16 +28,28 @@ class _FoundRoute {
   final double estimatedCalories;
   final Color color;
 
+  /// > 1 for a "laps" result (see `_generateLapRoute`) — [polyline] is the
+  /// single loop shape, while distance/time/calories already have this
+  /// factored in, so display code must not multiply again.
+  final int laps;
+
   const _FoundRoute({
     required this.polyline,
     required this.distanceKm,
     required this.estimatedTimeMin,
     required this.estimatedCalories,
     required this.color,
+    this.laps = 1,
   });
 
   LatLng get midpoint => polyline[polyline.length ~/ 2];
 }
+
+/// Which field a map tap should fill while pin-picking mode is active (see
+/// `_beginPinPicking`/`_handleMapTapForPinPicking`) — the Google Maps-style
+/// alternative to typing an address for the starting point, destination, or
+/// an intermediate stop.
+enum _PinTarget { start, destination, stop }
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 
@@ -77,7 +90,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
 
   bool _useCurrentPositionAsStart = true;
   final TextEditingController _startCtrl = TextEditingController();
-  LatLng? _startLatLng; // pre-resolved from suggestion
+  LatLng? _startLatLng; // pre-resolved from suggestion or a dropped map pin
 
   bool _useCurrentPositionAsDest = false;
   final TextEditingController _destCtrl = TextEditingController();
@@ -90,10 +103,41 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   final TextEditingController _distCtrl = TextEditingController();
   final TextEditingController _calCtrl = TextEditingController();
 
+  // Laps only apply to closed circuits (see `_buildParametersStepChildren`)
+  // — the target distance/time/calories field represents the *total*
+  // across all laps; the loop-finder searches for target ÷ laps per lap and
+  // `_toFoundRoute` multiplies the measured result back up for display.
+  final TextEditingController _lapsCtrl = TextEditingController();
+
+  // ── Map pin-drop (place a start/destination/stop pin by tapping the map,
+  // instead of typing an address — see `_beginPinPicking`) ────────────────
+  _PinTarget? _pickingTarget;
+  int? _pickingStopIndex;
+
+  // ── Form wizard ───────────────────────────────────────────────────────────
+  // 0 = route shape (circuit toggle, start/destination/stops), 1 =
+  // parameters (distance/time/calories, laps). Splitting into two steps
+  // keeps parameters — meaningless until the shape is decided — out of the
+  // way until the user is ready for them.
+  int _formStep = 0;
+
   // ── Result / UI state ─────────────────────────────────────────────────────
   bool _isSearching = false;
   List<_FoundRoute> _foundRoutes = [];
   bool _hasSearched = false;
+
+  // Set by a route-generation method when it had to give up because ORS was
+  // actively rate-limiting requests (HTTP 429), as opposed to just finding
+  // no match — lets `_search` show a distinct "try again shortly" message
+  // instead of a generic "no routes found".
+  bool _lastSearchRateLimited = false;
+
+  // Set when every loop candidate that otherwise qualified (real ORS
+  // geometry, right distance) turned out to be a degenerate "there and
+  // back" sliver rather than an actual enclosed loop — see
+  // `_enclosesRealArea`. Distinct from a plain "no match" so `_search` can
+  // point at the actual cause instead of a generic message.
+  bool _lastSearchOnlyDegenerateLoops = false;
 
   // true while routes are displayed on the map; form fields are read-only
   bool _isResultsMode = false;
@@ -106,7 +150,38 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   static const double _defaultZoom = 14.0;
   static const double _paceMinPerKm = 9.0;   // magic default
   static const double _calPerKm = 70.0;       // magic default
-  static const double _tolerance = 0.30;
+
+  // Cross-checking the user's own time/distance/calorie entries against each
+  // other in `_deriveTarget` — all three are independently derived from the
+  // magic per-km constants above, so they're never expected to agree
+  // exactly. Kept loose so entering, say, a time and a distance that imply
+  // slightly different paces isn't treated as a hard conflict.
+  static const double _conflictTolerance = 0.30;
+
+  // Filtering *generated* routes against the resolved target distance is a
+  // separate, much tighter band — a "find me an 8 km route" search
+  // returning an 8.7 km result (nearly 9% over) reads as broken, even
+  // though the old shared 30% tolerance allowed it.
+  static const double _matchTolerance = 0.05;
+
+  // ── Route-generation tuning ──────────────────────────────────────────────
+
+  // Candidate round-trip loops requested per auto-loop search — one ORS
+  // call each, so the whole first pass costs `_loopSeedCount` calls
+  // (versus the old geometric guesser's 6 bearings × 3 legs = 18).
+  static const int _loopSeedCount = 4;
+
+  // ORS `options.round_trip.points` — higher = rounder loop. Round is
+  // exactly what this app wants: for a fixed perimeter, rounder means
+  // more enclosed (claimable) area.
+  static const int _loopRoundness = 5;
+
+  // Typical road-network detour factor (road distance ÷ straight-line
+  // distance) for city walking — hand-picked like the other tuning
+  // constants here. `_paddedLegCandidates` divides the target by it
+  // before solving for the detour offset, so the first probe lands near
+  // the target instead of systematically overshooting by this factor.
+  static const double _roadWindingFactor = 1.25;
 
   static const List<Color> _palette = [
     Color(0xFF2E7D32),
@@ -139,7 +214,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     _sheetController.dispose();
     for (final c in [
       _startCtrl, _destCtrl,
-      _timeCtrl, _distCtrl, _calCtrl,
+      _timeCtrl, _distCtrl, _calCtrl, _lapsCtrl,
     ]) {
       c.dispose();
     }
@@ -194,6 +269,28 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     }
   }
 
+  /// Turns a map-tapped [point] into a display string for the corresponding
+  /// address field — best-effort only; the resolved [LatLng] itself (not
+  /// this text) is what `_resolveStart`/`_resolveDestination`/`_resolveStops`
+  /// actually use, so a failed/slow reverse-geocode never blocks placing
+  /// the pin, only how it's labelled.
+  Future<String?> _reverseGeocode(LatLng point) async {
+    try {
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/reverse'
+        '?lat=${point.latitude}&lon=${point.longitude}&format=json&zoom=18',
+      );
+      final res = await http
+          .get(uri, headers: {'User-Agent': 'DashApp/1.0'})
+          .timeout(const Duration(seconds: 6));
+      if (res.statusCode != 200) return null;
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      return body['display_name'] as String?;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<LatLng?> _resolveStart() async {
     if (_useCurrentPositionAsStart) return _currentPosition;
     if (_startLatLng != null) return _startLatLng;
@@ -222,6 +319,13 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     return resolved;
   }
 
+  /// Synchronous proxy for "will `_resolveStops()` return anything" — used
+  /// only to steer form hints (e.g. whether a target is still required for
+  /// a closed circuit), not for actual resolution.
+  bool get _hasStopsEntered =>
+      _stopLatLngs.any((ll) => ll != null) ||
+      _stopCtrls.any((c) => c.text.trim().isNotEmpty);
+
   // ── Constraint resolution ─────────────────────────────────────────────────
 
   ({bool isConflict, bool isEmpty, double? targetKm}) _deriveTarget() {
@@ -241,7 +345,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     if (targets.length > 1) {
       final minV = targets.reduce(math.min);
       final maxV = targets.reduce(math.max);
-      if (minV > 0 && (maxV - minV) / minV > _tolerance) {
+      if (minV > 0 && (maxV - minV) / minV > _conflictTolerance) {
         return (isConflict: true, isEmpty: false, targetKm: null);
       }
     }
@@ -263,38 +367,94 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   }
 
   // ── Routing helpers ───────────────────────────────────────────────────────
+  //
+  // A single ORS hop that never lets a failure pass as if it were a real
+  // road-snapped result: `ok: false` means this hop fell back to a straight
+  // line (network/parse failure, or ORS genuinely found no route), and every
+  // route-generation method below must exclude any candidate built from one
+  // rather than presenting a straight line cutting across buildings as a
+  // "found route". `rateLimited: true` (HTTP 429) is called out separately
+  // from an ordinary failure so callers can stop spending more of the
+  // shared ORS quota immediately instead of continuing to probe into an
+  // active rate-limit window — see `_routeChain`. A longer leg (a large
+  // closed-circuit target means legs several km long) takes ORS noticeably
+  // longer to compute, and was seen going empty-handed at 10 km where a
+  // shorter search worked fine — one retry on an ordinary (non-429) failure
+  // gives a transient timeout/network blip a second chance before this hop
+  // gets excluded outright.
+  Future<({RouteSegment seg, bool ok, bool rateLimited})> _routeHop(
+      LatLng from, LatLng to) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final seg =
+            await RoutingService.fetchRoute(from, to, throwOnRateLimit: true);
+        if (seg != null) return (seg: seg, ok: true, rateLimited: false);
+        // Ordinary (non-429) failure — try once more before giving up.
+      } on RoutingRateLimitedException {
+        return (seg: RoutingService.straightLine(from, to), ok: false, rateLimited: true);
+      }
+    }
+    return (seg: RoutingService.straightLine(from, to), ok: false, rateLimited: false);
+  }
 
-  Future<RouteSegment> _route(LatLng from, LatLng to) async =>
-      await RoutingService.fetchRoute(from, to) ??
-      RoutingService.straightLine(from, to);
+  /// Routes through [waypoints] sequentially, stitching each hop. Stops
+  /// early (rather than burning the rest of the chain's calls) the moment a
+  /// hop reports rate-limiting, since a 429 on one hop makes the next hop
+  /// failing the same way likely. `ok` is true only if *every* hop was a
+  /// real ORS result — see `_routeHop`.
+  Future<({RouteSegment seg, bool ok, bool rateLimited})> _routeChain(
+      List<LatLng> waypoints) async {
+    assert(waypoints.length >= 2);
+    RouteSegment? seg;
+    var ok = true;
+    var rateLimited = false;
+    for (int i = 0; i < waypoints.length - 1; i++) {
+      if (rateLimited) {
+        ok = false;
+        break;
+      }
+      final hop = await _routeHop(waypoints[i], waypoints[i + 1]);
+      seg = seg == null ? hop.seg : _stitch(seg, hop.seg);
+      if (!hop.ok) ok = false;
+      if (hop.rateLimited) rateLimited = true;
+    }
+    return (seg: seg!, ok: ok, rateLimited: rateLimited);
+  }
 
   RouteSegment _stitch(RouteSegment a, RouteSegment b) => RouteSegment(
         polyline: [...a.polyline, ...b.polyline.skip(1)],
         distanceMeters: a.distanceMeters + b.distanceMeters,
       );
 
-  _FoundRoute _toFoundRoute(RouteSegment seg, int index) {
-    final km = seg.distanceMeters / 1000;
+  bool _withinMatchTolerance(double meters, double targetM) {
+    final ratio = meters / targetM;
+    return ratio >= 1 - _matchTolerance && ratio <= 1 + _matchTolerance;
+  }
+
+  double _toleranceMiss(double meters, double targetM) =>
+      (meters / targetM - 1).abs();
+
+  _FoundRoute _toFoundRoute(RouteSegment seg, int index, {int laps = 1}) {
+    final km = (seg.distanceMeters / 1000) * laps;
     return _FoundRoute(
       polyline: seg.polyline,
       distanceKm: km,
       estimatedTimeMin: km * _paceMinPerKm,
       estimatedCalories: km * _calPerKm,
       color: _palette[index % _palette.length],
+      laps: laps,
     );
   }
 
   // ── Results mode ──────────────────────────────────────────────────────────
 
   void _enterEditMode() {
-    for (final c in _stopCtrls) { c.dispose(); }
-    _stopCtrls.clear();
-    _stopLatLngs.clear();
     setState(() {
       _isResultsMode = false;
       _hasSearched = false;
       _foundRoutes = [];
       _selectedRouteIndex = -1;
+      _formStep = 0;
     });
     if (_sheetController.isAttached) {
       _sheetController.animateTo(_sheetMidSize,
@@ -314,17 +474,39 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     }
 
     final target = _deriveTarget();
-
-    // Closed circuit requires a distance/time/calorie target so the loop
-    // generator knows how far to travel.
-    if (_isClosedCircuit && target.isEmpty) {
-      _snack('Set at least one parameter for a closed circuit');
-      return;
-    }
-
     if (target.isConflict) {
       _snack('Constraints conflict — remove one value and try again');
       return;
+    }
+
+    // Resolved once, up front — both the closed-circuit and direct paths
+    // need it, and closed circuit's own target requirement below depends on
+    // whether stops were given.
+    final stops = await _resolveStops();
+
+    // A closed circuit needs *something* to size the loop by: either a
+    // distance/time/calorie target (sizes the auto-generated loop) or
+    // explicit stops (the loop's shape — and therefore its size — is
+    // already fixed by them, so no target is needed at all in that case;
+    // see `_generateClosedCircuitRoutes`).
+    if (_isClosedCircuit && target.isEmpty && stops.isEmpty) {
+      _snack('Set a distance/time/calorie target, or add stops to shape the loop');
+      return;
+    }
+
+    // Laps only apply to closed circuits — optional; empty means 1 (no
+    // repeat, unchanged from a plain closed-circuit search).
+    var laps = 1;
+    if (_isClosedCircuit && _lapsCtrl.text.trim().isNotEmpty) {
+      // `_lapsCtrl` shares `_ParamField`'s decimal-capable keyboard with the
+      // other parameter fields, so accept "3" or "3.0" alike.
+      final lapsRaw = double.tryParse(_lapsCtrl.text.trim());
+      final parsedLaps = lapsRaw?.round();
+      if (parsedLaps == null || parsedLaps < 1) {
+        _snack('Enter a valid number of laps (1 or more)');
+        return;
+      }
+      laps = parsedLaps;
     }
 
     setState(() {
@@ -333,11 +515,15 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
       _hasSearched = false;
       _selectedRouteIndex = -1;
     });
+    _lastSearchRateLimited = false;
+    _lastSearchOnlyDegenerateLoops = false;
 
     List<_FoundRoute> routes;
 
     if (_isClosedCircuit) {
-      routes = await _generateLoopRoutes(start, target.targetKm! * 1000);
+      final totalTargetM = target.targetKm?.let((km) => km * 1000);
+      routes =
+          await _generateClosedCircuitRoutes(start, stops, totalTargetM, laps);
     } else {
       final end = await _resolveDestination();
       if (end == null) {
@@ -345,7 +531,6 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
         _snack('Could not resolve destination');
         return;
       }
-      final stops = await _resolveStops();
       // targetDistM is null when no constraints → show ORS alternatives freely
       routes = await _generateDirectRoutes(
           start, stops, end, target.targetKm?.let((km) => km * 1000));
@@ -362,40 +547,597 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     if (routes.isNotEmpty) {
       _collapseSheet();
       _fitMap(routes);
+    } else {
+      _snack(_lastSearchRateLimited
+          ? 'The routing service is busy right now — wait a moment and try again.'
+          : _lastSearchOnlyDegenerateLoops
+              ? 'Could not find a real loop enclosing an area at that '
+                  'distance — try a different distance, add a stop, or '
+                  'move the start point.'
+              : 'No routes found matching your criteria.');
     }
   }
 
-  // ── Loop route generation ──────────────────────────────────────────────────
+  // ── Closed-circuit route generation ─────────────────────────────────────────
   //
-  // Places two intermediate waypoints at radius = D × 0.25 from start, 90°
-  // apart, and routes start → wp1 → wp2 → start.  Eight candidate bearings
-  // (every 45°) are evaluated in parallel to produce geometrically distinct
-  // loops.  Routes within ±30 % of the target distance are kept (up to 5).
+  // `totalTargetM` is the *total* the user asked for across every lap; the
+  // per-lap target the loop generators actually work with is that divided
+  // by `laps` (1 when laps isn't set), and `_toFoundRoute`'s `laps`
+  // multiplier scales the measured single-loop distance/time/calories back
+  // up for display — so a match against the per-lap target is automatically
+  // a match against the original total too. Null when no target was given
+  // at all (stops-only loops — `_search` requires a target whenever stops
+  // are empty, so the auto-generator below always has one).
 
-  Future<List<_FoundRoute>> _generateLoopRoutes(
-      LatLng start, double targetDistM) async {
+  Future<List<_FoundRoute>> _generateClosedCircuitRoutes(LatLng start,
+      List<LatLng> stops, double? totalTargetM, int laps) async {
+    final perLapTargetM = totalTargetM == null ? null : totalTargetM / laps;
+    // Stops shape the loop explicitly — route through them (and, when a
+    // target was also given, stretch the loop's closing leg toward it; see
+    // `_generateLoopThroughStops`) rather than ignoring them in favour of
+    // the auto-generator below.
+    if (stops.isNotEmpty) {
+      return _generateLoopThroughStops(start, stops, perLapTargetM, laps);
+    }
+    return _generateAutoLoopRoutes(start, perLapTargetM!, laps);
+  }
+
+  /// Roughly how much of a loop's own "circle of the same perimeter" area
+  /// it actually encloses. A real street loop typically covers a sizeable
+  /// fraction of that; an out-and-back "there and back" path — the reported
+  /// "ran up and down the road without enclosing an area" bug — covers
+  /// close to none of it regardless of how far it travelled, since walking
+  /// back over (close to) the same ground cancels out in the shoelace-style
+  /// area calculation `GeometryUtils.polygonAreaM2` uses. 2% of the
+  /// circular max is generous enough to accept a real but elongated loop
+  /// (even a lopsided 10:1 rectangle clears it several times over) while
+  /// still catching a genuine sliver.
+  bool _enclosesRealArea(RouteSegment seg) {
+    if (seg.polyline.length < 4 || seg.distanceMeters <= 0) return false;
+    final area = GeometryUtils.polygonAreaM2(seg.polyline);
+    final maxCircularArea =
+        (seg.distanceMeters * seg.distanceMeters) / (4 * math.pi);
+    return area >= maxCircularArea * 0.02;
+  }
+
+  /// Average of a polyline's vertices — a cheap shape fingerprint for
+  /// `_dedupeSimilarRoutes` (adequate at city scale; true polygon
+  /// centroids aren't needed there).
+  LatLng _polylineCentroid(List<LatLng> points) {
+    var lat = 0.0, lng = 0.0;
+    for (final p in points) {
+      lat += p.latitude;
+      lng += p.longitude;
+    }
+    return LatLng(lat / points.length, lng / points.length);
+  }
+
+  /// Drops candidates that are effectively the same route as one already
+  /// kept — different round-trip seeds (or a padded detour and a natural
+  /// alternative) can converge on identical geometry in a sparse road
+  /// network, and showing the same shape twice in two colours reads as a
+  /// bug. "Same" = lengths within 3% AND centroids within
+  /// max(60 m, 2% of the length) — deliberately loose fingerprints, since
+  /// near-identical routes offer the user nothing distinct anyway. Keeps
+  /// input order, so callers sort by preference first.
+  List<RouteSegment> _dedupeSimilarRoutes(List<RouteSegment> segments) {
+    final kept = <RouteSegment>[];
+    final centroids = <LatLng>[];
+    const dist = Distance();
+    for (final s in segments) {
+      final c = _polylineCentroid(s.polyline);
+      var isDup = false;
+      for (var i = 0; i < kept.length; i++) {
+        final lengthGap = (kept[i].distanceMeters - s.distanceMeters).abs() /
+            math.max(kept[i].distanceMeters, s.distanceMeters);
+        if (lengthGap > 0.03) continue;
+        if (dist(centroids[i], c) <= math.max(60.0, s.distanceMeters * 0.02)) {
+          isDup = true;
+          break;
+        }
+      }
+      if (!isDup) {
+        kept.add(s);
+        centroids.add(c);
+      }
+    }
+    return kept;
+  }
+
+  /// A user-shaped loop (start → stops → back to start). With no target the
+  /// stops fully determine the shape — the natural loop is returned as long
+  /// as it's real ORS geometry enclosing an actual area. With a target, the
+  /// user-pinned part (start → … → last stop) stays fixed and the *closing
+  /// leg* back to start absorbs the difference: padded-detour variants of
+  /// it (`_paddedLegCandidates`) are sized so the whole loop lands on the
+  /// target. The natural loop is never dropped for missing the target — if
+  /// no padded variant reaches it, the natural loop is still shown as the
+  /// closest honest answer, per the standing rule that routes shaped by
+  /// the user's own waypoints are never silently filtered away. A single
+  /// stop needs special handling — see `_generateSingleStopLoop`.
+  ///
+  /// Worst-case ORS calls: stops.length + 1 for the natural loop, plus
+  /// `_paddedLegCandidates`'s own bound (12) when a target asks for
+  /// padding.
+  Future<List<_FoundRoute>> _generateLoopThroughStops(LatLng start,
+      List<LatLng> stops, double? perLapTargetM, int laps) async {
+    if (stops.length == 1) {
+      return _generateSingleStopLoop(start, stops.single, perLapTargetM, laps);
+    }
+
+    // The pinned part and the closing leg are routed separately, so a
+    // target can re-route just the closing leg without re-spending the
+    // through-stops calls. Same total hop count as the old single
+    // start → … → start chain.
+    final through = await _routeChain([start, ...stops]);
+    if (!through.ok) {
+      _lastSearchRateLimited = through.rateLimited;
+      return [];
+    }
+    final closing = await _routeHop(stops.last, start);
+    if (!closing.ok) {
+      _lastSearchRateLimited = closing.rateLimited;
+      return [];
+    }
+    final natural = _stitch(through.seg, closing.seg);
+
+    final candidates = <RouteSegment>[natural];
+    var paddingRateLimited = false;
+    if (perLapTargetM != null) {
+      final closingTargetM = perLapTargetM - through.seg.distanceMeters;
+      // Padding only helps when the target genuinely asks for a longer
+      // closing leg than the natural one — a shorter target can't be
+      // honoured at all, the stops already force this much distance.
+      if (closingTargetM > closing.seg.distanceMeters * (1 + _matchTolerance)) {
+        final padded = await _paddedLegCandidates(
+          stops.last,
+          start,
+          closingTargetM,
+          naturalLegM: closing.seg.distanceMeters,
+        );
+        paddingRateLimited = padded.rateLimited;
+        candidates.addAll(
+            [for (final leg in padded.segments) _stitch(through.seg, leg)]);
+      }
+    }
+
+    final real = candidates.where(_enclosesRealArea).toList();
+    if (real.isEmpty) {
+      _lastSearchOnlyDegenerateLoops = true;
+      _lastSearchRateLimited = paddingRateLimited;
+      return [];
+    }
+
+    List<RouteSegment> chosen;
+    if (perLapTargetM != null) {
+      final matched = real
+          .where((s) => _withinMatchTolerance(s.distanceMeters, perLapTargetM))
+          .toList()
+        ..sort((a, b) => _toleranceMiss(a.distanceMeters, perLapTargetM)
+            .compareTo(_toleranceMiss(b.distanceMeters, perLapTargetM)));
+      // Nothing reached the target → the natural loop (or the best real
+      // candidate, if the natural one is degenerate) is still the honest
+      // best answer for the user's own stops — never an empty result.
+      chosen = matched.isNotEmpty
+          ? matched
+          : (_enclosesRealArea(natural)
+              ? [natural]
+              : (real
+                ..sort((a, b) => GeometryUtils.polygonAreaM2(b.polyline)
+                    .compareTo(GeometryUtils.polygonAreaM2(a.polyline)))));
+    } else {
+      chosen = [natural];
+    }
+
+    final results = <_FoundRoute>[];
+    for (final seg in _dedupeSimilarRoutes(chosen).take(3)) {
+      results.add(_toFoundRoute(seg, results.length, laps: laps));
+    }
+    return results;
+  }
+
+  /// `start → stop → start` with a *single* stop is, by definition, an
+  /// out-and-back unless the return leg is deliberately routed differently
+  /// from the outbound one — ORS's plain shortest path each way will almost
+  /// always retrace the same street, which is exactly the degenerate
+  /// "ran up and down the road" shape `_enclosesRealArea` exists to catch.
+  /// The outbound leg is routed normally; return-leg candidates come from
+  /// ORS's alternative routes and — when a target asks for more distance
+  /// than any natural return can offer — from padded detours sized so the
+  /// whole loop lands on the target (`_paddedLegCandidates`). Preference
+  /// order: real loops on target → real natural loops (best-effort, ranked
+  /// by enclosed area — same "user-shaped routes are never dropped" rule
+  /// as everywhere else) → nothing, with the degenerate/rate-limit flag
+  /// set so `_search` can name the actual cause.
+  ///
+  /// Worst-case ORS calls: 2 (outbound + return alternatives) plus
+  /// `_paddedLegCandidates`'s own bound (12) when a target asks for
+  /// padding.
+  Future<List<_FoundRoute>> _generateSingleStopLoop(
+      LatLng start, LatLng stop, double? perLapTargetM, int laps) async {
+    final outbound = await _routeHop(start, stop);
+    if (!outbound.ok) {
+      _lastSearchRateLimited = outbound.rateLimited;
+      return [];
+    }
+
+    List<RouteSegment> returnAlternatives;
+    try {
+      returnAlternatives = await RoutingService.fetchAlternatives(
+        stop,
+        start,
+        throwOnRateLimit: true,
+        allowStraightLineFallback: false,
+      );
+    } on RoutingRateLimitedException {
+      _lastSearchRateLimited = true;
+      return [];
+    }
+
+    final candidates = <RouteSegment>[
+      for (final ret in returnAlternatives) _stitch(outbound.seg, ret),
+    ];
+
+    var paddingRateLimited = false;
+    if (perLapTargetM != null) {
+      final returnTargetM = perLapTargetM - outbound.seg.distanceMeters;
+      final naturalReturnM = returnAlternatives.isEmpty
+          ? null
+          : returnAlternatives.map((s) => s.distanceMeters).reduce(math.min);
+      // Padding only helps when the target asks for a longer return leg
+      // than any natural alternative provides — a target below
+      // outbound + shortest return can't be honoured through this stop.
+      if (returnTargetM > 0 &&
+          (naturalReturnM == null ||
+              returnTargetM > naturalReturnM * (1 + _matchTolerance))) {
+        final padded = await _paddedLegCandidates(
+          stop,
+          start,
+          returnTargetM,
+          naturalLegM: naturalReturnM,
+        );
+        paddingRateLimited = padded.rateLimited;
+        candidates.addAll(
+            [for (final leg in padded.segments) _stitch(outbound.seg, leg)]);
+      }
+    }
+
+    if (candidates.isEmpty) {
+      _lastSearchRateLimited = paddingRateLimited;
+      return [];
+    }
+
+    final real = candidates.where(_enclosesRealArea).toList();
+    if (real.isEmpty) {
+      _lastSearchOnlyDegenerateLoops = true;
+      _lastSearchRateLimited = paddingRateLimited;
+      return [];
+    }
+
+    List<RouteSegment> chosen;
+    if (perLapTargetM != null) {
+      final matched = real
+          .where((s) => _withinMatchTolerance(s.distanceMeters, perLapTargetM))
+          .toList()
+        ..sort((a, b) => _toleranceMiss(a.distanceMeters, perLapTargetM)
+            .compareTo(_toleranceMiss(b.distanceMeters, perLapTargetM)));
+      chosen = matched.isNotEmpty
+          ? matched
+          : (real
+            ..sort((a, b) => GeometryUtils.polygonAreaM2(b.polyline)
+                .compareTo(GeometryUtils.polygonAreaM2(a.polyline))));
+    } else {
+      chosen = real
+        ..sort((a, b) => GeometryUtils.polygonAreaM2(b.polyline)
+            .compareTo(GeometryUtils.polygonAreaM2(a.polyline)));
+    }
+
+    final results = <_FoundRoute>[];
+    for (final seg in _dedupeSimilarRoutes(chosen).take(3)) {
+      results.add(_toFoundRoute(seg, results.length, laps: laps));
+    }
+    return results;
+  }
+
+  /// Closed-loop search with no stops: asks ORS's native round-trip
+  /// generator (`RoutingService.fetchRoundTrip`) for `_loopSeedCount`
+  /// candidate loops in parallel, each with a different seed — a different
+  /// overall direction out of the start point. Unlike the old geometric
+  /// guesser (offset two synthetic waypoints and hope the roads
+  /// cooperate), the routing engine grows each loop out of the actual road
+  /// network, so candidates can't strand across rivers/highways, land far
+  /// closer to the requested length, and cost ONE ORS call each instead of
+  /// three. ORS documents the requested `length` as a preferred value
+  /// rather than a guarantee, so the closest misses get one corrective
+  /// re-request each with the length rescaled by the measured ratio (same
+  /// seed → the loop grows/shrinks in place instead of jumping direction).
+  /// Every candidate still has to clear `_enclosesRealArea` — a sparse
+  /// network can force even a round trip into an out-and-back (a single
+  /// dead-end valley road, say).
+  ///
+  /// Worst-case ORS calls: `_loopSeedCount` + 2 corrective re-requests
+  /// = 6, versus the old guesser's 6 bearings × 3 legs + 2 × 3 = 24.
+  /// If every round-trip call fails outright *without* being rate-limited
+  /// — the one realistic case being an `orsRoute` deployment that predates
+  /// the `round_trip` mode — `_generateLegacyLoopSegments` (the old
+  /// guesser, slimmed) runs as a safety net so the feature degrades
+  /// instead of dying during a functions/app version skew.
+  Future<List<_FoundRoute>> _generateAutoLoopRoutes(
+      LatLng start, double targetDistM, int laps) async {
+    // Random base seed: repeating the same search explores different
+    // loops instead of deterministically re-serving the same few.
+    final baseSeed = math.Random().nextInt(1 << 16);
+
+    Future<({RouteSegment? seg, bool rateLimited, int seed})> tryRoundTrip(
+        int seed, double lengthM) async {
+      try {
+        final seg = await RoutingService.fetchRoundTrip(
+          start,
+          lengthMeters: lengthM,
+          points: _loopRoundness,
+          seed: seed,
+          throwOnRateLimit: true,
+        );
+        return (seg: seg, rateLimited: false, seed: seed);
+      } on RoutingRateLimitedException {
+        return (seg: null, rateLimited: true, seed: seed);
+      }
+    }
+
+    final firstPass = await Future.wait([
+      for (var i = 0; i < _loopSeedCount; i++)
+        tryRoundTrip(baseSeed + i, targetDistM),
+    ]);
+
+    var rateLimited = firstPass.any((c) => c.rateLimited);
+    final usable = [
+      for (final c in firstPass)
+        if (c.seg != null) (seg: c.seg!, seed: c.seed),
+    ];
+
+    bool matchesDistance(RouteSegment seg) =>
+        _withinMatchTolerance(seg.distanceMeters, targetDistM);
+
+    final matched = <RouteSegment>[
+      for (final c in usable)
+        if (matchesDistance(c.seg) && _enclosesRealArea(c.seg)) c.seg,
+    ];
+    var sawDegenerateMatch =
+        usable.any((c) => matchesDistance(c.seg) && !_enclosesRealArea(c.seg));
+
+    // Correct the closest misses — a round trip's measured length responds
+    // roughly linearly to the requested length for a fixed seed.
+    if (!rateLimited) {
+      final misses = [
+        for (final c in usable)
+          if (!matchesDistance(c.seg)) c,
+      ]..sort((a, b) => _toleranceMiss(a.seg.distanceMeters, targetDistM)
+          .compareTo(_toleranceMiss(b.seg.distanceMeters, targetDistM)));
+      for (final miss in misses.take(2)) {
+        if (matched.length >= 3) break;
+        final ratio = miss.seg.distanceMeters / targetDistM;
+        // Wildly-off candidates aren't worth another call — the network
+        // doesn't support this direction at this size.
+        if (ratio <= 0.55 || ratio >= 1.8) continue;
+        final corrected = await tryRoundTrip(miss.seed, targetDistM / ratio);
+        if (corrected.rateLimited) {
+          rateLimited = true;
+          break;
+        }
+        final seg = corrected.seg;
+        if (seg == null || !matchesDistance(seg)) continue;
+        if (_enclosesRealArea(seg)) {
+          matched.add(seg);
+        } else {
+          sawDegenerateMatch = true;
+        }
+      }
+    }
+
+    var segments = _dedupeSimilarRoutes(matched
+      ..sort((a, b) => _toleranceMiss(a.distanceMeters, targetDistM)
+          .compareTo(_toleranceMiss(b.distanceMeters, targetDistM))));
+
+    // Safety net: every round-trip call failed with an ordinary error (not
+    // a 429). Most plausibly an `orsRoute` deployment without the
+    // round_trip mode yet — fall back to the old geometric guesser so the
+    // feature still works during the skew.
+    var legacyDegenerate = false;
+    if (segments.isEmpty && usable.isEmpty && !rateLimited) {
+      final legacy = await _generateLegacyLoopSegments(start, targetDistM);
+      rateLimited = legacy.rateLimited;
+      legacyDegenerate = legacy.sawDegenerate;
+      segments = legacy.segments;
+    }
+
+    _lastSearchRateLimited = rateLimited && segments.isEmpty;
+    _lastSearchOnlyDegenerateLoops = segments.isEmpty &&
+        (sawDegenerateMatch || legacyDegenerate) &&
+        !_lastSearchRateLimited;
+
+    final results = <_FoundRoute>[];
+    for (final seg in segments.take(5)) {
+      results.add(_toFoundRoute(seg, results.length, laps: laps));
+    }
+    return results;
+  }
+
+  /// The pre-round-trip geometric loop guesser, kept only as
+  /// `_generateAutoLoopRoutes`'s safety net (see there): places two
+  /// synthetic waypoints at radius = target × 0.25 from the start, 90°
+  /// apart, per candidate bearing, routes start → wp1 → wp2 → start, and
+  /// refines the single closest miss by rescaling the radius by the
+  /// measured ratio. Slimmed to 3 bearings (120° apart) from the original
+  /// 6 — as a fallback it only needs to produce *something*, and its calls
+  /// stack on top of the round-trip attempts that already failed.
+  /// Worst case 3 × 3 + 2 × 3 = 15 ORS calls.
+  Future<({List<RouteSegment> segments, bool rateLimited, bool sawDegenerate})>
+      _generateLegacyLoopSegments(LatLng start, double targetDistM) async {
     final radius = targetDistM * 0.25;
+    const bearingCount = 3;
 
-    final candidates = await Future.wait(
-      List.generate(8, (i) async {
-        final theta = i * 45.0;
+    final firstPass = await Future.wait(
+      List.generate(bearingCount, (i) async {
+        final theta = i * (360 / bearingCount);
         final wp1 = _offset(start, radius, theta);
         final wp2 = _offset(start, radius, theta + 90.0);
-        final s1 = await _route(start, wp1);
-        final s2 = await _route(wp1, wp2);
-        final s3 = await _route(wp2, start);
-        return _stitch(_stitch(s1, s2), s3);
+        final chain = await _routeChain([start, wp1, wp2, start]);
+        return (theta: theta, chain: chain);
       }),
     );
 
-    final results = <_FoundRoute>[];
-    for (final seg in candidates) {
-      final ratio = seg.distanceMeters / targetDistM;
-      if (ratio < 1 - _tolerance || ratio > 1 + _tolerance) continue;
-      results.add(_toFoundRoute(seg, results.length));
-      if (results.length >= 5) break;
+    var rateLimited = firstPass.any((c) => c.chain.rateLimited);
+    final usable = firstPass.where((c) => c.chain.ok).toList()
+      ..sort((a, b) => _toleranceMiss(a.chain.seg.distanceMeters, targetDistM)
+          .compareTo(_toleranceMiss(b.chain.seg.distanceMeters, targetDistM)));
+
+    bool matchesDistance(RouteSegment seg) =>
+        _withinMatchTolerance(seg.distanceMeters, targetDistM);
+
+    final segments = <RouteSegment>[
+      for (final c in usable)
+        if (matchesDistance(c.chain.seg) && _enclosesRealArea(c.chain.seg))
+          c.chain.seg,
+    ];
+    var sawDegenerate = usable.any(
+        (c) => matchesDistance(c.chain.seg) && !_enclosesRealArea(c.chain.seg));
+
+    if (segments.isEmpty && usable.isNotEmpty && !rateLimited) {
+      final best = usable.first;
+      var currentRadius = radius;
+      var currentDist = best.chain.seg.distanceMeters;
+      const maxRefinements = 2;
+      for (var attempt = 0; attempt < maxRefinements; attempt++) {
+        final ratio = currentDist / targetDistM;
+        if (ratio <= 0.55 || ratio >= 1.8) break;
+        currentRadius = currentRadius / ratio;
+        final wp1 = _offset(start, currentRadius, best.theta);
+        final wp2 = _offset(start, currentRadius, best.theta + 90.0);
+        final refined = await _routeChain([start, wp1, wp2, start]);
+        if (!refined.ok) {
+          rateLimited = rateLimited || refined.rateLimited;
+          break;
+        }
+        currentDist = refined.seg.distanceMeters;
+        if (matchesDistance(refined.seg)) {
+          if (_enclosesRealArea(refined.seg)) {
+            segments.add(refined.seg);
+          } else {
+            sawDegenerate = true;
+          }
+          break;
+        }
+      }
     }
-    return results;
+
+    return (
+      segments: segments,
+      rateLimited: rateLimited,
+      sawDegenerate: sawDegenerate,
+    );
+  }
+
+  /// Detour candidates from [from] to [to] whose measured road distance
+  /// aims at [legTargetM] — the shared primitive behind every "make this
+  /// leg longer" case: a direct A→B whose target exceeds the natural trip,
+  /// and a loop's closing/return leg absorbing whatever its fixed part
+  /// didn't cover. One synthetic via-point, offset perpendicular from the
+  /// midpoint of the from–to line; both sides are probed in parallel (one
+  /// may be blocked by water or rails the other isn't), and *each* side
+  /// refines its own misses — the old padded generator only ever refined
+  /// one side, so a blocked best side wasted the whole round while the
+  /// other side's near-miss was thrown away.
+  ///
+  /// Two accuracy fixes over the old estimate. (1) The first offset guess
+  /// divides the target by `_roadWindingFactor` before the Pythagoras
+  /// solve: aiming the *straight-line* path at the target guaranteed the
+  /// measured road result overshot by roughly the winding factor — always
+  /// outside ±5%, always burning a refinement round. (2) Refinement uses
+  /// an affine model when [naturalLegM] is known: road distance ≈ natural
+  /// + (detour ∝ offset), so only the detour part gets rescaled, which
+  /// converges in one round far more often than rescaling the whole
+  /// distance did.
+  ///
+  /// Returns only candidates within `_matchTolerance` of [legTargetM] —
+  /// never a straight line, never a quietly-short route. Worst-case ORS
+  /// calls: 2 sides × 3 rounds × 2 hops = 12; typically 4–8.
+  Future<({List<RouteSegment> segments, bool rateLimited})>
+      _paddedLegCandidates(
+    LatLng from,
+    LatLng to,
+    double legTargetM, {
+    double? naturalLegM,
+  }) async {
+    final straightM = const Distance().as(LengthUnit.Meter, from, to);
+    // No detour can make a leg shorter than its straight line — nothing to
+    // search for unless the target actually requires lengthening it.
+    if (legTargetM <= straightM * (1 + _matchTolerance)) {
+      return (segments: const <RouteSegment>[], rateLimited: false);
+    }
+
+    final halfBase = straightM / 2;
+    final chordTargetM =
+        math.max(legTargetM / _roadWindingFactor, straightM * 1.05);
+    final halfChord = chordTargetM / 2;
+    final estOffset = math.sqrt(math.max(
+      halfChord * halfChord - halfBase * halfBase,
+      (straightM * 0.05) * (straightM * 0.05),
+    ));
+
+    final bearing = GeometryUtils.bearingDegrees(from, to);
+    final mid = LatLng(
+      (from.latitude + to.latitude) / 2,
+      (from.longitude + to.longitude) / 2,
+    );
+
+    Future<({RouteSegment seg, bool ok, bool rateLimited})> tryOffset(
+        double offset, double side) {
+      final w = _offset(mid, offset, bearing + 90 * side);
+      return _routeChain([from, w, to]);
+    }
+
+    double nextOffset(double offset, double measuredM) {
+      double scale;
+      if (naturalLegM != null && measuredM > naturalLegM) {
+        // Affine model — see the doc comment.
+        scale = (legTargetM - naturalLegM) / (measuredM - naturalLegM);
+      } else {
+        scale = legTargetM / measuredM;
+      }
+      return offset * scale.clamp(0.35, 3.0).toDouble();
+    }
+
+    final matched = <RouteSegment>[];
+    var rateLimited = false;
+
+    Future<void> probeSide(double side) async {
+      var offset = estOffset;
+      const maxRounds = 3; // first probe + up to 2 refinements
+      for (var round = 0; round < maxRounds; round++) {
+        if (rateLimited) return;
+        final attempt = await tryOffset(offset, side);
+        if (attempt.rateLimited) {
+          rateLimited = true;
+          return;
+        }
+        if (!attempt.ok) return;
+        final measured = attempt.seg.distanceMeters;
+        if (_withinMatchTolerance(measured, legTargetM)) {
+          matched.add(attempt.seg);
+          return;
+        }
+        final ratio = measured / legTargetM;
+        // A side this far off is fighting an obstacle a linear correction
+        // won't fix — stop spending calls on it.
+        if (ratio <= 0.5 || ratio >= 2.0) return;
+        offset = nextOffset(offset, measured);
+      }
+    }
+
+    // Both sides in parallel, each refining its own misses.
+    await Future.wait([probeSide(1), probeSide(-1)]);
+
+    return (segments: matched, rateLimited: rateLimited);
   }
 
   // ── Direct (A → B) route generation ───────────────────────────────────────
@@ -404,24 +1146,78 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     LatLng start,
     List<LatLng> stops, // empty → no intermediate stops
     LatLng end,
-    double? targetDistM, // null → no constraint, show all alternatives
+    double? targetDistM, // null → no constraint
   ) async {
-    // When stops are specified, route through them sequentially (single result).
+    // When stops are specified, route through them sequentially. The
+    // user-pinned part (start → … → last stop) stays fixed; when a target
+    // asks for more distance than the natural trip provides, the *final*
+    // leg absorbs the difference through a padded detour — exactly like a
+    // loop's closing leg. The natural route is never dropped for missing
+    // the target (standing rule for user-shaped routes): padding failing
+    // just means the natural trip is shown as-is.
     if (stops.isNotEmpty) {
-      final waypoints = [start, ...stops, end];
-      var full = await _route(waypoints[0], waypoints[1]);
-      for (int i = 1; i < waypoints.length - 1; i++) {
-        full = _stitch(full, await _route(waypoints[i], waypoints[i + 1]));
+      final through = await _routeChain([start, ...stops]);
+      if (!through.ok) {
+        _lastSearchRateLimited = through.rateLimited;
+        return [];
       }
+      final lastLeg = await _routeHop(stops.last, end);
+      if (!lastLeg.ok) {
+        _lastSearchRateLimited = lastLeg.rateLimited;
+        return [];
+      }
+      final natural = _stitch(through.seg, lastLeg.seg);
+
+      final candidates = <RouteSegment>[natural];
       if (targetDistM != null) {
-        final ratio = full.distanceMeters / targetDistM;
-        if (ratio < 1 - _tolerance || ratio > 1 + _tolerance) return [];
+        final legTargetM = targetDistM - through.seg.distanceMeters;
+        if (legTargetM > lastLeg.seg.distanceMeters * (1 + _matchTolerance)) {
+          final padded = await _paddedLegCandidates(
+            stops.last,
+            end,
+            legTargetM,
+            naturalLegM: lastLeg.seg.distanceMeters,
+          );
+          candidates.addAll(
+              [for (final leg in padded.segments) _stitch(through.seg, leg)]);
+        }
       }
-      return [_toFoundRoute(full, 0)];
+
+      List<RouteSegment> chosen;
+      if (targetDistM != null) {
+        final onTarget = candidates
+            .where((s) => _withinMatchTolerance(s.distanceMeters, targetDistM))
+            .toList()
+          ..sort((a, b) => _toleranceMiss(a.distanceMeters, targetDistM)
+              .compareTo(_toleranceMiss(b.distanceMeters, targetDistM)));
+        chosen = onTarget.isNotEmpty ? onTarget : [natural];
+      } else {
+        chosen = [natural];
+      }
+
+      final results = <_FoundRoute>[];
+      for (final seg in _dedupeSimilarRoutes(chosen).take(3)) {
+        results.add(_toFoundRoute(seg, results.length));
+      }
+      return results;
     }
 
     // No stops: use ORS alternative routes endpoint for up to 3 results.
-    final alternatives = await RoutingService.fetchAlternatives(start, end);
+    // `allowStraightLineFallback: false` means a failure returns an empty
+    // list rather than a straight line masquerading as a real alternative.
+    List<RouteSegment> alternatives;
+    try {
+      alternatives = await RoutingService.fetchAlternatives(
+        start,
+        end,
+        throwOnRateLimit: true,
+        allowStraightLineFallback: false,
+      );
+    } on RoutingRateLimitedException {
+      _lastSearchRateLimited = true;
+      return [];
+    }
+    if (alternatives.isEmpty) return [];
 
     if (targetDistM == null) {
       // No constraints — return all alternatives as-is.
@@ -430,11 +1226,70 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
           .toList();
     }
 
-    // Filter by ±30 % tolerance.
+    final naturalMatches = alternatives
+        .where((s) => _withinMatchTolerance(s.distanceMeters, targetDistM))
+        .toList();
+    if (naturalMatches.isNotEmpty) {
+      return naturalMatches
+          .asMap()
+          .entries
+          .map((e) => _toFoundRoute(e.value, e.key))
+          .toList();
+    }
+
+    // None of ORS's own alternatives land near the target — they're close
+    // variants of the same trip, not something that can be grown or shrunk
+    // to hit an arbitrary length. If the target actually requires
+    // *lengthening* the trip, build a real detour that reaches it instead
+    // of just accepting whatever's naturally there (the reported bug: a
+    // request for "4 km" between two points 1.3 km apart just returned
+    // that 1.3 km trip, silently ignoring the target entirely). The
+    // shortest natural alternative feeds the padding's affine refinement
+    // model — see `_paddedLegCandidates`.
+    final naturalDistM =
+        alternatives.map((s) => s.distanceMeters).reduce(math.min);
+    final padded = await _generatePaddedDirectRoutes(start, end, targetDistM,
+        naturalDistM: naturalDistM);
+    if (padded.isNotEmpty) return padded;
+
+    // Padding wasn't possible or didn't pan out (target shorter than the
+    // natural trip, so no detour applies; or the road network doesn't
+    // support one) — never show literally nothing when a real route
+    // exists: rank the natural alternatives by closeness so the user still
+    // sees an honestly-labelled route instead of an empty result.
+    final ranked = [...alternatives]
+      ..sort((a, b) => _toleranceMiss(a.distanceMeters, targetDistM)
+          .compareTo(_toleranceMiss(b.distanceMeters, targetDistM)));
+    return ranked.asMap().entries.map((e) => _toFoundRoute(e.value, e.key)).toList();
+  }
+
+  /// Builds detours from [start] to [end] that actually reach a target
+  /// *longer* than the trip's natural distance — no plain ORS alternative
+  /// varies how far out of the way it goes, only which road it takes, so
+  /// this is the only way to honour such a target. Thin wrapper over
+  /// `_paddedLegCandidates` (shared with the loop generators' closing-leg
+  /// padding); returns empty — never a straight line or a quietly-short
+  /// route — if the road network genuinely won't support it.
+  Future<List<_FoundRoute>> _generatePaddedDirectRoutes(
+      LatLng start, LatLng end, double targetDistM,
+      {double? naturalDistM}) async {
+    final padded = await _paddedLegCandidates(
+      start,
+      end,
+      targetDistM,
+      naturalLegM: naturalDistM,
+    );
+    if (padded.segments.isEmpty) {
+      if (padded.rateLimited) _lastSearchRateLimited = true;
+      return [];
+    }
+
+    final ranked = _dedupeSimilarRoutes([...padded.segments]
+      ..sort((a, b) => _toleranceMiss(a.distanceMeters, targetDistM)
+          .compareTo(_toleranceMiss(b.distanceMeters, targetDistM))));
+
     final results = <_FoundRoute>[];
-    for (final seg in alternatives) {
-      final ratio = seg.distanceMeters / targetDistM;
-      if (ratio < 1 - _tolerance || ratio > 1 + _tolerance) continue;
+    for (final seg in ranked.take(3)) {
       results.add(_toFoundRoute(seg, results.length));
     }
     return results;
@@ -446,6 +1301,94 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     if (_currentPosition != null) {
       _mapController.move(_currentPosition!, _defaultZoom);
     }
+  }
+
+  // ── Map pin-drop (Google Maps-style "tap the map instead of typing an
+  // address") ──────────────────────────────────────────────────────────────
+
+  /// Enters pin-picking mode for [target] (an existing [stopIndex] for
+  /// `_PinTarget.stop`) — the next map tap (see `_handleMapTapForPinPicking`)
+  /// fills that field instead of clearing the route-highlight selection.
+  /// Collapses the sheet so the map is actually visible/tappable.
+  void _beginPinPicking(_PinTarget target, {int? stopIndex}) {
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _pickingTarget = target;
+      _pickingStopIndex = stopIndex;
+    });
+    if (_sheetController.isAttached) {
+      _sheetController.animateTo(_sheetMinSize,
+          duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+    }
+  }
+
+  void _cancelPinPicking() {
+    setState(() {
+      _pickingTarget = null;
+      _pickingStopIndex = null;
+    });
+    if (_sheetController.isAttached) {
+      _sheetController.animateTo(_sheetMidSize,
+          duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+    }
+  }
+
+  /// Fills whichever field `_beginPinPicking` targeted with [point],
+  /// immediately (a placeholder "Pinned location (lat, lng)" string) and
+  /// then again with a real address once `_reverseGeocode` resolves — only
+  /// if the field's pin hasn't since changed again (`_startLatLng == point`
+  /// etc.), so a stale reverse-geocode can't clobber a newer pick.
+  Future<void> _handleMapTapForPinPicking(LatLng point) async {
+    final target = _pickingTarget;
+    final stopIndex = _pickingStopIndex;
+    if (target == null) return;
+
+    setState(() {
+      _pickingTarget = null;
+      _pickingStopIndex = null;
+    });
+    if (_sheetController.isAttached) {
+      _sheetController.animateTo(_sheetMidSize,
+          duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+    }
+
+    final placeholder = 'Pinned location '
+        '(${point.latitude.toStringAsFixed(5)}, ${point.longitude.toStringAsFixed(5)})';
+
+    setState(() {
+      switch (target) {
+        case _PinTarget.start:
+          _useCurrentPositionAsStart = false;
+          _startLatLng = point;
+          _startCtrl.text = placeholder;
+        case _PinTarget.destination:
+          _useCurrentPositionAsDest = false;
+          _destLatLng = point;
+          _destCtrl.text = placeholder;
+        case _PinTarget.stop:
+          if (stopIndex != null && stopIndex < _stopCtrls.length) {
+            _stopLatLngs[stopIndex] = point;
+            _stopCtrls[stopIndex].text = placeholder;
+          }
+      }
+    });
+
+    final address = await _reverseGeocode(point);
+    if (!mounted || address == null) return;
+    setState(() {
+      switch (target) {
+        case _PinTarget.start:
+          if (_startLatLng == point) _startCtrl.text = address;
+        case _PinTarget.destination:
+          if (_destLatLng == point) _destCtrl.text = address;
+        case _PinTarget.stop:
+          if (stopIndex != null &&
+              stopIndex < _stopLatLngs.length &&
+              _stopLatLngs[stopIndex] == point) {
+            _stopCtrls[stopIndex].text = address;
+          }
+      }
+    });
   }
 
   void _collapseSheet() {
@@ -562,6 +1505,50 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  // ── Pin-picking banner ────────────────────────────────────────────────────
+
+  Widget _buildPinPickingBanner() {
+    final target = _pickingTarget;
+    if (target == null) return const SizedBox.shrink();
+
+    final label = switch (target) {
+      _PinTarget.start => 'Tap the map to set the starting point',
+      _PinTarget.destination => 'Tap the map to set the destination',
+      _PinTarget.stop => 'Tap the map to place this stop',
+    };
+
+    return Positioned(
+      top: MediaQuery.of(context).padding.top + 12,
+      left: 64,
+      right: 64,
+      child: Material(
+        color: const Color(0xFF2A3028),
+        borderRadius: BorderRadius.circular(30),
+        elevation: 3,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.touch_app_outlined, size: 16, color: Colors.white),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(label,
+                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    overflow: TextOverflow.ellipsis),
+              ),
+              const SizedBox(width: 10),
+              GestureDetector(
+                onTap: _cancelPinPicking,
+                child: const Icon(Icons.close, size: 16, color: Colors.white70),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
@@ -574,12 +1561,56 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
           _buildSheet(),
           _buildBackButton(),
           _buildMapButtons(),
+          _buildPinPickingBanner(),
         ],
       ),
     );
   }
 
   // ── Map layer ─────────────────────────────────────────────────────────────
+
+  /// Markers for whichever start/destination/stop points are currently
+  /// pinned to a specific coordinate (via address suggestion or map-tap
+  /// picking) — not shown for "current position", since that already has
+  /// its own dedicated map indicator (the GPS dot).
+  List<Marker> _planningMarkers() {
+    final markers = <Marker>[];
+
+    if (!_useCurrentPositionAsStart && _startLatLng != null) {
+      markers.add(Marker(
+        point: _startLatLng!,
+        width: 34,
+        height: 34,
+        alignment: Alignment.topCenter,
+        child: const Icon(Icons.location_on, size: 34, color: Color(0xFF2E7D32)),
+      ));
+    }
+
+    if (!_isClosedCircuit &&
+        !_useCurrentPositionAsDest &&
+        _destLatLng != null) {
+      markers.add(Marker(
+        point: _destLatLng!,
+        width: 30,
+        height: 30,
+        alignment: Alignment.topCenter,
+        child: const Icon(Icons.sports_score, size: 28, color: Color(0xFFE65100)),
+      ));
+    }
+
+    for (int i = 0; i < _stopLatLngs.length; i++) {
+      final ll = _stopLatLngs[i];
+      if (ll == null) continue;
+      markers.add(Marker(
+        point: ll,
+        width: 26,
+        height: 26,
+        child: _StopMarkerBadge(number: i + 1),
+      ));
+    }
+
+    return markers;
+  }
 
   Widget _buildMap() {
     final hasSelection = _selectedRouteIndex >= 0 &&
@@ -604,6 +1635,10 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
             flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
           ),
           onTap: (tapPos, point) {
+            if (_pickingTarget != null) {
+              _handleMapTapForPinPicking(point);
+              return;
+            }
             FocusScope.of(context).unfocus();
             // Tapping the map background clears the route highlight.
             if (_selectedRouteIndex != -1) {
@@ -621,6 +1656,11 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
 
           // ── Claimed areas (display only) ────────────────────────────────
           ClaimedAreasLayer(areas: _visibleAreas),
+
+          // ── Manually-placed start/destination/stop pins (address search
+          // or map-tap picking — see `_beginPinPicking`) ──────────────────
+          if (_planningMarkers().isNotEmpty)
+            MarkerLayer(markers: _planningMarkers()),
 
           // ── Dimmed non-selected routes (rendered first, below) ────────────
           if (_foundRoutes.isNotEmpty && hasSelection)
@@ -793,59 +1833,78 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
                   // Header row
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          'Search a route',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
-                            color: Color(0xFF2A3028),
-                          ),
-                        ),
-                        const Spacer(),
-                        // Loading spinner while searching
-                        if (_isSearching)
-                          const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Color(0xFF4A8C52)),
-                          )
-                        // "N found" badge in results mode
-                        else if (_hasSearched && !_isResultsMode)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: _foundRoutes.isNotEmpty
-                                  ? const Color(0xFFEAF7E0)
-                                  : const Color(0xFFF0F0F0),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Text(
-                              '${_foundRoutes.length} found',
+                        Row(
+                          children: [
+                            const Text(
+                              'Search a route',
                               style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: _foundRoutes.isNotEmpty
-                                    ? const Color(0xFF2E7D32)
-                                    : Colors.grey,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF2A3028),
                               ),
                             ),
-                          )
-                        // "Edit search" button in results mode
-                        else if (_isResultsMode)
-                          TextButton.icon(
-                            onPressed: _enterEditMode,
-                            icon: const Icon(Icons.edit_outlined, size: 16),
-                            label: const Text('Edit search'),
-                            style: TextButton.styleFrom(
-                              foregroundColor: const Color(0xFF4A8C52),
-                              padding: EdgeInsets.zero,
-                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            ),
+                            const Spacer(),
+                            // Loading spinner while searching
+                            if (_isSearching)
+                              const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Color(0xFF4A8C52)),
+                              )
+                            // "N found" badge in results mode
+                            else if (_hasSearched && !_isResultsMode)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: _foundRoutes.isNotEmpty
+                                      ? const Color(0xFFEAF7E0)
+                                      : const Color(0xFFF0F0F0),
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Text(
+                                  '${_foundRoutes.length} found',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: _foundRoutes.isNotEmpty
+                                        ? const Color(0xFF2E7D32)
+                                        : Colors.grey,
+                                  ),
+                                ),
+                              )
+                            // "Edit search" button in results mode
+                            else if (_isResultsMode)
+                              TextButton.icon(
+                                onPressed: _enterEditMode,
+                                icon: const Icon(Icons.edit_outlined, size: 16),
+                                label: const Text('Edit search'),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: const Color(0xFF4A8C52),
+                                  padding: EdgeInsets.zero,
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                ),
+                              ),
+                          ],
+                        ),
+                        // Step indicator — hidden once results are showing,
+                        // since "Edit search" already communicates where
+                        // things stand at that point.
+                        if (!_isResultsMode) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            _formStep == 0
+                                ? 'Step 1 of 2 · Route shape'
+                                : 'Step 2 of 2 · Parameters',
+                            style: const TextStyle(
+                                fontSize: 12, color: Color(0xFF8A9389)),
                           ),
+                        ],
                       ],
                     ),
                   ),
@@ -857,27 +1916,45 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
               child: ListView(
                 controller: scrollController,
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 40),
-                children: [
-                  _buildCircuitToggle(),
-                  const SizedBox(height: 16),
-                  _buildStartSection(),
-                  if (!_isClosedCircuit) ...[
-                    const SizedBox(height: 16),
-                    _buildDestinationSection(),
-                  ],
-                  const SizedBox(height: 16),
-                  _buildIntermediateStopSection(),
-                  const SizedBox(height: 20),
-                  _buildParametersSection(),
-                  const SizedBox(height: 24),
-                  _buildBottomRow(),
-                ],
+                children: _formStep == 0
+                    ? _buildShapeStepChildren()
+                    : _buildParametersStepChildren(),
               ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  List<Widget> _buildShapeStepChildren() {
+    return [
+      _buildCircuitToggle(),
+      const SizedBox(height: 16),
+      _buildStartSection(),
+      if (!_isClosedCircuit) ...[
+        const SizedBox(height: 16),
+        _buildDestinationSection(),
+      ],
+      const SizedBox(height: 16),
+      _buildIntermediateStopSection(),
+      const SizedBox(height: 24),
+      _buildShapeStepFooter(),
+    ];
+  }
+
+  List<Widget> _buildParametersStepChildren() {
+    return [
+      _buildParametersSection(),
+      // Laps only apply to closed circuits — see the class-level note on
+      // `_lapsCtrl` for why the target above is a total, not a per-lap size.
+      if (_isClosedCircuit) ...[
+        const SizedBox(height: 20),
+        _buildLapsSection(),
+      ],
+      const SizedBox(height: 24),
+      _buildParametersStepFooter(),
+    ];
   }
 
   // ── Form sections ─────────────────────────────────────────────────────────
@@ -904,7 +1981,9 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
                 Text('Search for a closed circuit',
                     style: TextStyle(
                         fontSize: 15, fontWeight: FontWeight.w500)),
-                Text('Route must form a loop back to start',
+                Text(
+                    'Loops back to start · add stops to shape it, '
+                    'set laps in the next step',
                     style:
                         TextStyle(fontSize: 11, color: Colors.grey)),
               ],
@@ -939,6 +2018,9 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
               onUseLocation: _isResultsMode
                   ? null
                   : () => setState(() => _useCurrentPositionAsStart = true),
+              onPickOnMap: _isResultsMode
+                  ? null
+                  : () => _beginPinPicking(_PinTarget.start),
               onSuggestionPicked: (ll) => setState(() => _startLatLng = ll),
             ),
     );
@@ -962,6 +2044,9 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
               onUseLocation: _isResultsMode
                   ? null
                   : () => setState(() => _useCurrentPositionAsDest = true),
+              onPickOnMap: _isResultsMode
+                  ? null
+                  : () => _beginPinPicking(_PinTarget.destination),
               onSuggestionPicked: (ll) => setState(() => _destLatLng = ll),
             ),
     );
@@ -987,6 +2072,14 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (_isClosedCircuit) ...[
+            const Text(
+              'Optional — routes through these before returning to start. '
+              'Leave empty to auto-generate a loop matching your target instead.',
+              style: TextStyle(fontSize: 11, color: Colors.grey),
+            ),
+            const SizedBox(height: 8),
+          ],
           // One field per added stop
           for (int i = 0; i < _stopCtrls.length; i++) ...[
             if (i > 0) const SizedBox(height: 8),
@@ -996,6 +2089,9 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
               enabled: !_isResultsMode,
               near: _currentPosition,
               onRemove: _isResultsMode ? null : () => _removeStop(i),
+              onPickOnMap: _isResultsMode
+                  ? null
+                  : () => _beginPinPicking(_PinTarget.stop, stopIndex: i),
               onSuggestionPicked: (ll) =>
                   setState(() => _stopLatLngs[i] = ll),
             ),
@@ -1032,6 +2128,40 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     );              // _FormSection
   }
 
+  Widget _buildLapsSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Laps',
+          style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF5E655C)),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          _hasStopsEntered
+              ? 'Optional — repeat your stop-shaped loop this many times.'
+              : 'Optional — repeat the loop this many times. The target '
+                  'above is the total across all laps (e.g. 6 km over 3 '
+                  'laps looks for a ~2 km loop).',
+          style: const TextStyle(fontSize: 11, color: Colors.grey),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: 120,
+          child: _ParamField(
+            controller: _lapsCtrl,
+            hint: 'e.g. 3',
+            unit: 'laps',
+            enabled: !_isResultsMode,
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildParametersSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1045,10 +2175,10 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
                   fontWeight: FontWeight.w600,
                   color: Color(0xFF5E655C)),
             ),
-            if (_isClosedCircuit) ...[
+            if (_isClosedCircuit && !_hasStopsEntered) ...[
               const SizedBox(width: 6),
               const Text(
-                '(required for loops)',
+                '(required — or add stops instead)',
                 style: TextStyle(fontSize: 11, color: Color(0xFFE65100)),
               ),
             ],
@@ -1088,14 +2218,78 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     );
   }
 
-  Widget _buildBottomRow() {
+  /// Step 1 (shape) footer — just advances to step 2, no validation here:
+  /// address/pin resolution is async, so the real checks (start resolvable,
+  /// destination resolvable, etc.) stay on the final Search button in step 2,
+  /// same as before this page had steps at all.
+  Widget _buildShapeStepFooter() {
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        onPressed: _isResultsMode ? null : () => setState(() => _formStep = 1),
+        icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+        label: const Text('Next: parameters'),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFFCAF0B8),
+          foregroundColor: const Color(0xFF2E7D32),
+          disabledBackgroundColor: const Color(0xFFE0E0E0),
+          elevation: 0,
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          textStyle:
+              const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildParametersStepFooter() {
     final n = _foundRoutes.length;
     final label =
         _isClosedCircuit ? 'Total circuits found' : 'Total routes found';
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            if (!_isResultsMode)
+              TextButton.icon(
+                onPressed: () => setState(() => _formStep = 0),
+                icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                label: const Text('Back'),
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF5E655C),
+                  padding: EdgeInsets.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            const Spacer(),
+            if (_hasSearched || _isSearching)
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(label,
+                      style: const TextStyle(
+                          fontSize: 11, color: Colors.grey)),
+                  Text(
+                    _isSearching ? '…' : '$n',
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                      color: n > 0
+                          ? const Color(0xFF2E7D32)
+                          : const Color(0xFF9E9E9E),
+                    ),
+                  ),
+                ],
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
         ElevatedButton.icon(
           onPressed: (_isSearching || _isResultsMode) ? null : _search,
           icon: const Icon(Icons.search_rounded, size: 18),
@@ -1105,35 +2299,13 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
             foregroundColor: const Color(0xFF2E7D32),
             disabledBackgroundColor: const Color(0xFFE0E0E0),
             elevation: 0,
-            padding:
-                const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            padding: const EdgeInsets.symmetric(vertical: 14),
             shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12)),
             textStyle: const TextStyle(
                 fontWeight: FontWeight.w600, fontSize: 14),
           ),
         ),
-        const Spacer(),
-        if (_hasSearched || _isSearching)
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(label,
-                  style: const TextStyle(
-                      fontSize: 11, color: Colors.grey)),
-              Text(
-                _isSearching ? '…' : '$n',
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
-                  color: n > 0
-                      ? const Color(0xFF2E7D32)
-                      : const Color(0xFF9E9E9E),
-                ),
-              ),
-            ],
-          ),
       ],
     );
   }
@@ -1246,6 +2418,12 @@ class _AddressInputField extends StatefulWidget {
   final bool enabled;
   final VoidCallback? onUseLocation;
   final VoidCallback? onRemove;
+
+  /// Enters map-tap pin-picking mode for this field (see
+  /// `_beginPinPicking`) — the Google Maps-style alternative to typing an
+  /// address. Independent of [onUseLocation]/[onRemove], so all three can
+  /// be offered together.
+  final VoidCallback? onPickOnMap;
   final void Function(LatLng? latLng) onSuggestionPicked;
 
   /// Biases/ranks suggestions toward this position (usually the user's GPS
@@ -1259,6 +2437,7 @@ class _AddressInputField extends StatefulWidget {
     this.enabled = true,
     this.onUseLocation,
     this.onRemove,
+    this.onPickOnMap,
     this.near,
   });
 
@@ -1299,6 +2478,13 @@ class _AddressInputFieldState extends State<_AddressInputField> {
       _suppressNextChange = false;
       return;
     }
+    // A change while this field isn't focused can only be programmatic —
+    // e.g. a pin dropped on the map (`_handleMapTapForPinPicking`) or a
+    // reverse-geocoded address landing after the fact — never the user
+    // editing text, so the LatLng that change just set must NOT be
+    // invalidated (and no suggestion search should fire for it).
+    if (!_focusNode.hasFocus) return;
+
     // Invalidate any previously selected suggestion LatLng.
     widget.onSuggestionPicked(null);
 
@@ -1363,21 +2549,44 @@ class _AddressInputFieldState extends State<_AddressInputField> {
             hintStyle:
                 const TextStyle(color: Colors.grey, fontSize: 14),
             prefixIcon: const Icon(Icons.search, size: 18, color: Colors.grey),
-            suffixIcon: widget.onUseLocation != null
-                ? IconButton(
+            suffixIconConstraints:
+                const BoxConstraints(minWidth: 0, minHeight: 0),
+            suffixIcon: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (widget.onPickOnMap != null)
+                  IconButton(
+                    icon: const Icon(Icons.push_pin_outlined,
+                        size: 16, color: Color(0xFF4A8C52)),
+                    onPressed: widget.onPickOnMap,
+                    tooltip: 'Pick on map',
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 32, minHeight: 32),
+                  ),
+                if (widget.onUseLocation != null)
+                  IconButton(
                     icon: const Icon(Icons.my_location,
                         size: 16, color: Color(0xFF4A8C52)),
                     onPressed: widget.onUseLocation,
                     tooltip: 'Use current position',
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 32, minHeight: 32),
                   )
-                : widget.onRemove != null
-                    ? IconButton(
-                        icon: const Icon(Icons.close,
-                            size: 16, color: Colors.grey),
-                        onPressed: widget.onRemove,
-                        tooltip: 'Remove stop',
-                      )
-                    : null,
+                else if (widget.onRemove != null)
+                  IconButton(
+                    icon: const Icon(Icons.close,
+                        size: 16, color: Colors.grey),
+                    onPressed: widget.onRemove,
+                    tooltip: 'Remove stop',
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 32, minHeight: 32),
+                  ),
+                const SizedBox(width: 4),
+              ],
+            ),
             filled: true,
             fillColor:
                 widget.enabled ? Colors.white : const Color(0xFFF0F0F0),
@@ -1521,11 +2730,23 @@ class _RouteDetailsSheet extends StatelessWidget {
                     shape: BoxShape.circle, color: route.color),
               ),
               const SizedBox(width: 10),
-              Text('Route $routeNumber',
-                  style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.w700)),
+              Text(
+                route.laps > 1
+                    ? 'Route $routeNumber · ×${route.laps} laps'
+                    : 'Route $routeNumber',
+                style: const TextStyle(
+                    fontSize: 18, fontWeight: FontWeight.w700),
+              ),
             ],
           ),
+          if (route.laps > 1) ...[
+            const SizedBox(height: 4),
+            Text(
+              'Each lap: '
+              '${(route.distanceKm / route.laps).toStringAsFixed(2)} km',
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
           const SizedBox(height: 20),
           Row(
             children: [
@@ -1677,6 +2898,32 @@ class _LocationDot extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Small numbered marker for a manually-placed intermediate stop (address
+/// suggestion or map-tap pin) — same rounded-circle shape as the found-route
+/// number markers, in a distinct color so the two aren't confused.
+class _StopMarkerBadge extends StatelessWidget {
+  final int number;
+  const _StopMarkerBadge({required this.number});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: const Color(0xFF1565C0),
+        border: Border.all(color: Colors.white, width: 2),
+        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        '$number',
+        style: const TextStyle(
+            color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
+      ),
     );
   }
 }

@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 
+import '../../screens/run_session_detail_page.dart';
 import '../../services/claimed_area_repository.dart';
 import '../../services/profile_service.dart';
 import '../../utils/geometry_utils.dart';
@@ -173,7 +174,8 @@ class _AreaDetailsSheetState extends State<AreaDetailsSheet> {
                 ),
               ),
               const SizedBox(height: 8),
-              for (final c in area.contributions) _ContributionRow(contribution: c),
+              for (final c in area.contributions)
+                _ContributionRow(contribution: c, userId: area.userId),
             ],
           ),
         ),
@@ -221,53 +223,71 @@ class _Stat extends StatelessWidget {
 }
 
 /// One row in the "built from N runs" list — a single past run that
-/// contributed ground to this area, shown so the user can recognise (and,
-/// once route-saving from other users' sessions exists, re-run) it.
+/// contributed ground to this area. Tapping it opens [RunSessionDetailPage]
+/// for the full picture (username, stats, favourite-as-route) — pushed from
+/// inside this still-open bottom sheet, so its own back button naturally
+/// returns here rather than leaving Explore entirely.
 class _ContributionRow extends StatelessWidget {
   final AreaContribution contribution;
+  final String userId;
 
-  const _ContributionRow({required this.contribution});
+  const _ContributionRow({required this.contribution, required this.userId});
 
   @override
   Widget build(BuildContext context) {
     final pace = contribution.avgPaceMinPerKm;
     final avgSpeedKmh = (pace != null && pace > 0) ? 60 / pace : null;
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-      decoration: BoxDecoration(
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
         color: const Color(0xFFF0F2EB),
         borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.directions_run_rounded, size: 18, color: Color(0xFF4A8C52)),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              _formatDate(contribution.conquestDate),
-              style: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: Color(0xFF1F3020),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => RunSessionDetailPage(
+                sessionId: contribution.sessionId,
+                userId: userId,
               ),
             ),
           ),
-          Text(
-            _formatDuration(contribution.durationMs),
-            style: const TextStyle(fontSize: 13, color: Color(0xFF5E655C)),
-          ),
-          const SizedBox(width: 12),
-          SizedBox(
-            width: 62,
-            child: Text(
-              avgSpeedKmh != null ? '${avgSpeedKmh.toStringAsFixed(1)} km/h' : '—',
-              textAlign: TextAlign.right,
-              style: const TextStyle(fontSize: 13, color: Color(0xFF5E655C)),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+            child: Row(
+              children: [
+                const Icon(Icons.directions_run_rounded, size: 18, color: Color(0xFF4A8C52)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    _formatDate(contribution.conquestDate),
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF1F3020),
+                    ),
+                  ),
+                ),
+                Text(
+                  _formatDuration(contribution.durationMs),
+                  style: const TextStyle(fontSize: 13, color: Color(0xFF5E655C)),
+                ),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 62,
+                  child: Text(
+                    avgSpeedKmh != null ? '${avgSpeedKmh.toStringAsFixed(1)} km/h' : '—',
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(fontSize: 13, color: Color(0xFF5E655C)),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                const Icon(Icons.chevron_right, size: 18, color: Color(0xFFB9C2B5)),
+              ],
             ),
           ),
-        ],
+        ),
       ),
     );
   }

@@ -363,6 +363,219 @@ Keep this list current — update it whenever a feature moves between these buck
   `test_run_creator_page.dart` build a `DraggableScrollableSheet` the same underlying way
   (handle+header outside the `ListView`) and likely have the same gap — not yet fixed
   there, revisit if it comes up.
+  **The form is a two-step wizard** (`_formStep`, 0/1) rather than one long scroll, since
+  parameters are meaningless until the shape is decided: step 1 ("Route shape") holds the
+  circuit toggle, start/destination/stops; step 2 ("Parameters") holds the
+  distance/time/calorie target and, for a closed circuit, laps. A "Next: parameters"
+  button advances (no blocking validation — address/pin resolution is async, so the real
+  checks stay on the final Search button, same as before this page had steps); step 2 has
+  a "Back" button plus the search button. "Edit search" from results mode always returns
+  to step 1. Leaving edit mode used to silently clear every intermediate stop
+  (`_enterEditMode` disposed/cleared `_stopCtrls`/`_stopLatLngs` on every entry) — fixed;
+  it now only resets the results/step state, so stops survive an edit round-trip.
+  **Start/destination/stop pins can be placed by tapping the map** instead of typing an
+  address, Google Maps-style (`_beginPinPicking`/`_handleMapTapForPinPicking`, wired into
+  `_AddressInputField` via an `onPickOnMap` suffix-icon button alongside the existing "use
+  current location"/"remove stop" ones). Picking collapses the sheet and shows a
+  cancellable banner ("Tap the map to set…"); the tapped point fills the field immediately
+  as a placeholder ("Pinned location (lat, lng)") and then again with a real address once
+  a best-effort Nominatim reverse-geocode (`_reverseGeocode`) resolves — the resolved
+  `LatLng` itself, not this display text, is what search actually uses. This needed one
+  fix to `_AddressInputField`'s own text-change listener (`_onTextChanged`): it used to
+  invalidate the field's picked `LatLng` on *any* text change apart from its own internal
+  suggestion-selection flag, which would have wiped out a pin the instant this
+  programmatic set landed. It now also skips invalidation whenever the field isn't
+  focused — a real user edit only ever happens while focused, so this cleanly
+  distinguishes "the user is typing" from "something external just set this text" without
+  a new suppress flag wired in from outside for every such case. Placed pins render as
+  persistent map markers (`_planningMarkers` — green pin for start, checkered-flag icon
+  for destination, numbered blue badges for stops) so the shape being searched is visible
+  before hitting search, not just after.
+  **Closed-circuit search now actually uses intermediate stops** — a real bug, not just a
+  gap: the auto-loop generator ignored `_resolveStops()` entirely, so a stop placed on a
+  closed-circuit search was shown in the form but silently dropped from the result.
+  `_generateClosedCircuitRoutes` now branches on whether stops were given: with stops, it
+  routes start → stops → back to start directly (`_generateLoopThroughStops`, checked
+  against tolerance like a direct A→B route); only with *no* stops does it fall back to
+  the bearing/radius auto-guesser (`_generateAutoLoopRoutes`).
+  **Laps** are now tied to the closed-circuit toggle only (not to a separately-detected
+  "start equals destination" on the plain A→B flow, which was confusing to trigger and
+  has been removed) — an optional field in step 2 (`_buildLapsSection`/`_lapsCtrl`,
+  defaults to 1 when left blank), shown only when the circuit toggle is on. The
+  distance/time/calorie target represents the *total* across every lap: `_search` divides
+  it by the lap count to get the per-lap size the loop-finder actually searches for
+  (`_generateClosedCircuitRoutes`'s `perLapTargetM`), and `_toFoundRoute`'s `laps`
+  parameter multiplies the measured single-loop distance/time/calories back up for
+  display — a match against the per-lap target is therefore automatically a match against
+  the original total. `_RouteDetailsSheet` labels the result "×N laps" and shows the
+  per-lap distance alongside the total.
+  **Routing reliability rework** — a found route could previously mask an outright
+  routing failure: `RoutingService.fetchRoute`/`fetchAlternatives` silently fall back to
+  `RoutingService.straightLine()` on any failure (network error, no route, or a genuine
+  HTTP 429 from the shared ORS quota), and the old per-hop `_route()` helper had no way to
+  tell a caller that had happened — so a rate-limited hop became an ordinary-looking
+  straight edge, stitched into a "found route" cutting across buildings. Root cause:
+  tightening `_matchTolerance` (see below) had roughly doubled ORS calls per
+  closed-circuit search via an aggressive "refine every out-of-tolerance candidate" pass,
+  making the shared quota's rate limit far more likely to trip on repeated searches — the
+  reported "worked once, then started producing triangle-shaped routes" pattern. Fixed
+  with two new primitives: `_routeHop` (a single ORS leg, returning `{seg, ok,
+  rateLimited}` — `ok: false` means this leg fell back to a straight line) and
+  `_routeChain` (walks a waypoint list sequentially, stitching hops, stopping early the
+  moment a hop reports rate-limiting rather than continuing to burn the shared quota).
+  Every route-generation method (`_generateLoopThroughStops`, `_generateAutoLoopRoutes`,
+  `_generateDirectRoutes`) now discards any candidate whose chain wasn't fully `ok` —
+  never presents a straight-line fallback as a real result — and both call ORS's
+  `throwOnRateLimit: true` mode (already used elsewhere; `RoutingService.fetchAlternatives`
+  gained the same opt-in flag, plus a new `allowStraightLineFallback` that lets a failure
+  return `[]` instead of a masquerading straight line — both default to the original
+  behaviour, so no other caller of these shared methods is affected).
+  `_generateAutoLoopRoutes`'s own candidate count was also cut — 4 bearings (90° apart)
+  instead of 8 (45° apart), and only the single closest miss gets one corrective re-route
+  (radius rescaled by the measured ratio) instead of refining *every* miss — bounding
+  worst-case ORS calls per search to 4×3 + 3 = 15, down from an unbounded-up-to 8×3×2 = 48.
+  A search whose only results were rate-limited away sets `_lastSearchRateLimited`, so
+  `_search` can show "The routing service is busy right now" instead of a generic "no
+  routes found" when that's what actually happened.
+  Matching a generated/found route against a distance/time/calorie target still uses a
+  tight `_matchTolerance` (±5%), kept deliberately separate from the much looser
+  `_conflictTolerance` (±30%) used to cross-check the user's own time/distance/calorie
+  entries against each other in `_deriveTarget` (those three are independently derived
+  from magic per-km constants, so they're never expected to agree exactly; the *result*
+  shown to the user is a different, much stricter contract).
+  **The distance-tolerance filter only ever applies to the auto-generated loop search
+  (`_generateAutoLoopRoutes`) — the one case where the app is actively searching a
+  parameter space to hit a target.** Every other path's shape is already fixed by the
+  user's own waypoints (stops, in either circuit or direct mode; or a plain A→B with no
+  stops) and is never rejected for missing the target: two real bugs traced back to
+  treating the target as a hard filter there. Reported first: a direct A→B search (no
+  stops, no circuit) between two points genuinely less than the target apart returned
+  zero results, because none of ORS's alternatives — which are close variants of the same
+  trip, not routes that can be grown to hit an arbitrary length — landed inside ±5%.
+  `_generateDirectRoutes` now ranks alternatives by closeness to target instead of
+  filtering any out, so a real route is always shown (closest match first) rather than
+  hidden. The stops-defined paths (`_generateLoopThroughStops` for a closed circuit,
+  and `_generateDirectRoutes`'s own stops branch) dropped the tolerance check entirely —
+  a manually-placed stop was producing "0 routes found" purely because the real road
+  distance through it didn't land in a ±5% band around an unrelated target, which read as
+  obviously wrong to a user who placed the stop deliberately.
+  **A second, distinct bug**: a closed-circuit search (small per-lap target from splitting
+  a total across several laps, e.g. 4 km over 3 laps → ~1.3 km per lap) could return a
+  "route" that just went up and down the same road and back — real ORS geometry, correct
+  distance, but no actual enclosed area, because the two offset waypoints
+  (`_generateAutoLoopRoutes`'s `wp1`/`wp2`) happened to road-snap onto the same street.
+  `_enclosesRealArea` catches this: it runs `GeometryUtils.polygonAreaM2` (already used by
+  route creation/live tracking for real loop-closure math) against the candidate's own
+  closed polyline and rejects anything covering under ~2% of the area a circle with the
+  same perimeter would enclose — generous enough that even a lopsided 10:1 rectangle loop
+  clears it several times over, but a true out-and-back (which cancels to ~zero area in
+  the shoelace-style calculation `polygonAreaM2` uses) does not. Applied to every loop
+  candidate — the auto-guesser's first pass, its one refinement re-route, and the
+  stops-defined loop — never just the distance check alone. The auto-guesser's own
+  candidate count was nudged back up from 4 to 6 bearings (every 60°, up from every 90°)
+  now that degenerate candidates are being caught rather than shown, to raise the odds of
+  finding at least one real enclosing shape without reintroducing the original unbounded
+  call-volume problem. `_lastSearchOnlyDegenerateLoops` distinguishes this case in
+  `_search`'s messaging ("could not find a real loop enclosing an area…") from a plain
+  rate-limit or a plain no-match.
+  **Closed circuit's target requirement is now conditional on stops**: stops fully
+  determine a loop's shape (and so its size) on their own, so `_search` only requires a
+  distance/time/calorie target when stops are empty (i.e. only the auto-guesser, which
+  actually needs a size to search for, is gated on it) — `_hasStopsEntered` is the
+  synchronous proxy used for this and for steering the parameters-step hint text, since
+  the real `_resolveStops()` is async and the hint has to render before that resolves.
+  **Three follow-up fixes after live testing surfaced more gaps**:
+  - **A single stop can't form a real loop the way 2+ stops naturally do.** `start → stop
+    → start` is definitionally an out-and-back unless the return leg is deliberately
+    routed differently from the outbound one — ORS's plain shortest path each way almost
+    always retraces the same street regardless of how dense the surrounding road network
+    is, which is exactly the degenerate shape `_enclosesRealArea` rejects, so a one-stop
+    loop was reliably returning zero results. `_generateSingleStopLoop` now routes the
+    outbound leg normally, asks ORS for alternative *return* routes (`fetchAlternatives`),
+    and pairs the outbound with whichever return alternative encloses the most real area —
+    only reporting "no real loop" if none of them do (a dead-end street or single bridge
+    with no parallel way back, which does happen and is a genuine dead end, not a bug).
+  - **A closed-circuit search failed at longer targets (worked at ~3 km, failed at 10 km)
+    that had worked at shorter range.** Two contributing causes, both addressed: a single
+    ORS hop taking noticeably longer to compute for a multi-km leg was more likely to trip
+    a plain (non-429) failure under load — `_routeHop` now retries once on an ordinary
+    failure before giving up, at no extra cost on the (typical) success path. Separately,
+    `_generateAutoLoopRoutes`'s corrective refinement went from one attempt to up to two —
+    the gap between the straight-line radius estimate and the real road-network detour
+    ratio grows, and gets less predictable, the further out it reaches, so a single linear
+    correction that reliably closed a short-range miss wasn't always enough at longer
+    range (worst case now 6×3 + 2×3 = 30 ORS calls, still well under the original
+    version's unbounded-up-to 48).
+  - **A direct A→B search with a target longer than the trip's natural distance was
+    silently ignoring the target entirely** — e.g. "4 km between two points 1.3 km apart"
+    just returned the natural ~1.3 km alternatives, because ranking-by-closeness (the
+    previous fix for zero-results) has no way to *lengthen* a trip, only reorder what ORS
+    already offered. `_generateDirectRoutes` now tries `_generatePaddedDirectRoutes` first
+    whenever none of ORS's own alternatives land near the target: it builds a detour via
+    one synthetic waypoint, bulging perpendicular to the direct start→end line by just
+    enough (solved via Pythagoras on the straight-line isosceles triangle) to reach the
+    target, tries both sides of the line in parallel, and refines whichever comes closer
+    (up to twice, same rescale-by-measured-ratio approach as the loop generator) if
+    neither hits tolerance outright. Only falls through to the old rank-by-closeness
+    behavior if padding genuinely isn't applicable (target shorter than the natural trip —
+    a detour only ever adds distance, it can't be the fix there) or doesn't pan out (road
+    network doesn't support a detour of that shape either side).
+  **Client/server ORS timeout mismatch, found while writing a diagnostic handoff report for the
+  10 km failure above (not yet re-verified live)**: [lib/services/routing_service.dart](lib/services/routing_service.dart)'s
+  `fetchRoute`/`fetchAlternatives` Firebase Callable timeouts were 10s/12s, while
+  [functions/routing.js](functions/routing.js)'s own `ORS_TIMEOUT_MS` (its fetch-to-ORS timeout, shared by both
+  `orsRoute` modes) is 12s — meaning the client could give up and throw *before or right as* the
+  Cloud Function itself would, and that timeout was indistinguishable from an ordinary "no route
+  found" failure to `RoutingService.fetchRoute`'s catch-all. Longer legs (radius scales with
+  target distance) are more likely to approach that window, which would explain "works at 3 km,
+  fails at 10 km" without any bug in the search/candidate logic itself — and would explain why
+  `_routeHop`'s retry-once didn't help, since retrying a systematically-too-slow leg just times
+  out again the same way. Both client timeouts are now a shared `_callTimeout = Duration(seconds:
+  18)` constant, leaving margin over the server's 12s; `ORS_TIMEOUT_MS`'s declaration now carries
+  a comment cross-referencing the client value so the two can't silently drift apart again. Shared
+  code with route creation (`fetchRoute` is also called from `route_create_page.dart` and
+  `test_run_creator_page.dart`) — raising a timeout can only let a slow-but-eventually-successful
+  call complete, never change behavior for one that was already fast, so this was assessed as safe
+  there too, but that's by construction, not a live-verified claim.
+  **Route-generation rework: native ORS round trips + shared leg padding.** Loop
+  generation moved off the offset-two-waypoints geometric guesser onto ORS's *native
+  round-trip primitive*: [functions/routing.js](functions/routing.js)'s `orsRoute` gained a third mode
+  (`mode: 'round_trip'` → POST with a single coordinate + `options.round_trip
+  {length, points, seed}`, same verbatim `{status, body}` forwarding as the other two
+  modes, logged as `ors-directions-roundtrip`), surfaced client-side as
+  `RoutingService.fetchRoundTrip`. `_generateAutoLoopRoutes` now fires `_loopSeedCount`
+  (4) round trips in parallel — different seeds = different loop directions, ONE ORS call
+  per candidate instead of three — and corrects the two closest misses by re-requesting
+  with the length rescaled by the measured ratio (same seed, so the loop grows/shrinks in
+  place rather than jumping direction): worst case 6 calls where the guesser spent up to
+  30, with every candidate grown out of the actual road network instead of hoped onto it
+  — candidates can't strand across rivers/highways, and land far closer to the requested
+  length (ORS documents `length` as preferred-not-guaranteed, hence the corrective pass).
+  The old guesser survives only as `_generateLegacyLoopSegments` (slimmed to 3 bearings),
+  run purely as a safety net when *every* round-trip call fails without a 429 — i.e. an
+  `orsRoute` deployment predating the new mode — so **deploy functions before shipping
+  the app build**, though nothing breaks outright if the order slips. Loop targets are
+  honoured *with* stops now too: both loop-with-stops paths route the user-pinned part
+  and the closing/return leg separately, and when the target asks for more distance than
+  the natural loop provides, the closing leg is re-routed through `_paddedLegCandidates`
+  — the padded-detour machinery extracted from `_generatePaddedDirectRoutes` and shared
+  with it — sized so the whole loop lands on the target; the natural loop is still shown
+  as the honest best answer when padding can't reach it (user-shaped routes are never
+  dropped — same standing rule as before). The padding itself got two accuracy fixes:
+  the first offset guess divides the target by `_roadWindingFactor` (1.25) before the
+  Pythagoras solve (aiming the *straight-line* path at the target guaranteed the measured
+  road result overshot by roughly that factor — always outside ±5%, always burning a
+  refinement round), and refinement uses an affine model when the natural leg distance is
+  known (only the detour part gets rescaled), converging in one round far more often;
+  both perpendicular sides now refine *their own* misses in parallel instead of only the
+  single best side ever being refined. Near-duplicate results (different seeds, or a
+  padded side and a natural alternative converging on the same streets) are collapsed by
+  `_dedupeSimilarRoutes` (lengths within 3% + centroids within max(60 m, 2% of length))
+  before display; single-stop loops with no target now return up to 3 area-ranked real
+  loops instead of exactly one. Direct A→B with stops pads its *final* leg the same way
+  when the target exceeds the natural trip. Not yet re-verified live (same standing
+  caveat as the timeout fix above) — the `routing-upstream` Cloud Function log now
+  includes `ors-directions-roundtrip` lines for exactly this purpose.
 - Saving/listing/deleting routes in Firestore, with a client-side cache ([lib/services/route_repository.dart](lib/services/route_repository.dart)).
 - Profile picture upload with strict validation (size/extension/MIME/magic-byte sniffing) to Firebase Storage ([lib/services/image_upload_service.dart](lib/services/image_upload_service.dart)).
 - Badge listing (default/visible badges) and a temporary profile page showing the user's saved routes ([lib/services/badge_service.dart](lib/services/badge_service.dart), [lib/screens/temp_profile_page.dart](lib/screens/temp_profile_page.dart)).
@@ -584,22 +797,39 @@ Keep this list current — update it whenever a feature moves between these buck
   one-time async server computation, not an ongoing feed.
   `RunSessionRepository.saveSession` returns the new doc's ID (was `Future<void>`) specifically
   so callers have something to point this listener at.
+- **Calendar / own-session history** ([lib/screens/calendar_screen.dart](lib/screens/calendar_screen.dart),
+  [lib/screens/session_detail_screen.dart](lib/screens/session_detail_screen.dart)) — a pre-existing flow not previously listed here.
+  The calendar screen queries `runningSessions` directly, filtered to the signed-in user's
+  own `userId` (this collection is fully readable by any signed-in user — see the
+  run-session detail page bullet above — but "my activity history" is inherently
+  self-scoped regardless), grouped by day; tapping an activity opens `SessionDetailScreen` with
+  that full session doc (as a raw `Map<String, dynamic>`, not a typed model) and its
+  polyline already in hand — a locked map preview plus a `GridView` of stat cards
+  (distance/duration/pace/calories/points/loops). Distinct from, and not to be confused
+  with, `RunSessionDetailPage` (see the run-session detail page bullet above): that one is
+  reached from *other* users' contributions on the Explore map, only ever has the limited
+  fields denormalized onto an `AreaContribution` (no live doc access is possible there), and
+  adds a username header and the favourite-as-route button neither of which apply to "a
+  session you already know is your own". The two intentionally stayed separate rather than
+  being merged into one screen handling both shapes of input.
 - **What actually gets stored**: `claimedAreas.polygon` is a MultiPolygon-with-holes — an
   area can be more than one disconnected piece after a steal splits it, and/or have a hole
   where someone carved out its middle. Firestore disallows directly-nested arrays, so it's
   encoded as an array of `{outer, holes}` maps rather than raw rings (mirrors why
   `closedLoops` wraps points in `{points: [...]}`). `claimedAreas.contributions` is a
-  capped (10, newest first) list of `{sessionId, durationMs, avgPaceMinPerKm,
-  conquestDate}` — every run that contributed *current* ground to that area, not just the
-  original one, because merges concatenate contribution lists and splits duplicate them
-  onto both resulting pieces (there's no way to attribute a specific sub-region of a
-  geometric split back to one contributing run, and duplicating is actually correct here,
-  not a shortcut — the intent, per the project owner, is future "save another user's run
-  as a route to try yourself" functionality, where seeing the same run listed on both
-  fragments it helped build is exactly right). A steal that fully absorbs an area deletes
-  its contributions along with it — deliberately: the run itself is still safe in
-  `runningSessions`, only the *current-territory* record disappears, consistent with
-  `claimedAreas` being current state, not a history log (see below).
+  capped (10, newest first) list of `{sessionId, durationMs, avgPaceMinPerKm, conquestDate}`
+  — every run that contributed *current* ground to that area, not just the original one,
+  because merges concatenate contribution lists and splits duplicate them onto both
+  resulting pieces (there's no way to attribute a specific sub-region of a geometric split
+  back to one contributing run, and duplicating is actually correct here, not a shortcut).
+  Deliberately stays this lightweight — a run-detail page wanting the *whole* running
+  session (full path, real distance/area, not just the one loop that happened to claim this
+  area) reads the `runningSessions` doc directly by `sessionId` instead (see the run-session
+  detail page bullet below; an earlier version tried denormalizing loop-specific geometry
+  onto each contribution instead, which was reverted — see that bullet for why). A steal
+  that fully absorbs an area deletes its contributions along with it — deliberately: the run
+  itself is still safe in `runningSessions`, only the *current-territory* record disappears,
+  consistent with `claimedAreas` being current state, not a history log (see below).
 - **Areas are no longer create-once-immutable, which the client sync had to account for**:
   [lib/services/claimed_area_repository.dart](lib/services/claimed_area_repository.dart)'s incremental "what's new" check now
   queries `updatedAt` (bumped on every write, not just creation) instead of `createdAt`,
@@ -655,9 +885,72 @@ Keep this list current — update it whenever a feature moves between these buck
     `GeometryUtils.polygonAreaM2`), and the "built from N runs" contributions list
     described above (date/duration/avg pace per run). Duration/pace per contribution are
     denormalized from the originating `runningSessions` doc by the claim Cloud Function
-    rather than looked up live, because a user can't read another user's `runningSessions`
-    doc directly (see firestore.rules). Tap detection uses flutter_map's
-    `PolygonLayer.hitNotifier`/`Polygon.hitValue`, checked inside `MapOptions.onTap`.
+    rather than looked up live, so this list of up to 10 rows doesn't cost 10 separate
+    Firestore reads just to render (any signed-in user *can* read any `runningSessions` doc
+    now — see the run-session detail page bullet below for why — this denormalization is
+    purely a read-cost optimization at this point, not a workaround for restricted access).
+    Tap detection uses flutter_map's `PolygonLayer.hitNotifier`/`Polygon.hitValue`, checked
+    inside `MapOptions.onTap`.
+  - **Tapping a contribution row** opens [lib/screens/run_session_detail_page.dart](lib/screens/run_session_detail_page.dart)
+    (`RunSessionDetailPage`) — pushed from inside the still-open `AreaDetailsSheet`, so its
+    own back button (top-left, same circular-white-Material style as `RouteCreatePage`'s)
+    naturally reveals the sheet again on pop rather than needing any special "return to
+    caller" wiring. Shows the **whole running session**, not just the loop that happened to
+    claim the area it was reached from — a run can close a small loop partway through a much
+    longer route, so showing only that loop would misrepresent the session (e.g. a 10 km run
+    reading as a tiny few-hundred-metre shape) and left the start/finish pins effectively
+    stacked on top of each other, since a claimed *loop* by definition returns close to its
+    own start. Takes just a `sessionId` + `userId` (not the `AreaContribution` itself
+    anymore) and fetches the full `runningSessions` doc live via the new
+    `RunSessionRepository.fetchSessionById`, plus a `ProfileService.fetchUsername` lookup for
+    the header. **This needed loosening `firestore.rules`**: `runningSessions.read` used to
+    be self-owner-only; it's now `if isSignedIn()`, same as `claimedAreas`/`profiles` — a
+    deliberate exposure (see the rule's own comment), not an oversight. Read access lets any
+    signed-in user see another user's full GPS path and copy it into a new route of their
+    own; it does not let them edit, delete, or claim credit for someone else's run, so it
+    doesn't touch this collection's actual trust boundary (writes — see
+    `serverOnlyRunFields`). An earlier version avoided this by denormalizing loop-specific
+    geometry (`distanceMeters`/`areaM2`/`loopPoints`) onto each `AreaContribution` instead
+    (a Cloud Function change) — reverted once it became clear that mixed whole-session stats
+    (duration/pace, denormalized since day one) with loop-only geometry, which is exactly
+    what produced both bugs above; fetching the real session directly is both simpler and
+    correct. Shows the runner's username, a preview of the run's whole path (only when
+    `path.length >= 2`), and distance/time/avg speed/area-conquered stat pills
+    (`GeometryUtils.formatAreaKm2` for the area, which now reads `RunSession.totalAreaM2` —
+    the session's total claimed area across every loop it closed, not one loop's area). The
+    map preview (`_RunPathPreviewMap`) starts locked/small (`InteractiveFlag.none`, 200px)
+    and, via a round toggle button in its corner (same `Material`/`InkWell` circular-white
+    shape as `RouteCreatePage._RoundMapButton`), expands in place — not a full-page takeover
+    like `RunTrackingPage`'s own map expansion — to a genuinely pannable/zoomable size
+    (`InteractiveFlag.all & ~InteractiveFlag.rotate`, height clamped to 55% of screen
+    height). `MapOptions.initialCameraFit` only ever applies on first build, so
+    `AnimatedContainer.onEnd` re-fits the camera (`MapController.fitCamera`) once the resize
+    animation actually finishes, rather than just revealing more surrounding map at the old
+    zoom. Renders as a plain polyline with **no fill** — unlike a claimed loop, a whole run's
+    path isn't guaranteed to be a simple closed shape (it might never return near its start
+    at all), and `Polygon` always draws closed, auto-connecting its last point back to its
+    first, which could render a nonsensical self-intersecting fill for an ordinary
+    point-to-point run. Shows a start pin and a finish pin (the literal checkered-flag
+    Material icon, `Icons.sports_score`) at the path's first/last point — genuinely distinct
+    locations for a typical run, unlike the old loop-only view — plus a handful of small
+    rotated arrow icons along the line — `GeometryUtils.arrowPositions`/`bearingDegrees`, pure
+    helpers alongside its other geometry functions, space arrows evenly by *cumulative
+    distance* along the polyline (not vertex index, since a breadcrumb trail is never evenly
+    sampled) and compute the local direction-of-travel bearing at each, so a viewer can tell
+    which way the run actually went. A right-aligned **favourite button**
+    ([lib/services/favorite_route_repository.dart](lib/services/favorite_route_repository.dart), `FavoriteRouteRepository`) publishes the
+    *whole session's* path as a new `routes` doc — owned by the *viewer*, not the original
+    runner, tagged with `sourceSessionId`, `isLoop: session.loopsCompleted > 0`, and the
+    session's real observed `estimatedTimeMin`/`estimatedCalories` rather than distance-based
+    estimates (we actually know them here) — via the existing `RouteRepository.publishRoute`
+    (now returns the new doc's id, and takes an optional `sourceSessionId`), then links it
+    with a `favoriteRoutes` doc; un-favouriting deletes both, in that order (link first, then
+    the route — an interrupted delete should leave an orphaned-but-harmless route rather
+    than a `favoriteRoutes` doc pointing at nothing). "Already favourited?" is resolved on
+    page load by matching `sourceSessionId` against `RouteRepository.fetchUserRoutes()`'s
+    already-cached list rather than a new query/index (same "filter an already-small
+    client-side result" preference as that repository's own `fetchUserRoutes`). Disabled,
+    with an explanatory caption, on the (now rare) case of a session with no recorded path.
 - Each `runningSessions` doc records a best-effort `startLocality` — the raw reverse-geocoded
   place name (e.g. "Seregno") of the run's starting point, via Nominatim in
   [lib/services/run_session_repository.dart](lib/services/run_session_repository.dart) — and the claim Cloud Function copies it
@@ -681,10 +974,11 @@ Keep this list current — update it whenever a feature moves between these buck
 
 **Designed in Firestore rules but NOT yet built in the Flutter app** (i.e. the security
 rules anticipate these collections — `runningSessions`, `claimedAreas`, `userStats`,
-`notifications`, `favoriteRoutes`, `follows` — but there is little/no client code reading
-or writing them yet, except `runningSessions` writes as of the run-tracking screen and
-`claimedAreas` writes as of the claim Cloud Function above). Treat these as the next
-major milestones:
+`notifications`, `follows` — but there is little/no client code reading or writing them
+yet, except `runningSessions` writes as of the run-tracking screen and `claimedAreas`
+writes as of the claim Cloud Function above). `favoriteRoutes` is no longer in this bucket
+— see the run-session detail page bullet below. Treat the rest as the next major
+milestones:
 - Champion re-timing: re-running the same loop *faster* than whoever currently holds it,
   without necessarily overwriting their territory. Spatial overlap — a new loop's ground
   taking over someone else's claimed area — **is** now handled (see "Area claiming,
@@ -747,7 +1041,13 @@ See [firestore.rules](firestore.rules) for the authoritative, enforced version o
 - `nicknames/{nickname}` — uniqueness index; doc ID is the nickname itself, value holds
   the owning `uid`.
 - `routes/{routeId}` — owned by `userId`; geometry (`routePolyline`, `waypoints`,
-  `distanceMeters`) is immutable after create, only name/visibility can be updated.
+  `distanceMeters`) is immutable after create, only name/visibility can be updated. An
+  optional `sourceSessionId` marks a route created by favouriting a run from its detail
+  page (see [lib/services/favorite_route_repository.dart](lib/services/favorite_route_repository.dart)) rather than drawn/planned by
+  hand — used to detect "have I already favourited this session" client-side.
+- `favoriteRoutes/{uid}_{routeId}` — `{userId, routeId}`; owner may create/delete, no
+  update. Currently written only by the favourite-a-run-as-a-route flow (see below), always
+  paired 1:1 with a `routes` doc carrying the same `routeId` and a `sourceSessionId`.
 - `claimedAreas/{areaId}` — doc ID is `{sessionId}_{loopIndex}` of whichever run most
   recently created or absorbed it (an area's ID can outlive the specific run it's named
   after, once merges/steals touch it). `create`/`update` are both `if false` for the
@@ -755,15 +1055,19 @@ See [firestore.rules](firestore.rules) for the authoritative, enforced version o
   this collection — and unlike most collections in this app, it does *update* existing
   docs in place (shrinking/reshaping them on a steal), not just create new ones. Fields:
   `userId`, `polygon` (MultiPolygon-with-holes, see "What actually gets stored" above),
-  `contributions` (capped list of `{sessionId, durationMs, avgPaceMinPerKm, conquestDate}`
-  — every run that built current ground into this area), `startLocality` (nullable),
+  `contributions` (capped list of `{sessionId, durationMs, avgPaceMinPerKm, distanceMeters,
+  areaM2, loopPoints, conquestDate}` — every run that built current ground into this area),
+  `startLocality` (nullable),
   `geohash` (spatial index for the claim function's own candidate queries — see above),
   `createdAt`/`updatedAt` (client sync now keys off `updatedAt`, not `createdAt`, since
   areas mutate), `deleted` (tombstone flag; a client-visible "gone" signal in place of an
   actual delete, which a client with a stale cache would have no way to detect). No
   `colorHex` — display color is viewer-relative (mine vs. not), computed client-side, not
   a property of the area. Owner may still `delete`.
-- `runningSessions/{sessionId}` — created by the client with `pointsEarned == 0`; only a
+- `runningSessions/{sessionId}` — readable by any signed-in user, not just its owner (a
+  deliberate exposure so a run-detail page can show another user's whole session and copy
+  it into a new route — see that bullet above; this doesn't loosen anything about who may
+  *write* it). Created by the client with `pointsEarned == 0`; only a
   server process may ever change `pointsEarned`. Also carries `closedLoops` (array of
   `{'points': [...]}` maps), the full breadcrumb `path` (array of GeoPoints — `path[0]` is
   the run's real start point, what territory resolution keys off), and a best-effort
@@ -776,9 +1080,9 @@ See [firestore.rules](firestore.rules) for the authoritative, enforced version o
   territory" above).
 - `userStats/{uid}` — fully read-only from the client; only Cloud Functions (Admin SDK)
   write it.
-- `favoriteRoutes/{uid_routeId}`, `follows/{followId}`, `notifications/{id}` — mostly
-  self-explanatory ownership rules; notifications can only be created server-side, the
-  recipient may only toggle `isRead`/`readAt`.
+- `follows/{followId}`, `notifications/{id}` — mostly self-explanatory ownership rules;
+  notifications can only be created server-side, the recipient may only toggle
+  `isRead`/`readAt`.
 
 When adding a new collection or field, add matching rules in `firestore.rules` in the
 same change — don't rely on "we'll lock it down later".

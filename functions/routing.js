@@ -2,8 +2,11 @@
 //
 // Two callables live here:
 //
-//  - `orsRoute` — the original thin proxy for point-to-point OpenRouteService
-//    (ORS) foot-walking requests. Why it exists: RoutingService used to embed
+//  - `orsRoute` — the original thin proxy for OpenRouteService (ORS)
+//    foot-walking requests: point-to-point (GET), alternatives (POST), and
+//    native round trips (POST with `options.round_trip` — see
+//    fetchRoundTrip, used by route search's closed-circuit generation).
+//    Why it exists: RoutingService used to embed
 //    the ORS API key directly in the compiled Dart app (a trivially-
 //    extractable, shared-quota secret — see CLAUDE.md's "Known security
 //    debt"). This callable moves the key behind Cloud Functions, where it's
@@ -44,7 +47,23 @@ const {onCall, HttpsError} = require('firebase-functions/v2/https');
 const {defineSecret} = require('firebase-functions/params');
 
 const ORS_API_KEY = defineSecret('ORS_API_KEY');
+// `fetchRoute`/`fetchAlternatives` (the `orsRoute` callable's two modes,
+// used by both route creation and route search) both wait up to this long
+// for ORS before giving up. IMPORTANT: the CLIENT-side callable timeouts in
+// lib/services/routing_service.dart (`fetchRoute`/`fetchAlternatives`'s own
+// `HttpsCallableOptions(timeout: ...)`) must stay comfortably ABOVE this
+// value. If the client gives up first, it throws before this function ever
+// gets a chance to return a real (if slow) result — the client then treats
+// that timeout identically to "ORS found no route", which is
+// indistinguishable from a genuine failure and was the root cause of
+// closed-circuit route search failing outright on longer legs (worked at
+// ~3 km, returned nothing at 10 km) while looking like an algorithm bug.
 const ORS_TIMEOUT_MS = 12000;
+
+// Public-API cap on `options.round_trip.length` — the "Distance
+// (alternative & round trip)" limit on openrouteservice.org/restrictions
+// is 100 km. Requests above it would only burn quota on a guaranteed 4xx.
+const ORS_MAX_ROUND_TRIP_METERS = 100000;
 
 // ── matchDrawnPath tunables ──────────────────────────────────────────────────
 
@@ -511,17 +530,47 @@ exports.orsRoute = onCall(
 
     const data = request.data || {};
     const {origin, destination, mode} = data;
-    if (
-      !origin || !destination ||
-      !isValidLatLng(origin.lat, origin.lng) ||
-      !isValidLatLng(destination.lat, destination.lng)
-    ) {
+    if (!origin || !isValidLatLng(origin.lat, origin.lng)) {
+      throw new HttpsError('invalid-argument', 'origin lat/lng required.');
+    }
+    // A round trip starts and ends at `origin` — there is no destination
+    // to validate. Every other mode still requires one.
+    if (mode !== 'round_trip' &&
+        (!destination || !isValidLatLng(destination.lat, destination.lng))) {
       throw new HttpsError('invalid-argument', 'origin/destination lat/lng required.');
+    }
+
+    // Round-trip parameters are validated OUTSIDE the try below on
+    // purpose: the catch wraps everything in HttpsError('unavailable'),
+    // which would mislabel a malformed request as a network failure.
+    let roundTrip = null;
+    if (mode === 'round_trip') {
+      const lengthMeters = Number(data.lengthMeters);
+      if (!Number.isFinite(lengthMeters) || lengthMeters <= 0 ||
+          lengthMeters > ORS_MAX_ROUND_TRIP_METERS) {
+        throw new HttpsError(
+          'invalid-argument',
+          `lengthMeters: number in (0, ${ORS_MAX_ROUND_TRIP_METERS}] required.`);
+      }
+      roundTrip = {
+        lengthMeters,
+        // ORS: "larger values create more circular routes". Clamped to a
+        // sane band; 5 is a good default for running loops.
+        points: Number.isInteger(data.points)
+          ? Math.min(Math.max(data.points, 2), 10)
+          : 5,
+        seed: Number.isInteger(data.seed) ? data.seed : 0,
+      };
     }
 
     const apiKey = ORS_API_KEY.value();
 
     try {
+      if (roundTrip) {
+        return await fetchRoundTrip(
+          apiKey, origin, roundTrip.lengthMeters, roundTrip.points,
+          roundTrip.seed);
+      }
       if (mode === 'alternatives') {
         const targetCount = Number.isInteger(data.targetCount) ? data.targetCount : 3;
         return await fetchAlternatives(apiKey, origin, destination, targetCount);
@@ -582,6 +631,62 @@ async function fetchAlternatives(apiKey, origin, destination, targetCount) {
   logUpstream('ors-directions-alternatives', {
     status: response.status,
     ms: Date.now() - started,
+    rateLimitRemaining: response.headers.get('x-ratelimit-remaining'),
+    rateLimitReset: response.headers.get('x-ratelimit-reset'),
+  });
+  return {status: response.status, body: responseBody};
+}
+
+/**
+ * ORS's native round-trip generation: POST /geojson with a SINGLE
+ * coordinate pair plus `options.round_trip` — the routing engine itself
+ * grows a closed foot-walking loop of roughly `lengthMeters` out of the
+ * real road network. One upstream call replaces the whole chain of
+ * guessed point-to-point legs route search used to fire per candidate
+ * loop, and the result can't strand across rivers/highways the way a
+ * synthetic offset waypoint could. ORS documents `length` as a preferred
+ * value, not a guarantee — the client re-requests with a scaled length
+ * (same `seed`, so the loop keeps its overall direction) when a result
+ * misses its tolerance. Same verbatim {status, body} forwarding as the
+ * other two orsRoute modes: the client owns parsing and 429/403 handling.
+ * @param {string} apiKey
+ * @param {{lat: number, lng: number}} origin loop start & end.
+ * @param {number} lengthMeters preferred loop length.
+ * @param {number} points how circular the loop is (higher = rounder).
+ * @param {number} seed varies the loop's overall direction.
+ * @return {Promise<{status: number, body: Object}>}
+ */
+async function fetchRoundTrip(apiKey, origin, lengthMeters, points, seed) {
+  const uri = 'https://api.openrouteservice.org/v2/directions/foot-walking/geojson';
+  const body = JSON.stringify({
+    coordinates: [[origin.lng, origin.lat]],
+    options: {
+      round_trip: {
+        length: Math.round(lengthMeters),
+        points,
+        seed,
+      },
+    },
+    instructions: false,
+  });
+
+  const started = Date.now();
+  const response = await fetchWithTimeout(uri, {
+    method: 'POST',
+    headers: {
+      'Authorization': apiKey,
+      'Content-Type': 'application/json; charset=UTF-8',
+      'Accept': 'application/json, application/geo+json',
+    },
+    body,
+  }, ORS_TIMEOUT_MS);
+  const responseBody = await response.json().catch(() => null);
+  logUpstream('ors-directions-roundtrip', {
+    status: response.status,
+    ms: Date.now() - started,
+    lengthMeters: Math.round(lengthMeters),
+    points,
+    seed,
     rateLimitRemaining: response.headers.get('x-ratelimit-remaining'),
     rateLimitReset: response.headers.get('x-ratelimit-reset'),
   });

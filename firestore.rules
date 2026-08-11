@@ -120,7 +120,17 @@ service cloud.firestore {
                 'xpFromStolenArea', 'pointsProcessed'];
       }
 
-      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      // Any signed-in user may read any session — not just its owner. This
+      // is a deliberate exposure, not an oversight: a run's full GPS path
+      // becomes visible to other users so a run-detail page (reached via a
+      // claimed area's "built from N runs" list) can show the *whole*
+      // running session it came from, and so a user can copy it into a new
+      // `routes` doc of their own to re-run later. Read access alone
+      // doesn't let anyone edit, delete, or claim credit for someone else's
+      // run — this collection's trust boundary was always about writes
+      // (see `serverOnlyRunFields`/`create`/`update` below), which this
+      // doesn't touch.
+      allow read: if isSignedIn();
       allow create: if isSignedIn()
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.pointsEarned == 0

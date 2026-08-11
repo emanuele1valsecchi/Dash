@@ -31,6 +31,13 @@ class RunSession {
   final List<LatLng> path;
   final DateTime createdAt;
 
+  /// Total area claimed across every loop this session closed — written by
+  /// `onRunningSessionCreateClaimedAreas` (see "XP/points and scoreboard
+  /// territory" in CLAUDE.md), server-only on the client (`firestore.rules`'
+  /// `serverOnlyRunFields`). 0 for a session with no closed loops, or one
+  /// whose points/territory haven't finished processing yet.
+  final double totalAreaM2;
+
   const RunSession({
     required this.id,
     required this.name,
@@ -43,9 +50,13 @@ class RunSession {
     required this.loopsCompleted,
     required this.path,
     required this.createdAt,
+    required this.totalAreaM2,
   });
 
-  factory RunSession.fromDoc(QueryDocumentSnapshot doc) {
+  /// [DocumentSnapshot] rather than the narrower [QueryDocumentSnapshot], so
+  /// this also works for a single-doc `fetchSessionById` lookup, not only
+  /// results from a `.where()` query (`fetchUserSessions`).
+  factory RunSession.fromDoc(DocumentSnapshot doc) {
     final d = doc.data() as Map<String, dynamic>;
 
     final rawPath = (d['path'] as List<dynamic>?) ?? [];
@@ -68,6 +79,7 @@ class RunSession {
       createdAt: d['createdAt'] != null
           ? (d['createdAt'] as Timestamp).toDate()
           : DateTime.now(),
+      totalAreaM2: (d['totalAreaM2'] as num?)?.toDouble() ?? 0.0,
     );
   }
 }
@@ -170,5 +182,20 @@ class RunSessionRepository {
     final list = snap.docs.map(RunSession.fromDoc).toList()
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     return list;
+  }
+
+  /// Fetches a single run by id, regardless of who owns it — used by
+  /// `RunSessionDetailPage` to show another user's *whole* session (its
+  /// complete GPS path and real stats, not just the one loop that happened
+  /// to claim a given area), now that firestore.rules allows any signed-in
+  /// user to read any `runningSessions` doc. A plain one-time read, not
+  /// cached — unlike `fetchUserSessions`, this fetches an arbitrary other
+  /// user's session on demand, not something worth keeping a warm
+  /// current-user cache of. Returns null if the session doesn't exist
+  /// (e.g. deleted).
+  Future<RunSession?> fetchSessionById(String sessionId) async {
+    final doc = await _db.collection('runningSessions').doc(sessionId).get();
+    if (!doc.exists) return null;
+    return RunSession.fromDoc(doc);
   }
 }
