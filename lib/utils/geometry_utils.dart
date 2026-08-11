@@ -238,4 +238,60 @@ class GeometryUtils {
       axis(p0.longitude, p1.longitude, p2.longitude, p3.longitude),
     );
   }
+
+  /// Initial compass bearing (0°=north, 90°=east, increasing clockwise)
+  /// travelling from [from] to [to] — the standard great-circle bearing
+  /// formula.
+  static double bearingDegrees(LatLng from, LatLng to) {
+    final lat1 = from.latitude * pi / 180;
+    final lat2 = to.latitude * pi / 180;
+    final dLng = (to.longitude - from.longitude) * pi / 180;
+    final y = sin(dLng) * cos(lat2);
+    final x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLng);
+    return (atan2(y, x) * 180 / pi + 360) % 360;
+  }
+
+  /// [count] points evenly spaced along [path] by *cumulative distance*
+  /// (not vertex index — a GPS breadcrumb trail or road-snapped polyline is
+  /// never evenly sampled), each paired with the local direction-of-travel
+  /// bearing there. Used to place directional arrow markers along a route
+  /// so a viewer can tell which way it was run, not just where it starts
+  /// and ends. Spacing skips both of [path]'s own endpoints (`k` runs
+  /// `1..count` against `count + 1` equal spans) since those typically
+  /// already have their own start/finish markers.
+  static List<({LatLng point, double bearingDegrees})> arrowPositions(
+    List<LatLng> path, {
+    required int count,
+  }) {
+    if (path.length < 2 || count <= 0) return const [];
+    const dist = Distance();
+
+    final cumulative = <double>[0];
+    for (int i = 1; i < path.length; i++) {
+      cumulative.add(cumulative.last + dist(path[i - 1], path[i]));
+    }
+    final total = cumulative.last;
+    if (total <= 0) return const [];
+
+    final result = <({LatLng point, double bearingDegrees})>[];
+    for (int k = 1; k <= count; k++) {
+      final target = total * k / (count + 1);
+      int seg = 1;
+      while (seg < cumulative.length - 1 && cumulative[seg] < target) {
+        seg++;
+      }
+      final segStart = path[seg - 1];
+      final segEnd = path[seg];
+      final segLen = cumulative[seg] - cumulative[seg - 1];
+      final t = segLen > 0 ? (target - cumulative[seg - 1]) / segLen : 0.0;
+      result.add((
+        point: LatLng(
+          segStart.latitude + (segEnd.latitude - segStart.latitude) * t,
+          segStart.longitude + (segEnd.longitude - segStart.longitude) * t,
+        ),
+        bearingDegrees: bearingDegrees(segStart, segEnd),
+      ));
+    }
+    return result;
+  }
 }

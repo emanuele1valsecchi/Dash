@@ -32,6 +32,19 @@ class AreaPolygonPiece {
 /// territory) combines both runs' contribution lists rather than replacing
 /// one with the other — kept mainly so a user can see, and later re-run,
 /// whichever of their past routes built up a given area.
+///
+/// Every contribution in a given [ClaimedArea.contributions] list was made
+/// by that same area's own [ClaimedArea.userId] — the claim Cloud Function
+/// only ever merges another area's contribution list into a new claim when
+/// that area's owner matches the claiming user (see `computeClaim` in
+/// functions/geo.js), so there's no separate per-contribution runner to
+/// track here.
+///
+/// Deliberately just this much — a run-detail page wanting the *whole*
+/// running session (full path, real distance/area/etc., not just the one
+/// loop that happened to claim this area) reads the `runningSessions` doc
+/// itself via `sessionId` (any signed-in user may read any session — see
+/// firestore.rules), rather than this getting re-denormalized here again.
 class AreaContribution {
   final String sessionId;
   final int durationMs;

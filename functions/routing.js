@@ -44,6 +44,17 @@ const {onCall, HttpsError} = require('firebase-functions/v2/https');
 const {defineSecret} = require('firebase-functions/params');
 
 const ORS_API_KEY = defineSecret('ORS_API_KEY');
+// `fetchRoute`/`fetchAlternatives` (the `orsRoute` callable's two modes,
+// used by both route creation and route search) both wait up to this long
+// for ORS before giving up. IMPORTANT: the CLIENT-side callable timeouts in
+// lib/services/routing_service.dart (`fetchRoute`/`fetchAlternatives`'s own
+// `HttpsCallableOptions(timeout: ...)`) must stay comfortably ABOVE this
+// value. If the client gives up first, it throws before this function ever
+// gets a chance to return a real (if slow) result — the client then treats
+// that timeout identically to "ORS found no route", which is
+// indistinguishable from a genuine failure and was the root cause of
+// closed-circuit route search failing outright on longer legs (worked at
+// ~3 km, returned nothing at 10 km) while looking like an algorithm bug.
 const ORS_TIMEOUT_MS = 12000;
 
 // ── matchDrawnPath tunables ──────────────────────────────────────────────────

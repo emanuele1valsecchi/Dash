@@ -14,6 +14,13 @@ class SavedRoute {
   final List<LatLng> routePolyline;
   final DateTime createdAt;
 
+  /// Set only for a route created by favouriting another (or the same)
+  /// user's run from its detail page (see `FavoriteRouteRepository`) — the
+  /// `runningSessions` id it was built from, used to detect "have I already
+  /// favourited this session" without a second collection needing its own
+  /// index.
+  final String? sourceSessionId;
+
   double get distanceKm => distanceMeters / 1000;
 
   const SavedRoute({
@@ -26,6 +33,7 @@ class SavedRoute {
     required this.loopAreaM2,
     required this.routePolyline,
     required this.createdAt,
+    this.sourceSessionId,
   });
 
   factory SavedRoute.fromDoc(QueryDocumentSnapshot doc) {
@@ -52,6 +60,7 @@ class SavedRoute {
       createdAt: d['createdAt'] != null
           ? (d['createdAt'] as Timestamp).toDate()
           : DateTime.now(),
+      sourceSessionId: d['sourceSessionId'] as String?,
     );
   }
 }
@@ -76,12 +85,16 @@ class RouteRepository {
 
   String get _uid => _auth.currentUser!.uid;
 
-  /// Saves a new route document and invalidates the local cache.
+  /// Saves a new route document and invalidates the local cache. Returns the
+  /// new document's id (e.g. for `FavoriteRouteRepository` to link a
+  /// `favoriteRoutes` doc to it).
   ///
   /// [waypoints] are the raw user tap-points; [routePolyline] is the merged
   /// road-snapped polyline built from all segments.  Firestore rules protect
-  /// both fields from client-side mutation after creation.
-  Future<void> publishRoute({
+  /// both fields from client-side mutation after creation. [sourceSessionId],
+  /// when set, marks this route as having been created by favouriting a run
+  /// (see `SavedRoute.sourceSessionId`) rather than drawn/planned by hand.
+  Future<String> publishRoute({
     required String name,
     required List<LatLng> waypoints,
     required List<LatLng> routePolyline,
@@ -90,8 +103,9 @@ class RouteRepository {
     required double estimatedCalories,
     required bool isLoop,
     required double loopAreaM2,
+    String? sourceSessionId,
   }) async {
-    await _db.collection('routes').add({
+    final doc = await _db.collection('routes').add({
       'userId': _uid,
       'name': name.trim().isEmpty ? 'Unnamed route' : name.trim(),
       'waypoints':
@@ -105,8 +119,10 @@ class RouteRepository {
       'loopAreaM2': loopAreaM2,
       'isPublic': false,
       'createdAt': FieldValue.serverTimestamp(),
+      if (sourceSessionId != null) 'sourceSessionId': sourceSessionId,
     });
     _cache = null;
+    return doc.id;
   }
 
   /// Returns the current user's routes, newest first.

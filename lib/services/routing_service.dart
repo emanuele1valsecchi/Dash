@@ -102,6 +102,21 @@ class RoutingService {
   static Map<String, dynamic> _asStringMap(dynamic v) =>
       Map<String, dynamic>.from(v as Map);
 
+  /// Client-side callable timeout for a single `orsRoute` call (either
+  /// mode). Must stay comfortably above the Cloud Function's own
+  /// server-side fetch timeout (`ORS_TIMEOUT_MS` = 12s in
+  /// functions/routing.js) — otherwise the client gives up and throws
+  /// *before* the function itself would, and that gets treated identically
+  /// to an ordinary routing failure (no route found), not a timeout. This
+  /// was previously 10s for `fetchRoute` (below the server's 12s) and 12s
+  /// for `fetchAlternatives` (right at the edge) — both a race the client
+  /// could lose on any call that took ORS a little longer than usual,
+  /// which is more likely for longer legs. 18s leaves ~6s of margin over
+  /// the server's own timeout for Cloud Function invocation overhead
+  /// (cold starts, etc.), while still being short enough that a genuinely
+  /// unreachable service fails within a reasonable UX budget.
+  static const Duration _callTimeout = Duration(seconds: 18);
+
   /// [throwOnRateLimit] makes an HTTP 429 throw [RoutingRateLimitedException]
   /// instead of just returning null — off by default so existing callers
   /// (single-tap pin placement, pin deletion, snap-to-close) keep their
@@ -113,7 +128,7 @@ class RoutingService {
     try {
       final callable = _functions.httpsCallable(
         'orsRoute',
-        options: HttpsCallableOptions(timeout: const Duration(seconds: 10)),
+        options: HttpsCallableOptions(timeout: _callTimeout),
       );
       final result = await callable.call(<String, dynamic>{
         'origin': {'lat': origin.latitude, 'lng': origin.longitude},
@@ -176,17 +191,29 @@ class RoutingService {
   /// via the same `orsRoute` proxy (its POST/geojson mode — the GET endpoint
   /// does not support alternatives).
   ///
-  /// Returns a non-empty list; falls back to a single straight-line segment
-  /// if the network or API is unreachable.
+  /// By default, returns a non-empty list, falling back to a single
+  /// straight-line segment if the network or API is unreachable — this is
+  /// the original contract, preserved for any future caller that just wants
+  /// *something* to draw. [throwOnRateLimit]/[allowStraightLineFallback]
+  /// (both opt-in, mirroring [fetchRoute]'s own `throwOnRateLimit`) let a
+  /// caller that's about to filter/present these as vetted results — route
+  /// search, not route creation — tell a real HTTP 429 apart from an
+  /// ordinary failure, and refuse the straight-line fallback outright so a
+  /// failure can never be mistaken for a genuine road-snapped alternative.
   static Future<List<RouteSegment>> fetchAlternatives(
     LatLng origin,
     LatLng destination, {
     int targetCount = 3,
+    bool throwOnRateLimit = false,
+    bool allowStraightLineFallback = true,
   }) async {
+    List<RouteSegment> fallback() =>
+        allowStraightLineFallback ? [straightLine(origin, destination)] : [];
+
     try {
       final callable = _functions.httpsCallable(
         'orsRoute',
-        options: HttpsCallableOptions(timeout: const Duration(seconds: 12)),
+        options: HttpsCallableOptions(timeout: _callTimeout),
       );
       final result = await callable.call(<String, dynamic>{
         'origin': {'lat': origin.latitude, 'lng': origin.longitude},
@@ -198,12 +225,20 @@ class RoutingService {
       final data = _asStringMap(result.data);
       final statusCode = data['status'] as int;
       if (statusCode != 200) {
-        return [straightLine(origin, destination)];
+        debugPrint(
+          'RoutingService.fetchAlternatives: HTTP $statusCode for '
+          '(${origin.latitude},${origin.longitude}) -> '
+          '(${destination.latitude},${destination.longitude})',
+        );
+        if (throwOnRateLimit && statusCode == 429) {
+          throw const RoutingRateLimitedException();
+        }
+        return fallback();
       }
 
       final json = _asStringMap(data['body']);
       final features = json['features'] as List<dynamic>;
-      if (features.isEmpty) return [straightLine(origin, destination)];
+      if (features.isEmpty) return fallback();
 
       return features.map((f) {
         final feature = _asStringMap(f);
@@ -220,8 +255,15 @@ class RoutingService {
             .toList();
         return RouteSegment(polyline: poly, distanceMeters: dist);
       }).toList();
-    } catch (_) {
-      return [straightLine(origin, destination)];
+    } on RoutingRateLimitedException {
+      rethrow;
+    } catch (e) {
+      debugPrint(
+        'RoutingService.fetchAlternatives: $e for '
+        '(${origin.latitude},${origin.longitude}) -> '
+        '(${destination.latitude},${destination.longitude})',
+      );
+      return fallback();
     }
   }
 
