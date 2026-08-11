@@ -57,15 +57,15 @@ class StartRunOverlay extends StatelessWidget {
                 GestureDetector(
                   onTap: onClose,
                   child: Container(
-                    width: 66,
-                    height: 66,
+                    width: 54,
+                    height: 54,
                     decoration: const BoxDecoration(
                       shape: BoxShape.circle,
                       color: Color(0xFFCAF0B8),
                     ),
                     child: const Icon(
                       Icons.close,
-                      size: 34,
+                      size: 28,
                       color: Color(0xFF425143),
                     ),
                   ),

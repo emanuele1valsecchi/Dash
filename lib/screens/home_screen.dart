@@ -447,11 +447,14 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _searchRoute() {
+  Future<void> _searchRoute() async {
     setState(() => _showRunOverlay = false);
-    Navigator.of(context).push(
+    final runRoute = await Navigator.of(context).push<List<LatLng>>(
       MaterialPageRoute(builder: (_) => const RouteSearchPage()),
     );
+    if (runRoute != null && mounted) {
+      await _pushRunTracking(plannedRoute: runRoute);
+    }
   }
 
   Future<void> _createRoute() async {

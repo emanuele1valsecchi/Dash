@@ -28,8 +28,9 @@ class ExplorePage extends StatefulWidget {
   State<ExplorePage> createState() => _ExplorePageState();
 }
 
-class _ExplorePageState extends State<ExplorePage> {
+class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin {
   final MapController _mapController = MapController();
+  bool _isCameraAnimating = false;
 
   // ── Location ──────────────────────────────────────────────────────────────
   LatLng? _currentPosition;
@@ -110,9 +111,54 @@ class _ExplorePageState extends State<ExplorePage> {
   }
 
   void _centerOnUser() {
-    if (_currentPosition != null) {
-      _mapController.move(_currentPosition!, _defaultZoom);
-      _updateCityForCurrentLocation(_currentPosition!);
+    final pos = _currentPosition;
+    if (pos != null) {
+      _animateCameraTo(pos, _defaultZoom);
+      _updateCityForCurrentLocation(pos);
+    }
+  }
+
+  /// Animates the camera to [targetCenter]/[targetZoom] over a short tween
+  /// instead of jumping instantly — same "my location" pan/zoom flourish as
+  /// `RunTrackingPage._centerOnUser`. flutter_map has no built-in animated
+  /// move, so this drives one manually: an [AnimationController] ticks a
+  /// lat/lng/zoom [Tween] and calls [MapController.move] each frame, then
+  /// disposes itself once the animation finishes.
+  Future<void> _animateCameraTo(LatLng targetCenter, double targetZoom) async {
+    if (_isCameraAnimating) return;
+    _isCameraAnimating = true;
+
+    final MapCamera camera;
+    try {
+      camera = _mapController.camera;
+    } catch (_) {
+      _isCameraAnimating = false;
+      return; // Map not attached yet.
+    }
+
+    final latTween = Tween<double>(begin: camera.center.latitude, end: targetCenter.latitude);
+    final lngTween = Tween<double>(begin: camera.center.longitude, end: targetCenter.longitude);
+    final zoomTween = Tween<double>(begin: camera.zoom, end: targetZoom);
+
+    final controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 650));
+    final curved = CurvedAnimation(parent: controller, curve: Curves.easeInOutCubic);
+
+    void tick() {
+      try {
+        _mapController.move(
+          LatLng(latTween.transform(curved.value), lngTween.transform(curved.value)),
+          zoomTween.transform(curved.value),
+        );
+      } catch (_) {}
+    }
+
+    controller.addListener(tick);
+    try {
+      await controller.forward();
+    } finally {
+      controller.removeListener(tick);
+      controller.dispose();
+      _isCameraAnimating = false;
     }
   }
 
