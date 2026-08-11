@@ -13,6 +13,7 @@ import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
 import '../services/place_search_service.dart';
+import '../services/route_repository.dart';
 import '../services/routing_service.dart';
 import '../utils/geometry_utils.dart';
 import '../widgets/map/area_visibility_toggle.dart';
@@ -51,6 +52,12 @@ class _FoundRoute {
 /// an intermediate stop.
 enum _PinTarget { start, destination, stop }
 
+/// What the user chose in `_RouteDetailsSheet` — returned as the modal
+/// bottom sheet's own pop result so the actual (async, page-level) handling
+/// happens in `_RouteSearchPageState`, not the sheet itself. Mirrors route
+/// creation's `_SaveAction`/`_showSaveOptionsDialog` pattern.
+enum _RouteSheetAction { save, runNow }
+
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 class RouteSearchPage extends StatefulWidget {
@@ -60,11 +67,12 @@ class RouteSearchPage extends StatefulWidget {
   State<RouteSearchPage> createState() => _RouteSearchPageState();
 }
 
-class _RouteSearchPageState extends State<RouteSearchPage> {
+class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderStateMixin {
   // ── Map ───────────────────────────────────────────────────────────────────
   final MapController _mapController = MapController();
   LatLng? _currentPosition;
   bool _isLoadingLocation = true;
+  bool _isCameraAnimating = false;
   StreamSubscription<LatLng>? _positionSub;
 
 
@@ -326,6 +334,17 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
       _stopLatLngs.any((ll) => ll != null) ||
       _stopCtrls.any((c) => c.text.trim().isNotEmpty);
 
+  /// Synchronous proxy for "will `_resolveDestination()` return anything" —
+  /// mirrors [_hasStopsEntered], used to gate advancing from the shape step
+  /// to the parameters step. Only meaningful for a direct A→B search: a
+  /// closed circuit has no destination field at all (it loops back to
+  /// `_buildStartSection`'s own point), so callers must also check
+  /// `_isClosedCircuit` themselves.
+  bool get _hasDestinationEntered =>
+      _useCurrentPositionAsDest ||
+      _destLatLng != null ||
+      _destCtrl.text.trim().isNotEmpty;
+
   // ── Constraint resolution ─────────────────────────────────────────────────
 
   ({bool isConflict, bool isEmpty, double? targetKm}) _deriveTarget() {
@@ -457,7 +476,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
       _formStep = 0;
     });
     if (_sheetController.isAttached) {
-      _sheetController.animateTo(_sheetMidSize,
+      _sheetController.animateTo(_sheetDefaultSize,
           duration: const Duration(milliseconds: 350), curve: Curves.easeOut);
     }
   }
@@ -1299,7 +1318,51 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
 
   void _centerOnUser() {
     if (_currentPosition != null) {
-      _mapController.move(_currentPosition!, _defaultZoom);
+      _animateCameraTo(_currentPosition!, _defaultZoom);
+    }
+  }
+
+  /// Animates the camera to [targetCenter]/[targetZoom] over a short tween
+  /// instead of jumping instantly — same "my location" pan/zoom flourish as
+  /// `RunTrackingPage._centerOnUser`. flutter_map has no built-in animated
+  /// move, so this drives one manually: an [AnimationController] ticks a
+  /// lat/lng/zoom [Tween] and calls [MapController.move] each frame, then
+  /// disposes itself once the animation finishes.
+  Future<void> _animateCameraTo(LatLng targetCenter, double targetZoom) async {
+    if (_isCameraAnimating) return;
+    _isCameraAnimating = true;
+
+    final MapCamera camera;
+    try {
+      camera = _mapController.camera;
+    } catch (_) {
+      _isCameraAnimating = false;
+      return; // Map not attached yet.
+    }
+
+    final latTween = Tween<double>(begin: camera.center.latitude, end: targetCenter.latitude);
+    final lngTween = Tween<double>(begin: camera.center.longitude, end: targetCenter.longitude);
+    final zoomTween = Tween<double>(begin: camera.zoom, end: targetZoom);
+
+    final controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 650));
+    final curved = CurvedAnimation(parent: controller, curve: Curves.easeInOutCubic);
+
+    void tick() {
+      try {
+        _mapController.move(
+          LatLng(latTween.transform(curved.value), lngTween.transform(curved.value)),
+          zoomTween.transform(curved.value),
+        );
+      } catch (_) {}
+    }
+
+    controller.addListener(tick);
+    try {
+      await controller.forward();
+    } finally {
+      controller.removeListener(tick);
+      controller.dispose();
+      _isCameraAnimating = false;
     }
   }
 
@@ -1328,7 +1391,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
       _pickingStopIndex = null;
     });
     if (_sheetController.isAttached) {
-      _sheetController.animateTo(_sheetMidSize,
+      _sheetController.animateTo(_sheetDefaultSize,
           duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
     }
   }
@@ -1348,7 +1411,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
       _pickingStopIndex = null;
     });
     if (_sheetController.isAttached) {
-      _sheetController.animateTo(_sheetMidSize,
+      _sheetController.animateTo(_sheetDefaultSize,
           duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
     }
 
@@ -1405,13 +1468,25 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   // the sheet directly from drag deltas on that non-scrollable region
   // instead, so grabbing the handle/header (not just the form content below)
   // resizes the sheet too.
-
+  //
+  // `initialChildSize` == `_sheetDefaultSize`, tuned to sit right at the
+  // bottom of the step's own content (the Next/Search button) with no drag
+  // needed and no dead space trailing below it — unlike `RouteCreatePage`'s
+  // sheet, this page's content is too variable (two steps of very different
+  // height, plus a variable number of stops) for `initialChildSize` to just
+  // equal `maxChildSize` the way that page's fixed-height sheet does: that
+  // was tried and left a large empty gap below the button on the shorter
+  // step. `_sheetMaxSize` stays as a separate, taller drag ceiling — reached
+  // by dragging up, not the default — for when a lot of stops are added and
+  // the form genuinely needs more room. Dragging *down* instead collapses to
+  // `_sheetMinSize` — just the handle/header, map fully visible below — used
+  // for pin-picking and to preview results on the map.
   static const double _sheetMinSize = 0.12;
-  static const double _sheetMidSize = 0.52;
+  static const double _sheetDefaultSize = 0.68;
   static const double _sheetMaxSize = 0.90;
   static const List<double> _sheetSnapSizes = [
     _sheetMinSize,
-    _sheetMidSize,
+    _sheetDefaultSize,
     _sheetMaxSize,
   ];
 
@@ -1488,16 +1563,59 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     );
   }
 
-  void _selectRoute(int index) {
+  Future<void> _selectRoute(int index) async {
     setState(() => _selectedRouteIndex = index);
-    showModalBottomSheet(
+    final route = _foundRoutes[index];
+    final action = await showModalBottomSheet<_RouteSheetAction>(
       context: context,
       backgroundColor: Colors.transparent,
       builder: (_) => _RouteDetailsSheet(
-        route: _foundRoutes[index],
+        route: route,
         routeNumber: index + 1,
       ),
     );
+    if (!mounted || action == null) return;
+
+    switch (action) {
+      case _RouteSheetAction.save:
+        await _saveRoute(route);
+      case _RouteSheetAction.runNow:
+        // Mirrors route creation's "Save route and Run": pop this whole page
+        // with the chosen route's polyline so the caller (HomeScreen) pushes
+        // RunTrackingPage with it as a guide line — same navigation shape,
+        // so finishing/discarding the run returns straight to the home
+        // screen rather than back into these search results.
+        Navigator.of(context).pop(route.polyline);
+    }
+  }
+
+  /// Publishes [route] to the signed-in user's saved routes (the `routes`
+  /// Firestore collection via `RouteRepository`, the same one route creation
+  /// writes to) — already shown (view/delete only, no run action yet) by
+  /// `TempProfilePage`'s "My Routes" list. A found route has no user-placed
+  /// waypoints of its own (it's generated, not tapped out by hand), so —
+  /// same convention `FavoriteRouteRepository` already uses for a
+  /// favourited run's whole path — [waypoints] is just the polyline again
+  /// rather than a separate, smaller point list.
+  Future<void> _saveRoute(_FoundRoute route) async {
+    final name = '${route.distanceKm.toStringAsFixed(1)} km '
+        '${_isClosedCircuit ? 'loop' : 'route'}';
+    try {
+      await RouteRepository.instance.publishRoute(
+        name: name,
+        waypoints: route.polyline,
+        routePolyline: route.polyline,
+        distanceMeters: route.distanceKm * 1000,
+        estimatedTimeMin: route.estimatedTimeMin,
+        estimatedCalories: route.estimatedCalories,
+        isLoop: _isClosedCircuit,
+        loopAreaM2:
+            _isClosedCircuit ? GeometryUtils.polygonAreaM2(route.polyline) : 0,
+      );
+      _snack('Route saved!');
+    } catch (e) {
+      _snack('Failed to save route: $e');
+    }
   }
 
   void _snack(String msg) {
@@ -1551,18 +1669,42 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
 
   // ── Build ─────────────────────────────────────────────────────────────────
 
+  /// The system/gesture back action, distinct from the always-exit on-screen
+  /// arrow (`_buildBackButton`) — mirrors whichever on-screen affordance
+  /// already does the equivalent step-back: results mode has no "step 0"
+  /// of its own to fall back to, so it gets the same reset "Edit search"
+  /// does; the parameters step (1) gets the same `_formStep = 0` its own
+  /// "Back" button does; only the shape step (0), with nowhere further back
+  /// to go within the page, actually exits it.
+  void _handleSystemBack() {
+    if (_isResultsMode) {
+      _enterEditMode();
+    } else if (_formStep == 1) {
+      setState(() => _formStep = 0);
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Stack(
-        children: [
-          _buildMap(),
-          if (_isLoadingLocation) _buildLoadingOverlay(),
-          _buildSheet(),
-          _buildBackButton(),
-          _buildMapButtons(),
-          _buildPinPickingBanner(),
-        ],
+    return PopScope(
+      canPop: _formStep == 0 && !_isResultsMode,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _handleSystemBack();
+      },
+      child: Scaffold(
+        body: Stack(
+          children: [
+            _buildMap(),
+            if (_isLoadingLocation) _buildLoadingOverlay(),
+            _buildSheet(),
+            _buildBackButton(),
+            _buildMapButtons(),
+            _buildPinPickingBanner(),
+          ],
+        ),
       ),
     );
   }
@@ -1793,7 +1935,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   Widget _buildSheet() {
     return DraggableScrollableSheet(
       controller: _sheetController,
-      initialChildSize: _sheetMidSize,
+      initialChildSize: _sheetDefaultSize,
       minChildSize: _sheetMinSize,
       maxChildSize: _sheetMaxSize,
       snap: true,
@@ -1932,12 +2074,14 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
       _buildCircuitToggle(),
       const SizedBox(height: 16),
       _buildStartSection(),
+      // Stops sit between start and destination — they're waypoints along
+      // the way, so this reads more naturally than destination-then-stops.
+      const SizedBox(height: 16),
+      _buildIntermediateStopSection(),
       if (!_isClosedCircuit) ...[
         const SizedBox(height: 16),
         _buildDestinationSection(),
       ],
-      const SizedBox(height: 16),
-      _buildIntermediateStopSection(),
       const SizedBox(height: 24),
       _buildShapeStepFooter(),
     ];
@@ -2029,6 +2173,10 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   Widget _buildDestinationSection() {
     return _FormSection(
       label: 'Destination',
+      // Advancing to the parameters step is gated on this (see
+      // `_buildShapeStepFooter`) — flag it here too, same treatment as the
+      // closed-circuit target's own "(required...)" note below.
+      note: _hasDestinationEntered ? null : '(required)',
       child: _useCurrentPositionAsDest
           ? _LocationChip(
               enabled: !_isResultsMode,
@@ -2218,15 +2366,20 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     );
   }
 
-  /// Step 1 (shape) footer — just advances to step 2, no validation here:
-  /// address/pin resolution is async, so the real checks (start resolvable,
-  /// destination resolvable, etc.) stay on the final Search button in step 2,
-  /// same as before this page had steps at all.
+  /// Step 1 (shape) footer — advances to step 2. Full address/pin
+  /// resolution is async, so the real checks (start resolvable, destination
+  /// resolvable, etc.) still stay on the final Search button in step 2 —
+  /// but a direct A→B search is meaningless with no destination at all, so
+  /// that much is checked synchronously here via `_hasDestinationEntered`
+  /// (a closed circuit has no destination field, so it's exempt).
   Widget _buildShapeStepFooter() {
+    final canAdvance = _isClosedCircuit || _hasDestinationEntered;
     return SizedBox(
       width: double.infinity,
       child: ElevatedButton.icon(
-        onPressed: _isResultsMode ? null : () => setState(() => _formStep = 1),
+        onPressed: (_isResultsMode || !canAdvance)
+            ? null
+            : () => setState(() => _formStep = 1),
         icon: const Icon(Icons.arrow_forward_rounded, size: 18),
         label: const Text('Next: parameters'),
         style: ElevatedButton.styleFrom(
@@ -2341,18 +2494,32 @@ extension _Let<T> on T {
 class _FormSection extends StatelessWidget {
   final String label;
   final Widget child;
-  const _FormSection({required this.label, required this.child});
+  /// Small orange annotation next to [label] (e.g. "(required)") — same
+  /// treatment as the closed-circuit target's own inline hint in
+  /// `_buildParametersSection`. Null shows nothing.
+  final String? note;
+  const _FormSection({required this.label, required this.child, this.note});
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label,
-            style: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: Color(0xFF5E655C))),
+        Row(
+          children: [
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF5E655C))),
+            if (note != null) ...[
+              const SizedBox(width: 6),
+              Text(note!,
+                  style:
+                      const TextStyle(fontSize: 11, color: Color(0xFFE65100))),
+            ],
+          ],
+        ),
         const SizedBox(height: 6),
         child,
       ],
@@ -2770,29 +2937,45 @@ class _RouteDetailsSheet extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 20),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: () {
-                // TODO: save route to user's favourites/profile in Firestore
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Save coming soon!')),
-                );
-              },
-              icon: const Icon(Icons.bookmark_border_rounded),
-              label: const Text('Save route'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFCAF0B8),
-                foregroundColor: const Color(0xFF2E7D32),
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-                textStyle: const TextStyle(
-                    fontWeight: FontWeight.w600, fontSize: 15),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () =>
+                      Navigator.pop(context, _RouteSheetAction.save),
+                  icon: const Icon(Icons.bookmark_border_rounded),
+                  label: const Text('Save route'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF2E7D32),
+                    side: const BorderSide(color: Color(0xFFCAF0B8), width: 1.5),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    textStyle: const TextStyle(
+                        fontWeight: FontWeight.w600, fontSize: 15),
+                  ),
+                ),
               ),
-            ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () =>
+                      Navigator.pop(context, _RouteSheetAction.runNow),
+                  icon: const Icon(Icons.directions_run_rounded),
+                  label: const Text('Run now'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFCAF0B8),
+                    foregroundColor: const Color(0xFF2E7D32),
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    textStyle: const TextStyle(
+                        fontWeight: FontWeight.w600, fontSize: 15),
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),

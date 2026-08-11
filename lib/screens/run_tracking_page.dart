@@ -78,10 +78,12 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   final MapController _previewMapController = MapController();
   static const double _previewZoom = 16.0;
 
-  /// Whether the map is auto-recentering on the runner. Turned off by the
-  /// "see whole path" button so the overview it animates to doesn't get
-  /// immediately overridden by the next GPS fix; the same button switches to
-  /// a "follow me" action to turn it back on.
+  /// Whether the map is auto-recentering on the runner. The map is freely
+  /// pannable/zoomable during a run (see [_buildMap]'s interactionOptions),
+  /// so any user-driven pan/zoom/rotate ([_handleMapPositionChanged]'s
+  /// `hasGesture`) turns this off — otherwise the next GPS fix would yank
+  /// the camera straight back. The "my location" round button
+  /// ([_centerOnUser]) turns it back on and animates back to the runner.
   bool _isFollowingUser = true;
   bool _isCameraAnimating = false;
 
@@ -107,10 +109,9 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
   // ── Water fountains (OpenStreetMap) ─────────────────────────────────────────
   // Fetched once at the runner's starting position — not refreshed as the
-  // run progresses, to avoid extra network/battery use mid-workout. Panning
-  // is disabled on this screen's map (see MapOptions.interactionOptions
-  // below), so unlike the other 3 map screens there's no viewport-fetch to
-  // wire up here — only the zoom-visibility half of the fountain UX applies.
+  // run progresses (even though the map is freely pannable, unlike the old
+  // pan-disabled version of this screen), to avoid extra network/battery use
+  // mid-workout — only the zoom-visibility half of the fountain UX applies.
   final WaterFountainService _waterFountainService = WaterFountainService.instance;
   List<WaterFountain> _waterFountains = [];
   // Starts true since _defaultZoom (18.0) is always well above
@@ -419,15 +420,23 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     if (altitude > _maxAltitude) _maxAltitude = altitude;
   }
 
-  /// Wired to `MapOptions.onPositionChanged`, purely to keep
-  /// [_fountainsVisible] in sync with the zoom threshold as the user
-  /// pinch-zooms (panning is disabled on this screen, so there's no
-  /// viewport-fetch trigger here, unlike the other 3 map screens). Only
-  /// `setState`s on an actual threshold crossing, not every zoom frame.
+  /// Wired to `MapOptions.onPositionChanged`. Keeps [_fountainsVisible] in
+  /// sync with the zoom threshold as the user zooms; only `setState`s on an
+  /// actual threshold crossing, not every zoom frame. Also drops
+  /// [_isFollowingUser] the moment the user drags/pinches the map themselves
+  /// (`hasGesture`) — every other camera move on this screen (the follow
+  /// tick in [_onDotTick], [_animateCameraTo]) goes through [MapController]
+  /// directly and reports `hasGesture: false`, so this only ever fires for a
+  /// real touch. No re-fetch on pan (unlike explore/route create/search):
+  /// fountains/areas are deliberately fetched once at run start to save
+  /// battery/network mid-workout — see the fields above.
   void _handleMapPositionChanged(MapCamera camera, bool hasGesture) {
     final visible = camera.zoom >= WaterFountainMarkerLayer.minZoomToShow;
     if (visible != _fountainsVisible) {
       setState(() => _fountainsVisible = visible);
+    }
+    if (hasGesture && _isFollowingUser) {
+      setState(() => _isFollowingUser = false);
     }
   }
 
@@ -632,7 +641,11 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
     if (_isMapExpanded && _isFollowingUser && !_isCameraAnimating) {
       try {
-        _mapController.moveAndRotate(newDisplayed, _mapController.camera.zoom, -(newHeading ?? 0));
+        _mapController.moveAndRotate(
+          newDisplayed,
+          _mapController.camera.zoom,
+          _followRotationDegrees(newHeading),
+        );
       } catch (_) {
         // Map not attached yet — next tick will re-attempt.
       }
@@ -643,6 +656,34 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
         // Preview map not mounted (e.g. during countdown) — next tick retries.
       }
     }
+  }
+
+  /// The map rotation to show while following the runner, given whichever
+  /// course-over-ground [heading] the caller currently has on hand (the
+  /// smoothed [_displayedHeading] for the continuous per-frame follow in
+  /// [_onDotTick], the raw [_lastHeading] for a one-off snap like
+  /// [_toggleMapExpanded] or the "my location" button's [_centerOnUser]) —
+  /// negated to flutter_map's rotation convention, same as this app's other
+  /// heading-follow code. Null (not moving fast enough yet for a real course
+  /// — see [_minSpeedForHeadingMs]) falls back to the direction of
+  /// [RunTrackingPage.plannedRoute]'s very first leg, if one is set, so the
+  /// map still points the way the runner needs to go before they've taken a
+  /// single step; with neither, plain north-up (rotation 0). Shared by every
+  /// rotation call site so a recenter's chosen rotation is never immediately
+  /// undone by the next follow tick disagreeing on the fallback.
+  double _followRotationDegrees(double? heading) {
+    if (heading != null) return -heading;
+
+    final route = widget.plannedRoute;
+    if (route != null && route.length >= 2) {
+      const dist = Distance();
+      for (final p in route.skip(1)) {
+        if (dist(route.first, p) > 1.0) {
+          return -GeometryUtils.bearingDegrees(route.first, p);
+        }
+      }
+    }
+    return 0;
   }
 
   /// Interpolates from angle [a] to [b] (degrees) along whichever direction
@@ -676,9 +717,15 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// Animates the camera to [targetCenter]/[targetZoom] over a short tween
   /// instead of jumping instantly. flutter_map has no built-in animated
   /// move, so this drives one manually: an [AnimationController] ticks a
-  /// lat/lng/zoom [Tween] and calls [MapController.move] each frame, then
-  /// disposes itself once the animation finishes.
-  Future<void> _animateCameraTo(LatLng targetCenter, double targetZoom) async {
+  /// lat/lng/zoom [Tween] (plus a rotation tween via [_lerpAngleDegrees],
+  /// along whichever direction is shorter, when [targetRotationDegrees] is
+  /// given) and calls [MapController.move]/[MapController.moveAndRotate]
+  /// each frame, then disposes itself once the animation finishes.
+  Future<void> _animateCameraTo(
+    LatLng targetCenter,
+    double targetZoom, {
+    double? targetRotationDegrees,
+  }) async {
     if (_isCameraAnimating) return;
     _isCameraAnimating = true;
 
@@ -693,16 +740,24 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     final latTween = Tween<double>(begin: camera.center.latitude, end: targetCenter.latitude);
     final lngTween = Tween<double>(begin: camera.center.longitude, end: targetCenter.longitude);
     final zoomTween = Tween<double>(begin: camera.zoom, end: targetZoom);
+    final startRotation = camera.rotation;
 
     final controller = AnimationController(vsync: this, duration: const Duration(milliseconds: 650));
     final curved = CurvedAnimation(parent: controller, curve: Curves.easeInOutCubic);
 
     void tick() {
       try {
-        _mapController.move(
-          LatLng(latTween.transform(curved.value), lngTween.transform(curved.value)),
-          zoomTween.transform(curved.value),
-        );
+        final center = LatLng(latTween.transform(curved.value), lngTween.transform(curved.value));
+        final zoom = zoomTween.transform(curved.value);
+        if (targetRotationDegrees == null) {
+          _mapController.move(center, zoom);
+        } else {
+          _mapController.moveAndRotate(
+            center,
+            zoom,
+            _lerpAngleDegrees(startRotation, targetRotationDegrees, curved.value),
+          );
+        }
       } catch (_) {}
     }
 
@@ -716,36 +771,20 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     }
   }
 
-  /// Zooms/pans out just far enough to fit the whole run trail on screen.
-  Future<void> _fitPathInView() async {
-    if (_breadcrumb.length < 2) return;
-    try {
-      final targetCamera = CameraFit.coordinates(
-        coordinates: _breadcrumb.map((t) => t.point).toList(growable: false),
-        // Leaves room for the stats bar (top) and the button/controls row (bottom).
-        padding: const EdgeInsets.fromLTRB(40, 110, 40, 170),
-        // Never zoom in past the normal follow zoom — early in a run the
-        // whole trail can fit in a tiny area, and without this cap "see
-        // whole path" would zoom in tighter than the default view instead
-        // of only ever zooming out.
-        maxZoom: _defaultZoom,
-      ).fit(_mapController.camera);
-      await _animateCameraTo(targetCamera.center, targetCamera.zoom);
-    } catch (_) {
-      // Map not attached yet.
-    }
-  }
-
-  Future<void> _handleFitPathTap() async {
-    if (_isFollowingUser) {
-      setState(() => _isFollowingUser = false);
-      await _fitPathInView();
-    } else {
-      setState(() => _isFollowingUser = true);
-      final target = _displayedPosition ?? _currentPosition;
-      if (target != null) {
-        await _animateCameraTo(target, _defaultZoom);
-      }
+  /// The round map button's action: re-centers on the runner's live
+  /// position (whatever the user panned/zoomed to in the meantime), rotates
+  /// to face [_followRotationDegrees] (heading, planned-route direction, or
+  /// north — see that method), and turns [_isFollowingUser] back on so
+  /// [_onDotTick] resumes auto-following from there.
+  Future<void> _centerOnUser() async {
+    setState(() => _isFollowingUser = true);
+    final target = _displayedPosition ?? _currentPosition;
+    if (target != null) {
+      await _animateCameraTo(
+        target,
+        _defaultZoom,
+        targetRotationDegrees: _followRotationDegrees(_lastHeading),
+      );
     }
   }
 
@@ -847,7 +886,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     if (_isMapExpanded && target != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         try {
-          _mapController.moveAndRotate(target, _defaultZoom, -(_lastHeading ?? 0));
+          _mapController.moveAndRotate(target, _defaultZoom, _followRotationDegrees(_lastHeading));
         } catch (_) {}
       });
     }
@@ -1394,9 +1433,9 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           right: 16,
           bottom: 108,
           child: _RoundMapButton(
-            icon: _isFollowingUser ? Icons.zoom_out_map_rounded : Icons.my_location_rounded,
-            tooltip: _isFollowingUser ? 'See whole path' : 'Follow me',
-            onTap: (_isFollowingUser && _breadcrumb.length < 2) ? null : _handleFitPathTap,
+            icon: Icons.my_location_rounded,
+            tooltip: 'My location',
+            onTap: (_displayedPosition ?? _currentPosition) == null ? null : _centerOnUser,
           ),
         ),
         Positioned(
@@ -1521,9 +1560,12 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     // EnhancedMapGestures doesn't change that — it only adds a dead-zoned
     // two-finger rotate (plus a little zoom inertia) on top of whatever
     // flutter_map flags a screen already allows, shared with every other
-    // map screen; see that widget. Pan stays deliberately disabled here
-    // (only pinch/double-tap zoom) — a runner's view shouldn't drift off
-    // their position mid-workout.
+    // map screen; see that widget. Pan is now allowed, same as every other
+    // wrapped screen (`InteractiveFlag.all & ~InteractiveFlag.rotate`) — a
+    // runner can freely look around mid-workout; [_handleMapPositionChanged]
+    // drops [_isFollowingUser] the moment a real drag/pinch happens so the
+    // next GPS fix doesn't immediately yank the camera back, and the "my
+    // location" round button ([_centerOnUser]) snaps back to live tracking.
     return EnhancedMapGestures(
       mapController: _mapController,
       child: FlutterMap(
@@ -1535,7 +1577,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           minZoom: MapStyle.minZoom,
           cameraConstraint: CameraConstraint.contain(bounds: MapStyle.safeCameraBounds),
           interactionOptions: const InteractionOptions(
-            flags: InteractiveFlag.pinchZoom | InteractiveFlag.doubleTapZoom,
+            flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
           ),
           onPositionChanged: _handleMapPositionChanged,
         ),

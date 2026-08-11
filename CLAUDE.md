@@ -576,6 +576,32 @@ Keep this list current — update it whenever a feature moves between these buck
   when the target exceeds the natural trip. Not yet re-verified live (same standing
   caveat as the timeout fix above) — the `routing-upstream` Cloud Function log now
   includes `ors-directions-roundtrip` lines for exactly this purpose.
+  **Save route / Run now**, completing `_RouteDetailsSheet` (previously a "Save coming
+  soon!" placeholder): both buttons pop the sheet with a `_RouteSheetAction` (`save`/
+  `runNow`) rather than acting directly inside it, so the actual (async, page-level)
+  handling runs in `_RouteSearchPageState` — mirrors route creation's own
+  `_SaveAction`/`_showSaveOptionsDialog` split for the same reason. **Save** calls
+  `RouteRepository.publishRoute` (the same `routes` collection/repository route creation
+  writes to — no new collection). A found route has no user-tapped waypoints of its own
+  (it's generated, not drawn), so `waypoints` is just the polyline again, the same
+  convention `FavoriteRouteRepository` already uses for a favourited run's whole path;
+  `isLoop`/`loopAreaM2` come from the page's own `_isClosedCircuit` flag and
+  `GeometryUtils.polygonAreaM2(route.polyline)`. The route is auto-named from its own
+  stats (`"4.2 km loop"`/`"3.5 km route"`) rather than prompting for a name — renaming is
+  left to whatever eventually replaces `TempProfilePage`'s route list (see that bullet
+  above: it already reads `RouteRepository.fetchUserRoutes()`, so a route saved from
+  search shows up there today, view/delete only — no "Run" action wired up on that list
+  yet, still a gap). **Run now** pops the *entire* `RouteSearchPage` with
+  the chosen route's polyline as the result (`Navigator.of(context).pop(route.polyline)`),
+  exactly like route creation's "Save route and Run" pops `RouteCreatePage` with its
+  merged polyline — same navigation shape on purpose, so finishing/discarding the run
+  returns straight to the home screen rather than back into stale search results.
+  `HomeScreen._searchRoute` was updated to match `_createRoute`'s own shape: it now
+  awaits a `List<LatLng>?` from `RouteSearchPage` and, if non-null, pushes
+  `RunTrackingPage(plannedRoute: ...)` via the same `_pushRunTracking` helper
+  `_createRoute` already used — one shared post-search entry point for both planning
+  flows, not two diverging ones. Save and Run now are independent: Run now does not
+  save first, so a route can be run without ever being added to the user's saved list.
 - Saving/listing/deleting routes in Firestore, with a client-side cache ([lib/services/route_repository.dart](lib/services/route_repository.dart)).
 - Profile picture upload with strict validation (size/extension/MIME/magic-byte sniffing) to Firebase Storage ([lib/services/image_upload_service.dart](lib/services/image_upload_service.dart)).
 - Badge listing (default/visible badges) and a temporary profile page showing the user's saved routes ([lib/services/badge_service.dart](lib/services/badge_service.dart), [lib/screens/temp_profile_page.dart](lib/screens/temp_profile_page.dart)).
