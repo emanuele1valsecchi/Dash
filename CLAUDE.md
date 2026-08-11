@@ -537,6 +537,45 @@ Keep this list current — update it whenever a feature moves between these buck
   `test_run_creator_page.dart`) — raising a timeout can only let a slow-but-eventually-successful
   call complete, never change behavior for one that was already fast, so this was assessed as safe
   there too, but that's by construction, not a live-verified claim.
+  **Route-generation rework: native ORS round trips + shared leg padding.** Loop
+  generation moved off the offset-two-waypoints geometric guesser onto ORS's *native
+  round-trip primitive*: [functions/routing.js](functions/routing.js)'s `orsRoute` gained a third mode
+  (`mode: 'round_trip'` → POST with a single coordinate + `options.round_trip
+  {length, points, seed}`, same verbatim `{status, body}` forwarding as the other two
+  modes, logged as `ors-directions-roundtrip`), surfaced client-side as
+  `RoutingService.fetchRoundTrip`. `_generateAutoLoopRoutes` now fires `_loopSeedCount`
+  (4) round trips in parallel — different seeds = different loop directions, ONE ORS call
+  per candidate instead of three — and corrects the two closest misses by re-requesting
+  with the length rescaled by the measured ratio (same seed, so the loop grows/shrinks in
+  place rather than jumping direction): worst case 6 calls where the guesser spent up to
+  30, with every candidate grown out of the actual road network instead of hoped onto it
+  — candidates can't strand across rivers/highways, and land far closer to the requested
+  length (ORS documents `length` as preferred-not-guaranteed, hence the corrective pass).
+  The old guesser survives only as `_generateLegacyLoopSegments` (slimmed to 3 bearings),
+  run purely as a safety net when *every* round-trip call fails without a 429 — i.e. an
+  `orsRoute` deployment predating the new mode — so **deploy functions before shipping
+  the app build**, though nothing breaks outright if the order slips. Loop targets are
+  honoured *with* stops now too: both loop-with-stops paths route the user-pinned part
+  and the closing/return leg separately, and when the target asks for more distance than
+  the natural loop provides, the closing leg is re-routed through `_paddedLegCandidates`
+  — the padded-detour machinery extracted from `_generatePaddedDirectRoutes` and shared
+  with it — sized so the whole loop lands on the target; the natural loop is still shown
+  as the honest best answer when padding can't reach it (user-shaped routes are never
+  dropped — same standing rule as before). The padding itself got two accuracy fixes:
+  the first offset guess divides the target by `_roadWindingFactor` (1.25) before the
+  Pythagoras solve (aiming the *straight-line* path at the target guaranteed the measured
+  road result overshot by roughly that factor — always outside ±5%, always burning a
+  refinement round), and refinement uses an affine model when the natural leg distance is
+  known (only the detour part gets rescaled), converging in one round far more often;
+  both perpendicular sides now refine *their own* misses in parallel instead of only the
+  single best side ever being refined. Near-duplicate results (different seeds, or a
+  padded side and a natural alternative converging on the same streets) are collapsed by
+  `_dedupeSimilarRoutes` (lengths within 3% + centroids within max(60 m, 2% of length))
+  before display; single-stop loops with no target now return up to 3 area-ranked real
+  loops instead of exactly one. Direct A→B with stops pads its *final* leg the same way
+  when the target exceeds the natural trip. Not yet re-verified live (same standing
+  caveat as the timeout fix above) — the `routing-upstream` Cloud Function log now
+  includes `ors-directions-roundtrip` lines for exactly this purpose.
 - Saving/listing/deleting routes in Firestore, with a client-side cache ([lib/services/route_repository.dart](lib/services/route_repository.dart)).
 - Profile picture upload with strict validation (size/extension/MIME/magic-byte sniffing) to Firebase Storage ([lib/services/image_upload_service.dart](lib/services/image_upload_service.dart)).
 - Badge listing (default/visible badges) and a temporary profile page showing the user's saved routes ([lib/services/badge_service.dart](lib/services/badge_service.dart), [lib/screens/temp_profile_page.dart](lib/screens/temp_profile_page.dart)).

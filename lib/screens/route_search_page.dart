@@ -164,6 +164,25 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   // though the old shared 30% tolerance allowed it.
   static const double _matchTolerance = 0.05;
 
+  // ── Route-generation tuning ──────────────────────────────────────────────
+
+  // Candidate round-trip loops requested per auto-loop search — one ORS
+  // call each, so the whole first pass costs `_loopSeedCount` calls
+  // (versus the old geometric guesser's 6 bearings × 3 legs = 18).
+  static const int _loopSeedCount = 4;
+
+  // ORS `options.round_trip.points` — higher = rounder loop. Round is
+  // exactly what this app wants: for a fixed perimeter, rounder means
+  // more enclosed (claimable) area.
+  static const int _loopRoundness = 5;
+
+  // Typical road-network detour factor (road distance ÷ straight-line
+  // distance) for city walking — hand-picked like the other tuning
+  // constants here. `_paddedLegCandidates` divides the target by it
+  // before solving for the detour offset, so the first probe lands near
+  // the target instead of systematically overshooting by this factor.
+  static const double _roadWindingFactor = 1.25;
+
   static const List<Color> _palette = [
     Color(0xFF2E7D32),
     Color(0xFF1565C0),
@@ -542,25 +561,25 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   // ── Closed-circuit route generation ─────────────────────────────────────────
   //
   // `totalTargetM` is the *total* the user asked for across every lap; the
-  // per-lap target the auto-loop-finder actually searches for is that
-  // divided by `laps` (1 when laps isn't set), and `_toFoundRoute`'s `laps`
+  // per-lap target the loop generators actually work with is that divided
+  // by `laps` (1 when laps isn't set), and `_toFoundRoute`'s `laps`
   // multiplier scales the measured single-loop distance/time/calories back
   // up for display — so a match against the per-lap target is automatically
-  // a match against the original total too. Null when stops were given
-  // instead (see below) — a target isn't required in that case.
+  // a match against the original total too. Null when no target was given
+  // at all (stops-only loops — `_search` requires a target whenever stops
+  // are empty, so the auto-generator below always has one).
 
   Future<List<_FoundRoute>> _generateClosedCircuitRoutes(LatLng start,
       List<LatLng> stops, double? totalTargetM, int laps) async {
-    // Stops shape the loop explicitly — route through them rather than
-    // ignoring them in favour of the auto-guesser below (the reported bug:
-    // placed stops were silently dropped for closed-circuit searches).
+    final perLapTargetM = totalTargetM == null ? null : totalTargetM / laps;
+    // Stops shape the loop explicitly — route through them (and, when a
+    // target was also given, stretch the loop's closing leg toward it; see
+    // `_generateLoopThroughStops`) rather than ignoring them in favour of
+    // the auto-generator below.
     if (stops.isNotEmpty) {
-      return _generateLoopThroughStops(start, stops, laps);
+      return _generateLoopThroughStops(start, stops, perLapTargetM, laps);
     }
-    // No stops: only the auto-guesser needs a target at all, to know how
-    // big a loop to search for — `_search` already requires one whenever
-    // stops are empty.
-    return _generateAutoLoopRoutes(start, totalTargetM! / laps, laps);
+    return _generateAutoLoopRoutes(start, perLapTargetM!, laps);
   }
 
   /// Roughly how much of a loop's own "circle of the same perimeter" area
@@ -581,28 +600,140 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     return area >= maxCircularArea * 0.02;
   }
 
-  /// A user-shaped loop (start → stops → back to start) — no distance
-  /// filter (the shape, and so the distance, is already fixed by the stops
-  /// the user placed; forcing it to also match an unrelated target just
-  /// produced spurious "0 routes found" results), only a check that it's
-  /// real ORS geometry and an actual enclosed loop, not a degenerate
-  /// out-and-back. A single stop needs special handling — see
-  /// `_generateSingleStopLoop`.
-  Future<List<_FoundRoute>> _generateLoopThroughStops(
-      LatLng start, List<LatLng> stops, int laps) async {
+  /// Average of a polyline's vertices — a cheap shape fingerprint for
+  /// `_dedupeSimilarRoutes` (adequate at city scale; true polygon
+  /// centroids aren't needed there).
+  LatLng _polylineCentroid(List<LatLng> points) {
+    var lat = 0.0, lng = 0.0;
+    for (final p in points) {
+      lat += p.latitude;
+      lng += p.longitude;
+    }
+    return LatLng(lat / points.length, lng / points.length);
+  }
+
+  /// Drops candidates that are effectively the same route as one already
+  /// kept — different round-trip seeds (or a padded detour and a natural
+  /// alternative) can converge on identical geometry in a sparse road
+  /// network, and showing the same shape twice in two colours reads as a
+  /// bug. "Same" = lengths within 3% AND centroids within
+  /// max(60 m, 2% of the length) — deliberately loose fingerprints, since
+  /// near-identical routes offer the user nothing distinct anyway. Keeps
+  /// input order, so callers sort by preference first.
+  List<RouteSegment> _dedupeSimilarRoutes(List<RouteSegment> segments) {
+    final kept = <RouteSegment>[];
+    final centroids = <LatLng>[];
+    const dist = Distance();
+    for (final s in segments) {
+      final c = _polylineCentroid(s.polyline);
+      var isDup = false;
+      for (var i = 0; i < kept.length; i++) {
+        final lengthGap = (kept[i].distanceMeters - s.distanceMeters).abs() /
+            math.max(kept[i].distanceMeters, s.distanceMeters);
+        if (lengthGap > 0.03) continue;
+        if (dist(centroids[i], c) <= math.max(60.0, s.distanceMeters * 0.02)) {
+          isDup = true;
+          break;
+        }
+      }
+      if (!isDup) {
+        kept.add(s);
+        centroids.add(c);
+      }
+    }
+    return kept;
+  }
+
+  /// A user-shaped loop (start → stops → back to start). With no target the
+  /// stops fully determine the shape — the natural loop is returned as long
+  /// as it's real ORS geometry enclosing an actual area. With a target, the
+  /// user-pinned part (start → … → last stop) stays fixed and the *closing
+  /// leg* back to start absorbs the difference: padded-detour variants of
+  /// it (`_paddedLegCandidates`) are sized so the whole loop lands on the
+  /// target. The natural loop is never dropped for missing the target — if
+  /// no padded variant reaches it, the natural loop is still shown as the
+  /// closest honest answer, per the standing rule that routes shaped by
+  /// the user's own waypoints are never silently filtered away. A single
+  /// stop needs special handling — see `_generateSingleStopLoop`.
+  ///
+  /// Worst-case ORS calls: stops.length + 1 for the natural loop, plus
+  /// `_paddedLegCandidates`'s own bound (12) when a target asks for
+  /// padding.
+  Future<List<_FoundRoute>> _generateLoopThroughStops(LatLng start,
+      List<LatLng> stops, double? perLapTargetM, int laps) async {
     if (stops.length == 1) {
-      return _generateSingleStopLoop(start, stops.single, laps);
+      return _generateSingleStopLoop(start, stops.single, perLapTargetM, laps);
     }
-    final chain = await _routeChain([start, ...stops, start]);
-    if (!chain.ok) {
-      _lastSearchRateLimited = chain.rateLimited;
+
+    // The pinned part and the closing leg are routed separately, so a
+    // target can re-route just the closing leg without re-spending the
+    // through-stops calls. Same total hop count as the old single
+    // start → … → start chain.
+    final through = await _routeChain([start, ...stops]);
+    if (!through.ok) {
+      _lastSearchRateLimited = through.rateLimited;
       return [];
     }
-    if (!_enclosesRealArea(chain.seg)) {
+    final closing = await _routeHop(stops.last, start);
+    if (!closing.ok) {
+      _lastSearchRateLimited = closing.rateLimited;
+      return [];
+    }
+    final natural = _stitch(through.seg, closing.seg);
+
+    final candidates = <RouteSegment>[natural];
+    var paddingRateLimited = false;
+    if (perLapTargetM != null) {
+      final closingTargetM = perLapTargetM - through.seg.distanceMeters;
+      // Padding only helps when the target genuinely asks for a longer
+      // closing leg than the natural one — a shorter target can't be
+      // honoured at all, the stops already force this much distance.
+      if (closingTargetM > closing.seg.distanceMeters * (1 + _matchTolerance)) {
+        final padded = await _paddedLegCandidates(
+          stops.last,
+          start,
+          closingTargetM,
+          naturalLegM: closing.seg.distanceMeters,
+        );
+        paddingRateLimited = padded.rateLimited;
+        candidates.addAll(
+            [for (final leg in padded.segments) _stitch(through.seg, leg)]);
+      }
+    }
+
+    final real = candidates.where(_enclosesRealArea).toList();
+    if (real.isEmpty) {
       _lastSearchOnlyDegenerateLoops = true;
+      _lastSearchRateLimited = paddingRateLimited;
       return [];
     }
-    return [_toFoundRoute(chain.seg, 0, laps: laps)];
+
+    List<RouteSegment> chosen;
+    if (perLapTargetM != null) {
+      final matched = real
+          .where((s) => _withinMatchTolerance(s.distanceMeters, perLapTargetM))
+          .toList()
+        ..sort((a, b) => _toleranceMiss(a.distanceMeters, perLapTargetM)
+            .compareTo(_toleranceMiss(b.distanceMeters, perLapTargetM)));
+      // Nothing reached the target → the natural loop (or the best real
+      // candidate, if the natural one is degenerate) is still the honest
+      // best answer for the user's own stops — never an empty result.
+      chosen = matched.isNotEmpty
+          ? matched
+          : (_enclosesRealArea(natural)
+              ? [natural]
+              : (real
+                ..sort((a, b) => GeometryUtils.polygonAreaM2(b.polyline)
+                    .compareTo(GeometryUtils.polygonAreaM2(a.polyline)))));
+    } else {
+      chosen = [natural];
+    }
+
+    final results = <_FoundRoute>[];
+    for (final seg in _dedupeSimilarRoutes(chosen).take(3)) {
+      results.add(_toFoundRoute(seg, results.length, laps: laps));
+    }
+    return results;
   }
 
   /// `start → stop → start` with a *single* stop is, by definition, an
@@ -610,15 +741,20 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
   /// from the outbound one — ORS's plain shortest path each way will almost
   /// always retrace the same street, which is exactly the degenerate
   /// "ran up and down the road" shape `_enclosesRealArea` exists to catch.
-  /// Two or more stops naturally avoid this (there are at least two real
-  /// corners), so this is only needed for the one-stop case. Routes the
-  /// outbound leg normally, then asks ORS for alternative *return* routes
-  /// and pairs the outbound with whichever one encloses the most real area
-  /// — if none of them do (a dead-end street, a single bridge, genuinely no
-  /// parallel way back), there is no loop to find here, and that's reported
-  /// rather than a fake one shown.
+  /// The outbound leg is routed normally; return-leg candidates come from
+  /// ORS's alternative routes and — when a target asks for more distance
+  /// than any natural return can offer — from padded detours sized so the
+  /// whole loop lands on the target (`_paddedLegCandidates`). Preference
+  /// order: real loops on target → real natural loops (best-effort, ranked
+  /// by enclosed area — same "user-shaped routes are never dropped" rule
+  /// as everywhere else) → nothing, with the degenerate/rate-limit flag
+  /// set so `_search` can name the actual cause.
+  ///
+  /// Worst-case ORS calls: 2 (outbound + return alternatives) plus
+  /// `_paddedLegCandidates`'s own bound (12) when a target asks for
+  /// padding.
   Future<List<_FoundRoute>> _generateSingleStopLoop(
-      LatLng start, LatLng stop, int laps) async {
+      LatLng start, LatLng stop, double? perLapTargetM, int laps) async {
     final outbound = await _routeHop(start, stop);
     if (!outbound.ok) {
       _lastSearchRateLimited = outbound.rateLimited;
@@ -637,50 +773,208 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
       _lastSearchRateLimited = true;
       return [];
     }
-    if (returnAlternatives.isEmpty) return [];
 
-    RouteSegment? best;
-    var bestArea = 0.0;
-    for (final ret in returnAlternatives) {
-      final combined = _stitch(outbound.seg, ret);
-      final area = GeometryUtils.polygonAreaM2(combined.polyline);
-      if (area > bestArea) {
-        bestArea = area;
-        best = combined;
+    final candidates = <RouteSegment>[
+      for (final ret in returnAlternatives) _stitch(outbound.seg, ret),
+    ];
+
+    var paddingRateLimited = false;
+    if (perLapTargetM != null) {
+      final returnTargetM = perLapTargetM - outbound.seg.distanceMeters;
+      final naturalReturnM = returnAlternatives.isEmpty
+          ? null
+          : returnAlternatives.map((s) => s.distanceMeters).reduce(math.min);
+      // Padding only helps when the target asks for a longer return leg
+      // than any natural alternative provides — a target below
+      // outbound + shortest return can't be honoured through this stop.
+      if (returnTargetM > 0 &&
+          (naturalReturnM == null ||
+              returnTargetM > naturalReturnM * (1 + _matchTolerance))) {
+        final padded = await _paddedLegCandidates(
+          stop,
+          start,
+          returnTargetM,
+          naturalLegM: naturalReturnM,
+        );
+        paddingRateLimited = padded.rateLimited;
+        candidates.addAll(
+            [for (final leg in padded.segments) _stitch(outbound.seg, leg)]);
       }
     }
 
-    if (best == null || !_enclosesRealArea(best)) {
-      _lastSearchOnlyDegenerateLoops = true;
+    if (candidates.isEmpty) {
+      _lastSearchRateLimited = paddingRateLimited;
       return [];
     }
-    return [_toFoundRoute(best, 0, laps: laps)];
+
+    final real = candidates.where(_enclosesRealArea).toList();
+    if (real.isEmpty) {
+      _lastSearchOnlyDegenerateLoops = true;
+      _lastSearchRateLimited = paddingRateLimited;
+      return [];
+    }
+
+    List<RouteSegment> chosen;
+    if (perLapTargetM != null) {
+      final matched = real
+          .where((s) => _withinMatchTolerance(s.distanceMeters, perLapTargetM))
+          .toList()
+        ..sort((a, b) => _toleranceMiss(a.distanceMeters, perLapTargetM)
+            .compareTo(_toleranceMiss(b.distanceMeters, perLapTargetM)));
+      chosen = matched.isNotEmpty
+          ? matched
+          : (real
+            ..sort((a, b) => GeometryUtils.polygonAreaM2(b.polyline)
+                .compareTo(GeometryUtils.polygonAreaM2(a.polyline))));
+    } else {
+      chosen = real
+        ..sort((a, b) => GeometryUtils.polygonAreaM2(b.polyline)
+            .compareTo(GeometryUtils.polygonAreaM2(a.polyline)));
+    }
+
+    final results = <_FoundRoute>[];
+    for (final seg in _dedupeSimilarRoutes(chosen).take(3)) {
+      results.add(_toFoundRoute(seg, results.length, laps: laps));
+    }
+    return results;
   }
 
-  /// Places two intermediate waypoints at radius = D × 0.25 from start, 90°
-  /// apart, and routes start → wp1 → wp2 → start. 6 candidate bearings
-  /// (every 60°) are evaluated in parallel to produce geometrically distinct
-  /// loops — down from an earlier version's 8 (every 45°) to bound ORS call
-  /// volume; repeated searches hitting the shared quota's rate limit is what
-  /// was producing straight-line "triangles cutting over buildings"
-  /// (`_routeHop`'s fallback, now excluded from results entirely — see
-  /// below). Every candidate is also checked with `_enclosesRealArea`, not
-  /// just distance — a candidate can match the target distance exactly and
-  /// still be a degenerate out-and-back if the two offset waypoints happen
-  /// to road-snap onto the same street. Only the single closest miss gets
-  /// refined (radius rescaled by the measured ratio, distance being roughly
-  /// linear in radius for a fixed bearing) — but up to *two* corrective
-  /// rounds, not one: a longer target means a larger radius, and the gap
-  /// between the straight-line radius estimate and the real road-network
-  /// detour ratio grows (and gets less predictable) the further out it
-  /// reaches, so one correction that comfortably closed a short-range miss
-  /// can undershoot at longer range. Worst case this method spends
-  /// 6×3 + 2×3 = 30 ORS calls, versus the original version's
-  /// unbounded-up-to 8×3×2 = 48.
+  /// Closed-loop search with no stops: asks ORS's native round-trip
+  /// generator (`RoutingService.fetchRoundTrip`) for `_loopSeedCount`
+  /// candidate loops in parallel, each with a different seed — a different
+  /// overall direction out of the start point. Unlike the old geometric
+  /// guesser (offset two synthetic waypoints and hope the roads
+  /// cooperate), the routing engine grows each loop out of the actual road
+  /// network, so candidates can't strand across rivers/highways, land far
+  /// closer to the requested length, and cost ONE ORS call each instead of
+  /// three. ORS documents the requested `length` as a preferred value
+  /// rather than a guarantee, so the closest misses get one corrective
+  /// re-request each with the length rescaled by the measured ratio (same
+  /// seed → the loop grows/shrinks in place instead of jumping direction).
+  /// Every candidate still has to clear `_enclosesRealArea` — a sparse
+  /// network can force even a round trip into an out-and-back (a single
+  /// dead-end valley road, say).
+  ///
+  /// Worst-case ORS calls: `_loopSeedCount` + 2 corrective re-requests
+  /// = 6, versus the old guesser's 6 bearings × 3 legs + 2 × 3 = 24.
+  /// If every round-trip call fails outright *without* being rate-limited
+  /// — the one realistic case being an `orsRoute` deployment that predates
+  /// the `round_trip` mode — `_generateLegacyLoopSegments` (the old
+  /// guesser, slimmed) runs as a safety net so the feature degrades
+  /// instead of dying during a functions/app version skew.
   Future<List<_FoundRoute>> _generateAutoLoopRoutes(
       LatLng start, double targetDistM, int laps) async {
+    // Random base seed: repeating the same search explores different
+    // loops instead of deterministically re-serving the same few.
+    final baseSeed = math.Random().nextInt(1 << 16);
+
+    Future<({RouteSegment? seg, bool rateLimited, int seed})> tryRoundTrip(
+        int seed, double lengthM) async {
+      try {
+        final seg = await RoutingService.fetchRoundTrip(
+          start,
+          lengthMeters: lengthM,
+          points: _loopRoundness,
+          seed: seed,
+          throwOnRateLimit: true,
+        );
+        return (seg: seg, rateLimited: false, seed: seed);
+      } on RoutingRateLimitedException {
+        return (seg: null, rateLimited: true, seed: seed);
+      }
+    }
+
+    final firstPass = await Future.wait([
+      for (var i = 0; i < _loopSeedCount; i++)
+        tryRoundTrip(baseSeed + i, targetDistM),
+    ]);
+
+    var rateLimited = firstPass.any((c) => c.rateLimited);
+    final usable = [
+      for (final c in firstPass)
+        if (c.seg != null) (seg: c.seg!, seed: c.seed),
+    ];
+
+    bool matchesDistance(RouteSegment seg) =>
+        _withinMatchTolerance(seg.distanceMeters, targetDistM);
+
+    final matched = <RouteSegment>[
+      for (final c in usable)
+        if (matchesDistance(c.seg) && _enclosesRealArea(c.seg)) c.seg,
+    ];
+    var sawDegenerateMatch =
+        usable.any((c) => matchesDistance(c.seg) && !_enclosesRealArea(c.seg));
+
+    // Correct the closest misses — a round trip's measured length responds
+    // roughly linearly to the requested length for a fixed seed.
+    if (!rateLimited) {
+      final misses = [
+        for (final c in usable)
+          if (!matchesDistance(c.seg)) c,
+      ]..sort((a, b) => _toleranceMiss(a.seg.distanceMeters, targetDistM)
+          .compareTo(_toleranceMiss(b.seg.distanceMeters, targetDistM)));
+      for (final miss in misses.take(2)) {
+        if (matched.length >= 3) break;
+        final ratio = miss.seg.distanceMeters / targetDistM;
+        // Wildly-off candidates aren't worth another call — the network
+        // doesn't support this direction at this size.
+        if (ratio <= 0.55 || ratio >= 1.8) continue;
+        final corrected = await tryRoundTrip(miss.seed, targetDistM / ratio);
+        if (corrected.rateLimited) {
+          rateLimited = true;
+          break;
+        }
+        final seg = corrected.seg;
+        if (seg == null || !matchesDistance(seg)) continue;
+        if (_enclosesRealArea(seg)) {
+          matched.add(seg);
+        } else {
+          sawDegenerateMatch = true;
+        }
+      }
+    }
+
+    var segments = _dedupeSimilarRoutes(matched
+      ..sort((a, b) => _toleranceMiss(a.distanceMeters, targetDistM)
+          .compareTo(_toleranceMiss(b.distanceMeters, targetDistM))));
+
+    // Safety net: every round-trip call failed with an ordinary error (not
+    // a 429). Most plausibly an `orsRoute` deployment without the
+    // round_trip mode yet — fall back to the old geometric guesser so the
+    // feature still works during the skew.
+    var legacyDegenerate = false;
+    if (segments.isEmpty && usable.isEmpty && !rateLimited) {
+      final legacy = await _generateLegacyLoopSegments(start, targetDistM);
+      rateLimited = legacy.rateLimited;
+      legacyDegenerate = legacy.sawDegenerate;
+      segments = legacy.segments;
+    }
+
+    _lastSearchRateLimited = rateLimited && segments.isEmpty;
+    _lastSearchOnlyDegenerateLoops = segments.isEmpty &&
+        (sawDegenerateMatch || legacyDegenerate) &&
+        !_lastSearchRateLimited;
+
+    final results = <_FoundRoute>[];
+    for (final seg in segments.take(5)) {
+      results.add(_toFoundRoute(seg, results.length, laps: laps));
+    }
+    return results;
+  }
+
+  /// The pre-round-trip geometric loop guesser, kept only as
+  /// `_generateAutoLoopRoutes`'s safety net (see there): places two
+  /// synthetic waypoints at radius = target × 0.25 from the start, 90°
+  /// apart, per candidate bearing, routes start → wp1 → wp2 → start, and
+  /// refines the single closest miss by rescaling the radius by the
+  /// measured ratio. Slimmed to 3 bearings (120° apart) from the original
+  /// 6 — as a fallback it only needs to produce *something*, and its calls
+  /// stack on top of the round-trip attempts that already failed.
+  /// Worst case 3 × 3 + 2 × 3 = 15 ORS calls.
+  Future<({List<RouteSegment> segments, bool rateLimited, bool sawDegenerate})>
+      _generateLegacyLoopSegments(LatLng start, double targetDistM) async {
     final radius = targetDistM * 0.25;
-    const bearingCount = 6;
+    const bearingCount = 3;
 
     final firstPass = await Future.wait(
       List.generate(bearingCount, (i) async {
@@ -692,11 +986,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
       }),
     );
 
-    final rateLimited = firstPass.any((c) => c.chain.rateLimited);
-
-    // Only real, road-snapped candidates (every hop succeeded) are ever
-    // eligible — a candidate that fell back to a straight line anywhere in
-    // its chain is discarded, never shown as a "found route".
+    var rateLimited = firstPass.any((c) => c.chain.rateLimited);
     final usable = firstPass.where((c) => c.chain.ok).toList()
       ..sort((a, b) => _toleranceMiss(a.chain.seg.distanceMeters, targetDistM)
           .compareTo(_toleranceMiss(b.chain.seg.distanceMeters, targetDistM)));
@@ -709,11 +999,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
         if (matchesDistance(c.chain.seg) && _enclosesRealArea(c.chain.seg))
           c.chain.seg,
     ];
-
-    // A distance-matching candidate that got dropped purely for being a
-    // degenerate sliver, so `_search` can name the actual cause instead of
-    // a generic "no match" if nothing else pans out either.
-    var sawDegenerateMatch = usable.any(
+    var sawDegenerate = usable.any(
         (c) => matchesDistance(c.chain.seg) && !_enclosesRealArea(c.chain.seg));
 
     if (segments.isEmpty && usable.isNotEmpty && !rateLimited) {
@@ -723,37 +1009,135 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
       const maxRefinements = 2;
       for (var attempt = 0; attempt < maxRefinements; attempt++) {
         final ratio = currentDist / targetDistM;
-        // Wildly-off candidates (ratio outside 0.55–1.8) aren't worth
-        // another round trip — a linear correction won't fix a road
-        // network that fundamentally doesn't support this shape at this
-        // bearing.
         if (ratio <= 0.55 || ratio >= 1.8) break;
         currentRadius = currentRadius / ratio;
         final wp1 = _offset(start, currentRadius, best.theta);
         final wp2 = _offset(start, currentRadius, best.theta + 90.0);
         final refined = await _routeChain([start, wp1, wp2, start]);
-        if (!refined.ok) break; // failure/rate-limit — no point retrying further
+        if (!refined.ok) {
+          rateLimited = rateLimited || refined.rateLimited;
+          break;
+        }
         currentDist = refined.seg.distanceMeters;
         if (matchesDistance(refined.seg)) {
           if (_enclosesRealArea(refined.seg)) {
             segments.add(refined.seg);
           } else {
-            sawDegenerateMatch = true;
+            sawDegenerate = true;
           }
           break;
         }
       }
     }
 
-    _lastSearchRateLimited = rateLimited && segments.isEmpty;
-    _lastSearchOnlyDegenerateLoops =
-        segments.isEmpty && sawDegenerateMatch && !_lastSearchRateLimited;
+    return (
+      segments: segments,
+      rateLimited: rateLimited,
+      sawDegenerate: sawDegenerate,
+    );
+  }
 
-    final results = <_FoundRoute>[];
-    for (final seg in segments.take(5)) {
-      results.add(_toFoundRoute(seg, results.length, laps: laps));
+  /// Detour candidates from [from] to [to] whose measured road distance
+  /// aims at [legTargetM] — the shared primitive behind every "make this
+  /// leg longer" case: a direct A→B whose target exceeds the natural trip,
+  /// and a loop's closing/return leg absorbing whatever its fixed part
+  /// didn't cover. One synthetic via-point, offset perpendicular from the
+  /// midpoint of the from–to line; both sides are probed in parallel (one
+  /// may be blocked by water or rails the other isn't), and *each* side
+  /// refines its own misses — the old padded generator only ever refined
+  /// one side, so a blocked best side wasted the whole round while the
+  /// other side's near-miss was thrown away.
+  ///
+  /// Two accuracy fixes over the old estimate. (1) The first offset guess
+  /// divides the target by `_roadWindingFactor` before the Pythagoras
+  /// solve: aiming the *straight-line* path at the target guaranteed the
+  /// measured road result overshot by roughly the winding factor — always
+  /// outside ±5%, always burning a refinement round. (2) Refinement uses
+  /// an affine model when [naturalLegM] is known: road distance ≈ natural
+  /// + (detour ∝ offset), so only the detour part gets rescaled, which
+  /// converges in one round far more often than rescaling the whole
+  /// distance did.
+  ///
+  /// Returns only candidates within `_matchTolerance` of [legTargetM] —
+  /// never a straight line, never a quietly-short route. Worst-case ORS
+  /// calls: 2 sides × 3 rounds × 2 hops = 12; typically 4–8.
+  Future<({List<RouteSegment> segments, bool rateLimited})>
+      _paddedLegCandidates(
+    LatLng from,
+    LatLng to,
+    double legTargetM, {
+    double? naturalLegM,
+  }) async {
+    final straightM = const Distance().as(LengthUnit.Meter, from, to);
+    // No detour can make a leg shorter than its straight line — nothing to
+    // search for unless the target actually requires lengthening it.
+    if (legTargetM <= straightM * (1 + _matchTolerance)) {
+      return (segments: const <RouteSegment>[], rateLimited: false);
     }
-    return results;
+
+    final halfBase = straightM / 2;
+    final chordTargetM =
+        math.max(legTargetM / _roadWindingFactor, straightM * 1.05);
+    final halfChord = chordTargetM / 2;
+    final estOffset = math.sqrt(math.max(
+      halfChord * halfChord - halfBase * halfBase,
+      (straightM * 0.05) * (straightM * 0.05),
+    ));
+
+    final bearing = GeometryUtils.bearingDegrees(from, to);
+    final mid = LatLng(
+      (from.latitude + to.latitude) / 2,
+      (from.longitude + to.longitude) / 2,
+    );
+
+    Future<({RouteSegment seg, bool ok, bool rateLimited})> tryOffset(
+        double offset, double side) {
+      final w = _offset(mid, offset, bearing + 90 * side);
+      return _routeChain([from, w, to]);
+    }
+
+    double nextOffset(double offset, double measuredM) {
+      double scale;
+      if (naturalLegM != null && measuredM > naturalLegM) {
+        // Affine model — see the doc comment.
+        scale = (legTargetM - naturalLegM) / (measuredM - naturalLegM);
+      } else {
+        scale = legTargetM / measuredM;
+      }
+      return offset * scale.clamp(0.35, 3.0).toDouble();
+    }
+
+    final matched = <RouteSegment>[];
+    var rateLimited = false;
+
+    Future<void> probeSide(double side) async {
+      var offset = estOffset;
+      const maxRounds = 3; // first probe + up to 2 refinements
+      for (var round = 0; round < maxRounds; round++) {
+        if (rateLimited) return;
+        final attempt = await tryOffset(offset, side);
+        if (attempt.rateLimited) {
+          rateLimited = true;
+          return;
+        }
+        if (!attempt.ok) return;
+        final measured = attempt.seg.distanceMeters;
+        if (_withinMatchTolerance(measured, legTargetM)) {
+          matched.add(attempt.seg);
+          return;
+        }
+        final ratio = measured / legTargetM;
+        // A side this far off is fighting an obstacle a linear correction
+        // won't fix — stop spending calls on it.
+        if (ratio <= 0.5 || ratio >= 2.0) return;
+        offset = nextOffset(offset, measured);
+      }
+    }
+
+    // Both sides in parallel, each refining its own misses.
+    await Future.wait([probeSide(1), probeSide(-1)]);
+
+    return (segments: matched, rateLimited: rateLimited);
   }
 
   // ── Direct (A → B) route generation ───────────────────────────────────────
@@ -762,20 +1146,60 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     LatLng start,
     List<LatLng> stops, // empty → no intermediate stops
     LatLng end,
-    double? targetDistM, // null → no constraint; only used to rank results
+    double? targetDistM, // null → no constraint
   ) async {
-    // When stops are specified, route through them sequentially (single
-    // result) — like the closed-circuit stops case above, this shape is
-    // already fixed by the user's own waypoints, so it's shown regardless
-    // of how it compares to the target distance rather than being silently
-    // dropped for missing an arbitrary tolerance band.
+    // When stops are specified, route through them sequentially. The
+    // user-pinned part (start → … → last stop) stays fixed; when a target
+    // asks for more distance than the natural trip provides, the *final*
+    // leg absorbs the difference through a padded detour — exactly like a
+    // loop's closing leg. The natural route is never dropped for missing
+    // the target (standing rule for user-shaped routes): padding failing
+    // just means the natural trip is shown as-is.
     if (stops.isNotEmpty) {
-      final chain = await _routeChain([start, ...stops, end]);
-      if (!chain.ok) {
-        _lastSearchRateLimited = chain.rateLimited;
+      final through = await _routeChain([start, ...stops]);
+      if (!through.ok) {
+        _lastSearchRateLimited = through.rateLimited;
         return [];
       }
-      return [_toFoundRoute(chain.seg, 0)];
+      final lastLeg = await _routeHop(stops.last, end);
+      if (!lastLeg.ok) {
+        _lastSearchRateLimited = lastLeg.rateLimited;
+        return [];
+      }
+      final natural = _stitch(through.seg, lastLeg.seg);
+
+      final candidates = <RouteSegment>[natural];
+      if (targetDistM != null) {
+        final legTargetM = targetDistM - through.seg.distanceMeters;
+        if (legTargetM > lastLeg.seg.distanceMeters * (1 + _matchTolerance)) {
+          final padded = await _paddedLegCandidates(
+            stops.last,
+            end,
+            legTargetM,
+            naturalLegM: lastLeg.seg.distanceMeters,
+          );
+          candidates.addAll(
+              [for (final leg in padded.segments) _stitch(through.seg, leg)]);
+        }
+      }
+
+      List<RouteSegment> chosen;
+      if (targetDistM != null) {
+        final onTarget = candidates
+            .where((s) => _withinMatchTolerance(s.distanceMeters, targetDistM))
+            .toList()
+          ..sort((a, b) => _toleranceMiss(a.distanceMeters, targetDistM)
+              .compareTo(_toleranceMiss(b.distanceMeters, targetDistM)));
+        chosen = onTarget.isNotEmpty ? onTarget : [natural];
+      } else {
+        chosen = [natural];
+      }
+
+      final results = <_FoundRoute>[];
+      for (final seg in _dedupeSimilarRoutes(chosen).take(3)) {
+        results.add(_toFoundRoute(seg, results.length));
+      }
+      return results;
     }
 
     // No stops: use ORS alternative routes endpoint for up to 3 results.
@@ -816,11 +1240,16 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     // None of ORS's own alternatives land near the target — they're close
     // variants of the same trip, not something that can be grown or shrunk
     // to hit an arbitrary length. If the target actually requires
-    // *lengthening* the trip, try to build a real detour that reaches it
-    // instead of just accepting whatever's naturally there (the reported
-    // bug: a request for "4 km" between two points 1.3 km apart just
-    // returned that 1.3 km trip, silently ignoring the target entirely).
-    final padded = await _generatePaddedDirectRoutes(start, end, targetDistM);
+    // *lengthening* the trip, build a real detour that reaches it instead
+    // of just accepting whatever's naturally there (the reported bug: a
+    // request for "4 km" between two points 1.3 km apart just returned
+    // that 1.3 km trip, silently ignoring the target entirely). The
+    // shortest natural alternative feeds the padding's affine refinement
+    // model — see `_paddedLegCandidates`.
+    final naturalDistM =
+        alternatives.map((s) => s.distanceMeters).reduce(math.min);
+    final padded = await _generatePaddedDirectRoutes(start, end, targetDistM,
+        naturalDistM: naturalDistM);
     if (padded.isNotEmpty) return padded;
 
     // Padding wasn't possible or didn't pan out (target shorter than the
@@ -834,89 +1263,33 @@ class _RouteSearchPageState extends State<RouteSearchPage> {
     return ranked.asMap().entries.map((e) => _toFoundRoute(e.value, e.key)).toList();
   }
 
-  /// Builds a detour from [start] to [end] via one synthetic waypoint,
-  /// bulging perpendicular to the direct line by just enough to reach
-  /// [targetDistM] — the only way to actually honour a target *longer* than
-  /// the trip's natural distance, since no plain ORS alternative varies how
-  /// far out of the way it goes, only which road it takes. Mirrors
-  /// `_generateAutoLoopRoutes`'s offset-and-refine approach, just for an
-  /// open path instead of a loop back to the start: tries both sides of the
-  /// direct line in parallel, refines whichever comes closer (up to twice)
-  /// if neither hits tolerance outright, and returns empty — never a
-  /// straight line or a route that quietly falls short — if the road
-  /// network genuinely won't support it.
+  /// Builds detours from [start] to [end] that actually reach a target
+  /// *longer* than the trip's natural distance — no plain ORS alternative
+  /// varies how far out of the way it goes, only which road it takes, so
+  /// this is the only way to honour such a target. Thin wrapper over
+  /// `_paddedLegCandidates` (shared with the loop generators' closing-leg
+  /// padding); returns empty — never a straight line or a quietly-short
+  /// route — if the road network genuinely won't support it.
   Future<List<_FoundRoute>> _generatePaddedDirectRoutes(
-      LatLng start, LatLng end, double targetDistM) async {
-    final straightM = const Distance().as(LengthUnit.Meter, start, end);
-    // No detour can make a trip *shorter* than straight-line — nothing to
-    // search for unless the target actually requires lengthening it.
-    if (targetDistM <= straightM * (1 + _matchTolerance)) return [];
-
-    final halfBase = straightM / 2;
-    final halfTargetSq = (targetDistM / 2) * (targetDistM / 2);
-    final baseSq = halfBase * halfBase;
-    if (halfTargetSq <= baseSq) return [];
-    // Straight-line estimate of the perpendicular bulge that makes
-    // dist(start,W) + dist(W,end) ≈ targetDistM, from Pythagoras on the
-    // isosceles triangle start–W–end.
-    final estOffset = math.sqrt(halfTargetSq - baseSq);
-
-    final bearing = GeometryUtils.bearingDegrees(start, end);
-    final mid = LatLng(
-      (start.latitude + end.latitude) / 2,
-      (start.longitude + end.longitude) / 2,
+      LatLng start, LatLng end, double targetDistM,
+      {double? naturalDistM}) async {
+    final padded = await _paddedLegCandidates(
+      start,
+      end,
+      targetDistM,
+      naturalLegM: naturalDistM,
     );
-
-    Future<({RouteSegment seg, bool ok, bool rateLimited, double side})>
-        tryOffset(double offset, double side) async {
-      final w = _offset(mid, offset, bearing + 90 * side);
-      final chain = await _routeChain([start, w, end]);
-      return (
-        seg: chain.seg,
-        ok: chain.ok,
-        rateLimited: chain.rateLimited,
-        side: side,
-      );
+    if (padded.segments.isEmpty) {
+      if (padded.rateLimited) _lastSearchRateLimited = true;
+      return [];
     }
 
-    // Both sides of the direct line in parallel — one may run into an
-    // obstacle (water, a highway with no crossing) the other doesn't.
-    final firstPass =
-        await Future.wait([tryOffset(estOffset, 1), tryOffset(estOffset, -1)]);
-
-    final rateLimited = firstPass.any((c) => c.rateLimited);
-    final usable = firstPass.where((c) => c.ok).toList()
-      ..sort((a, b) => _toleranceMiss(a.seg.distanceMeters, targetDistM)
-          .compareTo(_toleranceMiss(b.seg.distanceMeters, targetDistM)));
-
-    final segments = <RouteSegment>[
-      for (final c in usable)
-        if (_withinMatchTolerance(c.seg.distanceMeters, targetDistM)) c.seg,
-    ];
-
-    if (segments.isEmpty && usable.isNotEmpty && !rateLimited) {
-      final best = usable.first;
-      var currentOffset = estOffset;
-      var currentDist = best.seg.distanceMeters;
-      const maxRefinements = 2;
-      for (var attempt = 0; attempt < maxRefinements; attempt++) {
-        final ratio = currentDist / targetDistM;
-        if (ratio <= 0.5 || ratio >= 2.0) break;
-        currentOffset = currentOffset / ratio;
-        final refined = await tryOffset(currentOffset, best.side);
-        if (!refined.ok) break;
-        currentDist = refined.seg.distanceMeters;
-        if (_withinMatchTolerance(currentDist, targetDistM)) {
-          segments.add(refined.seg);
-          break;
-        }
-      }
-    }
-
-    if (segments.isEmpty && rateLimited) _lastSearchRateLimited = true;
+    final ranked = _dedupeSimilarRoutes([...padded.segments]
+      ..sort((a, b) => _toleranceMiss(a.distanceMeters, targetDistM)
+          .compareTo(_toleranceMiss(b.distanceMeters, targetDistM))));
 
     final results = <_FoundRoute>[];
-    for (final seg in segments.take(3)) {
+    for (final seg in ranked.take(3)) {
       results.add(_toFoundRoute(seg, results.length));
     }
     return results;

@@ -102,8 +102,8 @@ class RoutingService {
   static Map<String, dynamic> _asStringMap(dynamic v) =>
       Map<String, dynamic>.from(v as Map);
 
-  /// Client-side callable timeout for a single `orsRoute` call (either
-  /// mode). Must stay comfortably above the Cloud Function's own
+  /// Client-side callable timeout for a single `orsRoute` call (any of
+  /// its modes). Must stay comfortably above the Cloud Function's own
   /// server-side fetch timeout (`ORS_TIMEOUT_MS` = 12s in
   /// functions/routing.js) — otherwise the client gives up and throws
   /// *before* the function itself would, and that gets treated identically
@@ -264,6 +264,94 @@ class RoutingService {
         '(${destination.latitude},${destination.longitude})',
       );
       return fallback();
+    }
+  }
+
+  /// Requests one closed foot-walking loop of roughly [lengthMeters]
+  /// starting and ending at [start], via the `orsRoute` proxy's
+  /// `round_trip` mode (ORS's native `options.round_trip` — the routing
+  /// engine itself grows the loop out of the real road network, so unlike
+  /// a chain of [fetchRoute] calls through synthetic offset waypoints it
+  /// can't strand across rivers or highways, and one call replaces three).
+  ///
+  /// [seed] varies the loop's overall direction (different seeds →
+  /// geometrically different candidate loops); [points] its roundness
+  /// (higher = rounder — more enclosed area for the same distance). ORS
+  /// documents `length` as a preferred value, not a guarantee: callers
+  /// that need a tolerance re-request with the length rescaled by the
+  /// measured ratio, keeping the same [seed] so the loop grows/shrinks in
+  /// place instead of jumping direction.
+  ///
+  /// Same contract as [fetchRoute]: null on any failure, and
+  /// [throwOnRateLimit] opts an HTTP 429 into
+  /// [RoutingRateLimitedException] instead — route search's loop
+  /// generator fires several of these in parallel and must stop probing
+  /// into an active rate-limit window rather than retry into it.
+  static Future<RouteSegment?> fetchRoundTrip(
+    LatLng start, {
+    required double lengthMeters,
+    int points = 5,
+    int seed = 0,
+    bool throwOnRateLimit = false,
+  }) async {
+    try {
+      final callable = _functions.httpsCallable(
+        'orsRoute',
+        options: HttpsCallableOptions(timeout: _callTimeout),
+      );
+      final result = await callable.call(<String, dynamic>{
+        'origin': {'lat': start.latitude, 'lng': start.longitude},
+        'mode': 'round_trip',
+        'lengthMeters': lengthMeters,
+        'points': points,
+        'seed': seed,
+      });
+
+      final data = _asStringMap(result.data);
+      final statusCode = data['status'] as int;
+      if (statusCode != 200) {
+        debugPrint(
+          'RoutingService.fetchRoundTrip: HTTP $statusCode for '
+          '(${start.latitude},${start.longitude}) '
+          'length=${lengthMeters.round()}m seed=$seed',
+        );
+        if (throwOnRateLimit && statusCode == 429) {
+          throw const RoutingRateLimitedException();
+        }
+        return null;
+      }
+
+      // Same GeoJSON FeatureCollection shape as the other directions
+      // responses — one feature carrying the whole loop.
+      final json = _asStringMap(data['body']);
+      final features = json['features'] as List<dynamic>;
+      if (features.isEmpty) return null;
+
+      final feature = _asStringMap(features[0]);
+      final props = _asStringMap(feature['properties']);
+      final summary = _asStringMap(props['summary']);
+      final double distance = (summary['distance'] as num).toDouble();
+
+      final geometry = _asStringMap(feature['geometry']);
+      final rawCoords = geometry['coordinates'] as List<dynamic>;
+      final polyline = rawCoords
+          .map((c) => LatLng(
+                (c[1] as num).toDouble(),
+                (c[0] as num).toDouble(),
+              ))
+          .toList();
+      if (polyline.length < 2) return null;
+
+      return RouteSegment(polyline: polyline, distanceMeters: distance);
+    } on RoutingRateLimitedException {
+      rethrow;
+    } catch (e) {
+      debugPrint(
+        'RoutingService.fetchRoundTrip: $e for '
+        '(${start.latitude},${start.longitude}) '
+        'length=${lengthMeters.round()}m seed=$seed',
+      );
+      return null;
     }
   }
 
