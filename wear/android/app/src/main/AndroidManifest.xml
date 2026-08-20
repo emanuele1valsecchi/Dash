@@ -1,8 +1,35 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Marks this as a watch app: Play Store filtering, and the launcher only
+         surfaces it on a watch. Required, not optional. -->
+    <uses-feature android:name="android.hardware.type.watch" />
+
+    <!-- GPS for standalone recording, body sensors for heart rate. Both are
+         declared required="false" deliberately: the Galaxy Watch 6 has both,
+         but cheaper Wear OS watches ship without built-in GPS, and marking it
+         required would hide the app from them entirely rather than letting it
+         run in phone-companion mode. The app feature-detects at runtime. -->
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.heartrate" android:required="false" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <!-- Ambient mode: without this the screen blanks a few seconds after
+         wrist-down and the run screen is simply gone mid-workout. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <application
-        android:label="dash_wear"
+        android:label="Dash"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+
+        <!-- Declares the watch app works without a phone app installed. Even in
+             companion mode this should stay true: the watch app is installable
+             on its own, and standalone GPS recording is the eventual goal. -->
+        <meta-data
+            android:name="com.google.android.wearable.standalone"
+            android:value="true" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

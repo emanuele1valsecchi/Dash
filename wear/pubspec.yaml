@@ -1,5 +1,5 @@
 name: dash_wear
-description: "A new Flutter project."
+description: "Dash companion app for Wear OS — live run metrics on the wrist."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -31,9 +31,16 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
+  # The wire format shared with the phone app. By path, so the two can never
+  # drift apart the way two hand-maintained copies of a serialization format
+  # would — see packages/dash_watch_protocol.
+  dash_watch_protocol:
+    path: ../packages/dash_watch_protocol
+
+  # Ambient (always-on) mode and round/square screen detection. Without ambient
+  # support the display blanks a few seconds after wrist-down and the run screen
+  # is gone mid-workout.
+  wear_plus: ^1.2.4
 
 dev_dependencies:
   flutter_test:
