@@ -6,7 +6,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -15,7 +14,7 @@ import '../models/water_fountain.dart';
 import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
-import '../services/run_session_repository.dart';
+import '../services/run_session_controller.dart';
 import '../services/water_fountain_service.dart';
 import '../utils/geometry_utils.dart';
 import '../widgets/map/area_visibility_toggle.dart';
@@ -24,16 +23,6 @@ import '../widgets/map/enhanced_map_gestures.dart';
 import '../widgets/map/water_fountain_marker_layer.dart';
 import '../widgets/run_results_dialog.dart';
 import 'test_run_creator_page.dart';
-
-// ── Track point ──────────────────────────────────────────────────────────────
-
-/// A single accepted GPS fix, kept alongside its timestamp so pace can be
-/// computed over a rolling time window rather than raw instantaneous speed.
-class _TrackPoint {
-  final LatLng point;
-  final DateTime time;
-  const _TrackPoint(this.point, this.time);
-}
 
 // ── Run summary (returned to the caller on finish) ─────────────────────────
 
@@ -87,25 +76,22 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   bool _isFollowingUser = true;
   bool _isCameraAnimating = false;
 
-  /// Most recent (smoothed) valid GPS course-over-ground, used to keep the
-  /// expanded map oriented in the runner's direction of travel instead of
-  /// north-up.
-  double? _lastHeading;
+  // ── Run session ───────────────────────────────────────────────────────────
 
-  /// Recent raw headings feeding [_lastHeading]'s circular mean — see
-  /// [_circularMeanDegrees].
-  final List<double> _recentHeadings = [];
-  static const int _headingSmoothingWindow = 3;
+  /// Everything about the run itself — clock, GPS stream, breadcrumb trail,
+  /// distance/pace/altitude, loop detection, route guidance — lives here. This
+  /// screen is the UI on top of it and owns none of that state.
+  ///
+  /// A singleton, so the session can outlive this screen (what background
+  /// tracking and a smartwatch companion will need). Nothing relies on that
+  /// yet: [dispose] still calls `reset()`, so leaving the screen ends the run
+  /// exactly as it always has.
+  final RunSessionController _controller = RunSessionController.instance;
 
-  /// Course-over-ground is only meaningful — and not just sensor noise —
-  /// once actually moving at more than a slow walk.
-  static const double _minSpeedForHeadingMs = 0.6; // ~2.2 km/h
-
-  // ── Location ──────────────────────────────────────────────────────────────
-  StreamSubscription<Position>? _positionSub;
-  LatLng? _currentPosition;
-  bool _isLoadingLocation = true;
-  bool _permissionDenied = false;
+  /// Length of the controller's breadcrumb trail as of the last notification,
+  /// so [_onSessionChanged] can tell "a new fix landed" (advance the map trail)
+  /// from any other state change. The controller notifies for many reasons.
+  int _lastBreadcrumbLength = 0;
 
   // ── Water fountains (OpenStreetMap) ─────────────────────────────────────────
   // Fetched once at the runner's starting position — not refreshed as the
@@ -140,7 +126,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   // GPS fixes arrive in discrete jumps, which makes the marker teleport
   // instead of glide. This is a single exponential "chase": a perpetual
   // per-frame ticker nudges [_displayedPosition] a fraction of the remaining
-  // gap toward [_currentPosition] (the raw latest fix) every frame, scaled
+  // gap toward [_controller.currentPosition] (the raw latest fix) every frame, scaled
   // by real elapsed time. Two things this is deliberately NOT, because both
   // were tried and both still visibly stalled:
   //
@@ -160,7 +146,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   // The fix for both: the chase's time constant (computed fresh each tick in
   // [_onDotTick]) is *adaptive*, tracking the recently observed real gap
   // between fixes (any pace, any GPS cadence) via
-  // [_fixIntervalEstimateSeconds], with enough headroom that the chase
+  // [_controller.fixIntervalEstimateSeconds], with enough headroom that the chase
   // structurally cannot finish converging before the next fix retargets it.
   // It only actually reaches "settled" once fixes genuinely stop arriving —
   // i.e. the runner has actually stopped — which is exactly when the dot
@@ -169,13 +155,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   double? _displayedHeading;
   late final Ticker _dotTicker;
   Duration _dotTickerLastElapsed = Duration.zero;
-
-  /// Rolling estimate (EMA) of the real time between accepted GPS fixes,
-  /// updated every fix from the same delta already computed for the
-  /// GPS-spike check. Seeded with a plausible default before any fixes
-  /// have arrived.
-  double _fixIntervalEstimateSeconds = 0.8;
-  static const double _fixIntervalEmaAlpha = 0.35;
 
   /// The chase's time constant is this multiple of the observed fix
   /// interval — comfortably longer than the gap it needs to survive, so a
@@ -193,71 +172,20 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// actually stops.
   static const double _dotChaseSnapThresholdMeters = 0.25;
 
-  /// Fixes worse than this are dropped entirely — a bad fix would otherwise
-  /// corrupt distance, pace and loop detection.
-  static const double _accuracyThresholdMeters = 20.0;
+  // ── UI-only run bookkeeping ───────────────────────────────────────────────
 
-  /// A jump implying a faster-than-humanly-possible pace is treated as a GPS
-  /// spike and discarded rather than added to the trail. This is also what
-  /// makes the dot appear to freeze when riding in a car — a car easily
-  /// exceeds running speed, so every fix gets rejected as a "spike" rather
-  /// than tracked. That's intentional (it stops someone from driving to
-  /// rack up distance/claim areas), but nothing currently tells the user
-  /// *why* tracking has stalled — flag if that should surface a message.
-  static const double _maxPlausibleSpeedMs = 8.0; // ~28.8 km/h
-
-  // ── Pre-run countdown ─────────────────────────────────────────────────────
-  bool _isCountingDown = false;
-  bool _countdownPaused = false;
-  int _countdownValue = 5;
-  Timer? _countdownTimer;
-  bool _hasStarted = false;
-
-  // ── Run state ─────────────────────────────────────────────────────────────
-  final Stopwatch _stopwatch = Stopwatch();
+  /// Drives the HH:MM:SS:DD display at 10 Hz, independent of GPS, so the clock
+  /// stays smooth between location fixes. Purely a repaint pulse — the elapsed
+  /// time itself comes from the controller's stopwatch.
   Timer? _uiTicker;
-  bool _isPaused = false;
+
+  /// Re-entrancy guard on [_finishRun]'s `Navigator.pop`. Stays here rather
+  /// than moving to the controller: it guards a navigation call, not run state.
   bool _isFinishing = false;
-
-  final List<_TrackPoint> _breadcrumb = [];
-  double _distanceMeters = 0;
-  double? _currentPaceMinPerKm;
-  double? _bestPaceMinPerKm;
-
-  double _minAltitude = double.infinity;
-  double _maxAltitude = double.negativeInfinity;
-  bool _hasAltitudeSample = false;
-
-  // ── Loop detection ───────────────────────────────────────────────────────
-  final List<List<LatLng>> _closedLoops = [];
-
-  /// The `[_breadcrumb]` index range each entry in [_closedLoops] was built
-  /// from — used only to detect when a newly-closed loop supersedes an
-  /// earlier one (see `_checkLoopClosure`); `GeometryUtils.findLoopClosureIndex`
-  /// itself always searches the whole trail, so re-crossing ground from an
-  /// already-closed loop (e.g. a bigger loop run around a smaller one) is
-  /// always caught, however far back it reaches.
-  final List<int> _loopRangeStart = [];
-  final List<int> _loopRangeEnd = [];
-  int get _loopsCompleted => _closedLoops.length;
-  static const double _minLoopAreaM2 = 50.0;
-
-  // ── Derived stats (used both live and in the finish summary) ────────────
-  double get _avgPaceMinPerKm {
-    final km = _distanceMeters / 1000.0;
-    if (km <= 0) return 0;
-    final minutes = _stopwatch.elapsed.inMilliseconds / 1000.0 / 60.0;
-    return minutes / km;
-  }
-
-  double get _caloriesBurned => (_distanceMeters / 1000.0) * 70.0;
-
-  double get _elevationDifferenceMeters =>
-      _hasAltitudeSample ? (_maxAltitude - _minAltitude) : 0.0;
 
   /// The trail as painted on the map: every confirmed fix, plus a final
   /// "live" vertex that the dot-chase ([_onDotTick]) mutates in place each
-  /// frame rather than rebuilding this whole list from [_breadcrumb] every
+  /// frame rather than rebuilding this whole list from [_controller.breadcrumb] every
   /// tick — for a long run with thousands of points, re-copying the entire
   /// trail 60 times a second for every glide would be needless GC pressure.
   /// flutter_map's polyline painter already repaints every frame regardless
@@ -268,7 +196,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// filter on the raw fixes, this also smooths out the jagged look of
   /// connecting noisy raw GPS points with straight segments (most visible on
   /// turns/roundabouts) as a side effect, with no separate smoothing pass
-  /// needed. [_breadcrumb] stays the raw, unsmoothed source of truth for
+  /// needed. [_controller.breadcrumb] stays the raw, unsmoothed source of truth for
   /// distance/pace/loop-closure — none of that math is affected by this.
   final List<LatLng> _trailPoints = [];
 
@@ -283,12 +211,35 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   @override
   void initState() {
     super.initState();
+    // The controller is a singleton, so a previous run's state could still be
+    // sitting in it — clear before anything else touches it.
+    _controller.reset();
+    _controller.addListener(_onSessionChanged);
+
     _dotTicker = createTicker(_onDotTick)..start();
     final route = widget.plannedRoute;
     _smoothedPlannedRoute =
         (route != null && route.length >= 3) ? GeometryUtils.smoothPolyline(route) : route;
     _initLocation();
     _loadClaimedAreas();
+  }
+
+  /// Repaints on any controller change, and advances the map trail whenever
+  /// that change was a newly-accepted GPS fix.
+  void _onSessionChanged() {
+    if (!mounted) return;
+
+    // The countdown handing over to a live run is the controller's decision,
+    // so the screen picks it up here rather than being told directly.
+    if (_controller.hasStarted && _uiTicker == null) _startUiTicker();
+
+    final length = _controller.breadcrumb.length;
+    if (length > _lastBreadcrumbLength) {
+      _lastBreadcrumbLength = length;
+      final position = _controller.currentPosition;
+      if (position != null) _advanceTrail(position);
+    }
+    setState(() {});
   }
 
   Future<void> _loadClaimedAreas() async {
@@ -299,9 +250,15 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
   @override
   void dispose() {
-    _positionSub?.cancel();
+    _controller.removeListener(_onSessionChanged);
+    // Leaving this screen still ends the run, exactly as it always has. The
+    // controller being a singleton means it *could* keep recording instead —
+    // removing this one call is what will enable minimize-and-keep-running
+    // once there's a foreground service to keep GPS alive. Never call
+    // `_controller.dispose()`: it is app-lifetime, not screen-lifetime.
+    _controller.reset();
+
     _uiTicker?.cancel();
-    _countdownTimer?.cancel();
     _dotTicker.dispose();
     _mapController.dispose();
     _previewMapController.dispose();
@@ -321,37 +278,24 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// continuous stream ([_startPositionStream], via [_beginRun]) recording
   /// breadcrumbs before the authoritative starting point exists.
   Future<void> _initLocation() async {
-    await LocationService.instance.start();
+    await _controller.prepare(plannedRoute: widget.plannedRoute);
     if (!mounted) return;
-    if (!LocationService.instance.permissionGranted) {
-      setState(() {
-        _isLoadingLocation = false;
-        _permissionDenied = true;
-      });
-      return;
-    }
+    if (_controller.permissionDenied) return;
 
-    try {
-      final pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-      );
-      final ll = LatLng(pos.latitude, pos.longitude);
-      _breadcrumb.add(_TrackPoint(ll, pos.timestamp));
-      _recordAltitude(pos.altitude);
-      _trailPoints.add(ll);
-      setState(() {
-        _currentPosition = ll;
-        _displayedPosition = ll; // nothing to chase from yet — show it directly
-        _isLoadingLocation = false;
-      });
-      _waterFountainService.fetchNearby(ll).then((fountains) {
+    final start = _controller.currentPosition;
+    if (start != null) {
+      // Seed the map's own display state from the controller's first fix —
+      // nothing to chase from yet, so show it directly.
+      _lastBreadcrumbLength = _controller.breadcrumb.length;
+      _trailPoints.add(start);
+      setState(() => _displayedPosition = start);
+
+      _waterFountainService.fetchNearby(start).then((fountains) {
         // null means the fetch failed (e.g. rate-limited) — leave whatever
         // was already showing rather than clearing it to empty.
         if (!mounted || fountains == null) return;
         setState(() => _waterFountains = fountains);
       });
-    } catch (_) {
-      setState(() => _isLoadingLocation = false);
     }
 
     if (!await _confirmStartProximity()) {
@@ -359,7 +303,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
       return;
     }
 
-    _startCountdown();
+    _controller.startCountdown();
   }
 
   /// If a [RunTrackingPage.plannedRoute] is set and the runner's current fix
@@ -369,11 +313,12 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// chose to continue anyway).
   Future<bool> _confirmStartProximity() async {
     final route = widget.plannedRoute;
-    if (route == null || route.isEmpty || _currentPosition == null) {
+    final position = _controller.currentPosition;
+    if (route == null || route.isEmpty || position == null) {
       return true;
     }
     const dist = Distance();
-    final startDistance = dist(_currentPosition!, route.first);
+    final startDistance = dist(position, route.first);
     if (startDistance <= _maxStartDistanceMeters) return true;
 
     final proceed = await _showConfirmDialog(
@@ -400,7 +345,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// RunTrackingPage.plannedRoute doc).
   Polyline? get _startConnectorLine {
     final route = widget.plannedRoute;
-    final pos = _displayedPosition ?? _currentPosition;
+    final pos = _displayedPosition ?? _controller.currentPosition;
     if (route == null || route.isEmpty || pos == null) return null;
     final startDistance = const Distance()(pos, route.first);
     if (startDistance < _startConnectorMinDistanceMeters) return null;
@@ -411,13 +356,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
       strokeWidth: 2.0,
       pattern: StrokePattern.dashed(segments: const [8, 6]),
     );
-  }
-
-  void _recordAltitude(double altitude) {
-    if (!altitude.isFinite) return;
-    _hasAltitudeSample = true;
-    if (altitude < _minAltitude) _minAltitude = altitude;
-    if (altitude > _maxAltitude) _maxAltitude = altitude;
   }
 
   /// Wired to `MapOptions.onPositionChanged`. Keeps [_fountainsVisible] in
@@ -442,45 +380,13 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
   // ── Pre-run countdown ─────────────────────────────────────────────────────
 
-  void _startCountdown() {
-    setState(() {
-      _isCountingDown = true;
-      _countdownPaused = false;
-      _countdownValue = 5;
-    });
-    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_countdownValue <= 1) {
-        timer.cancel();
-        setState(() {
-          _isCountingDown = false;
-          _countdownValue = 0;
-        });
-        _beginRun();
-        return;
-      }
-      setState(() => _countdownValue--);
-    });
-  }
-
-  void _toggleCountdownPause() {
-    if (_countdownPaused) {
-      _startCountdown(); // resuming restarts the countdown from 5
-    } else {
-      _countdownTimer?.cancel();
-      setState(() => _countdownPaused = true);
-    }
-  }
-
   /// Dev-only shortcut for generating `runningSessions` docs without
   /// physically running, to test the area-claiming logic.
   Future<void> _openTestRunCreator() async {
     // Pause the countdown before leaving — timers keep firing even while
     // this route isn't on top, so without this a real run could silently
     // start while the user is away on the testing screen.
-    if (!_countdownPaused) {
-      _countdownTimer?.cancel();
-      setState(() => _countdownPaused = true);
-    }
+    if (!_controller.countdownPaused) _controller.pauseCountdown();
 
     final created = await Navigator.of(context).push<bool>(
       MaterialPageRoute(builder: (_) => const TestRunCreatorPage()),
@@ -492,79 +398,17 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     }
   }
 
-  void _beginRun() {
-    _hasStarted = true;
-    _stopwatch.start();
-    _startPositionStream();
-
-    // Drives the HH:MM:SS:DD display; independent of GPS so the clock stays
-    // smooth even between location fixes.
-    _uiTicker = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      if (mounted) setState(() {});
-    });
-  }
-
-  // Metres of movement required before the GPS callback fires — the main
-  // lever trading animation smoothness against battery drain, since it's
-  // a distance filter rather than a timer poll. Currently tuned for a
-  // smooth-looking dot. 5m was the original, more battery-conservative
-  // value; once a Settings page exists, wire a "Battery saver" toggle to
-  // switch between the two instead of hardcoding one.
-  static const int _distanceFilterMeters = 2;
-
   /// Beyond this distance from a [RunTrackingPage.plannedRoute]'s start, warn
   /// the user before starting the run instead of silently proceeding.
   static const double _maxStartDistanceMeters = 150.0;
 
-  void _startPositionStream() {
-    _positionSub = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: _distanceFilterMeters,
-      ),
-    ).listen(_onPosition);
-  }
-
-  void _onPosition(Position pos) {
-    if (_isPaused || !mounted) return;
-    if (pos.accuracy > _accuracyThresholdMeters) return;
-
-    final newPoint = LatLng(pos.latitude, pos.longitude);
-    final newTime = pos.timestamp;
-
-    if (_breadcrumb.isNotEmpty) {
-      final prev = _breadcrumb.last;
-      final segMeters = const Distance()(prev.point, newPoint);
-      final segSeconds = newTime.difference(prev.time).inMilliseconds / 1000.0;
-      if (segSeconds > 0 && segMeters / segSeconds > _maxPlausibleSpeedMs) {
-        return; // GPS spike — ignore this fix entirely.
-      }
-      _distanceMeters += segMeters;
-      if (segSeconds > 0) {
-        _fixIntervalEstimateSeconds =
-            _fixIntervalEmaAlpha * segSeconds + (1 - _fixIntervalEmaAlpha) * _fixIntervalEstimateSeconds;
-      }
-    }
-
-    _breadcrumb.add(_TrackPoint(newPoint, newTime));
-    _recordAltitude(pos.altitude);
-    _updatePace();
-    _checkLoopClosure();
-
-    _currentPosition = newPoint;
-
-    if (pos.speed >= _minSpeedForHeadingMs && pos.heading.isFinite && pos.heading >= 0) {
-      // Averaged over the last few fixes (circular mean, since heading wraps
-      // at 360°) rather than trusted per-fix — a single noisy course reading
-      // mid-turn was making the map's rotation visibly twitchy.
-      _recentHeadings.add(pos.heading);
-      if (_recentHeadings.length > _headingSmoothingWindow) {
-        _recentHeadings.removeAt(0);
-      }
-      _lastHeading = _circularMeanDegrees(_recentHeadings);
-    }
-
-    _advanceTrail(newPoint);
+  /// Starts the 10 Hz repaint pulse that keeps the HH:MM:SS:DD display smooth
+  /// between GPS fixes. Called once the countdown hands over to a live run.
+  void _startUiTicker() {
+    _uiTicker?.cancel();
+    _uiTicker = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
   /// Hands the chase ticker ([_onDotTick]) a new point to head toward.
@@ -586,8 +430,8 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   }
 
   /// Runs every frame for the lifetime of the page (started in [initState]),
-  /// nudging [_displayedPosition]/[_displayedHeading] toward [_currentPosition]
-  /// / [_lastHeading]. See the "Dot smoothing" field comments for why this is
+  /// nudging [_displayedPosition]/[_displayedHeading] toward [_controller.currentPosition]
+  /// / [_controller.lastHeading]. See the "Dot smoothing" field comments for why this is
   /// a perpetual, adaptively-paced chase rather than a bounded per-fix
   /// animation or a fixed time constant.
   void _onDotTick(Duration elapsed) {
@@ -597,12 +441,12 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     if (dtMs <= 0) return;
     final dt = dtMs / 1000.0;
 
-    final target = _currentPosition;
+    final target = _controller.currentPosition;
     final current = _displayedPosition;
     if (target == null || current == null) return;
 
     final tau =
-        (_fixIntervalEstimateSeconds * _dotChaseTauMultiplier).clamp(_dotChaseTauMin, _dotChaseTauMax);
+        (_controller.fixIntervalEstimateSeconds * _dotChaseTauMultiplier).clamp(_dotChaseTauMin, _dotChaseTauMax);
     final factor = 1 - math.exp(-dt / tau);
 
     var newDisplayed = LatLng(
@@ -619,7 +463,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     }
 
     double? newHeading = _displayedHeading;
-    final headingTarget = _lastHeading;
+    final headingTarget = _controller.lastHeading;
     if (headingTarget != null) {
       newHeading =
           newHeading == null ? headingTarget : _lerpAngleDegrees(newHeading, headingTarget, factor);
@@ -661,7 +505,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// The map rotation to show while following the runner, given whichever
   /// course-over-ground [heading] the caller currently has on hand (the
   /// smoothed [_displayedHeading] for the continuous per-frame follow in
-  /// [_onDotTick], the raw [_lastHeading] for a one-off snap like
+  /// [_onDotTick], the raw [_controller.lastHeading] for a one-off snap like
   /// [_toggleMapExpanded] or the "my location" button's [_centerOnUser]) —
   /// negated to flutter_map's rotation convention, same as this app's other
   /// heading-follow code. Null (not moving fast enough yet for a real course
@@ -693,23 +537,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     var diff = (b - a + 180) % 360 - 180;
     if (diff < -180) diff += 360;
     return a + diff * t;
-  }
-
-  /// Circular mean of [degreesList] — averaging angles by summing their unit
-  /// vectors and taking the resulting direction, rather than averaging the
-  /// raw degree values, which breaks near the 0°/360° wrap (e.g. naively
-  /// averaging 350° and 10° gives 180°, the exact opposite of the true ~0°
-  /// average).
-  double _circularMeanDegrees(List<double> degreesList) {
-    double sumSin = 0, sumCos = 0;
-    for (final d in degreesList) {
-      final rad = d * math.pi / 180;
-      sumSin += math.sin(rad);
-      sumCos += math.cos(rad);
-    }
-    var meanDeg = math.atan2(sumSin, sumCos) * 180 / math.pi;
-    if (meanDeg < 0) meanDeg += 360;
-    return meanDeg;
   }
 
   // ── Camera animation ─────────────────────────────────────────────────────
@@ -778,122 +605,35 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// [_onDotTick] resumes auto-following from there.
   Future<void> _centerOnUser() async {
     setState(() => _isFollowingUser = true);
-    final target = _displayedPosition ?? _currentPosition;
+    final target = _displayedPosition ?? _controller.currentPosition;
     if (target != null) {
       await _animateCameraTo(
         target,
         _defaultZoom,
-        targetRotationDegrees: _followRotationDegrees(_lastHeading),
+        targetRotationDegrees: _followRotationDegrees(_controller.lastHeading),
       );
     }
   }
 
-  /// Average pace over the trailing [_paceWindowSeconds]; falls back to the
-  /// whole-run average until enough history has built up.
-  static const double _paceWindowSeconds = 20.0;
-
-  void _updatePace() {
-    if (_breadcrumb.length < 2) {
-      _currentPaceMinPerKm = null;
-      return;
-    }
-
-    final tip = _breadcrumb.last;
-    double windowDistance = 0;
-    DateTime? windowStart;
-
-    for (int i = _breadcrumb.length - 1; i > 0; i--) {
-      final a = _breadcrumb[i - 1];
-      final b = _breadcrumb[i];
-      windowDistance += const Distance()(a.point, b.point);
-      if (tip.time.difference(a.time).inMilliseconds / 1000.0 >= _paceWindowSeconds) {
-        windowStart = a.time;
-        break;
-      }
-    }
-
-    final double elapsedSeconds;
-    final double distanceForPace;
-    if (windowStart != null) {
-      elapsedSeconds = tip.time.difference(windowStart).inMilliseconds / 1000.0;
-      distanceForPace = windowDistance;
-    } else {
-      elapsedSeconds = _stopwatch.elapsed.inMilliseconds / 1000.0;
-      distanceForPace = _distanceMeters;
-    }
-
-    if (distanceForPace < 3 || elapsedSeconds <= 0) {
-      _currentPaceMinPerKm = null;
-      return;
-    }
-    final pace = (elapsedSeconds / 60.0) / (distanceForPace / 1000.0);
-    _currentPaceMinPerKm = pace;
-    if (_bestPaceMinPerKm == null || pace < _bestPaceMinPerKm!) {
-      _bestPaceMinPerKm = pace;
-    }
-  }
-
-  void _checkLoopClosure() {
-    final points = _breadcrumb.map((t) => t.point).toList(growable: false);
-    final idx = GeometryUtils.findLoopClosureIndex(points);
-    if (idx == null) return;
-
-    final polygon = points.sublist(idx);
-    final area = GeometryUtils.polygonAreaM2(polygon);
-    if (area < _minLoopAreaM2) return;
-
-    // A bigger loop supersedes any already-closed loop it overlaps with —
-    // `findLoopClosureIndex` always walks as far back along the trail as
-    // still closes a loop, so it's always at least as large as anything
-    // sharing its ground (e.g. a bigger loop run around one already closed).
-    final rangeStart = idx;
-    final rangeEnd = points.length - 1;
-    for (int i = _closedLoops.length - 1; i >= 0; i--) {
-      final overlaps =
-          _loopRangeStart[i] <= rangeEnd && rangeStart <= _loopRangeEnd[i];
-      if (!overlaps) continue;
-      _closedLoops.removeAt(i);
-      _loopRangeStart.removeAt(i);
-      _loopRangeEnd.removeAt(i);
-    }
-
-    _closedLoops.add(polygon);
-    _loopRangeStart.add(rangeStart);
-    _loopRangeEnd.add(rangeEnd);
-  }
-
   // ── Controls ──────────────────────────────────────────────────────────────
-
-  void _togglePause() {
-    setState(() => _isPaused = !_isPaused);
-    if (_isPaused) {
-      _stopwatch.stop();
-      _positionSub?.cancel();
-      _positionSub = null;
-      _recentHeadings.clear(); // don't blend pre-pause direction into the resumed run
-    } else {
-      _stopwatch.start();
-      _startPositionStream();
-    }
-  }
 
   void _toggleMapExpanded() {
     setState(() {
       _isMapExpanded = !_isMapExpanded;
       _isFollowingUser = true; // always reopen the map in follow mode
     });
-    final target = _displayedPosition ?? _currentPosition;
+    final target = _displayedPosition ?? _controller.currentPosition;
     if (_isMapExpanded && target != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         try {
-          _mapController.moveAndRotate(target, _defaultZoom, _followRotationDegrees(_lastHeading));
+          _mapController.moveAndRotate(target, _defaultZoom, _followRotationDegrees(_controller.lastHeading));
         } catch (_) {}
       });
     }
   }
 
   Future<void> _confirmDiscard() async {
-    if (!_hasStarted) {
+    if (!_controller.hasStarted) {
       Navigator.of(context).pop();
       return;
     }
@@ -907,7 +647,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   }
 
   Future<void> _confirmFinish() async {
-    if (_distanceMeters < 20) {
+    if (_controller.distanceMeters < 20) {
       final confirmed = await _showConfirmDialog(
         title: 'Finish already?',
         message: "You've barely moved — finish the run anyway?",
@@ -922,9 +662,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   }
 
   void _stopRunClock() {
-    _stopwatch.stop();
-    _positionSub?.cancel();
-    _positionSub = null;
+    _controller.stopClock();
     _uiTicker?.cancel();
   }
 
@@ -934,9 +672,9 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     if (!mounted) return;
     Navigator.of(context).pop(
       RunSummary(
-        distanceMeters: _distanceMeters,
-        elapsed: _stopwatch.elapsed,
-        loopsCompleted: _loopsCompleted,
+        distanceMeters: _controller.distanceMeters,
+        elapsed: _controller.elapsed,
+        loopsCompleted: _controller.loopsCompleted,
         saved: saved,
       ),
     );
@@ -951,22 +689,11 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
       builder: (_) => _RunSummaryDialog(
         time: _formatElapsed(),
         distance: _formatDistanceKm(),
-        avgPace: _formatPaceValue(_avgPaceMinPerKm),
-        maxPace: _formatPaceValue(_bestPaceMinPerKm),
-        calories: '${_caloriesBurned.round()} kcal',
-        elevation: '${_elevationDifferenceMeters.round()} m',
-        onSave: (name) => RunSessionRepository.instance.saveSession(
-          name: name,
-          distanceMeters: _distanceMeters,
-          duration: _stopwatch.elapsed,
-          avgPaceMinPerKm: _avgPaceMinPerKm,
-          maxPaceMinPerKm: _bestPaceMinPerKm,
-          caloriesBurned: _caloriesBurned,
-          elevationDifferenceMeters: _elevationDifferenceMeters,
-          loopsCompleted: _loopsCompleted,
-          path: _breadcrumb.map((t) => t.point).toList(growable: false),
-          closedLoops: _closedLoops,
-        ),
+        avgPace: _formatPaceValue(_controller.avgPaceMinPerKm),
+        maxPace: _formatPaceValue(_controller.bestPaceMinPerKm),
+        calories: '${_controller.caloriesBurned.round()} kcal',
+        elevation: '${_controller.elevationDifferenceMeters.round()} m',
+        onSave: (name) => _controller.save(name: name),
         onRequestDiscardConfirm: () => _showConfirmDialog(
           title: 'Discard this run?',
           message: 'This run will not be saved and no area will be claimed.',
@@ -985,11 +712,11 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     await showRunResultsDialog(
       context: context,
       sessionId: sessionId,
-      path: _breadcrumb.map((t) => t.point).toList(growable: false),
-      distanceMeters: _distanceMeters,
-      duration: _stopwatch.elapsed,
-      caloriesBurned: _caloriesBurned,
-      elevationDifferenceMeters: _elevationDifferenceMeters,
+      path: _controller.path,
+      distanceMeters: _controller.distanceMeters,
+      duration: _controller.elapsed,
+      caloriesBurned: _controller.caloriesBurned,
+      elevationDifferenceMeters: _controller.elevationDifferenceMeters,
     );
     if (!mounted) return;
     _finishRun(saved: true);
@@ -1077,7 +804,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   // ── Formatting ────────────────────────────────────────────────────────────
 
   String _formatElapsed() {
-    final e = _stopwatch.elapsed;
+    final e = _controller.elapsed;
     String two(int v) => v.toString().padLeft(2, '0');
     final hh = two(e.inHours);
     final mm = two(e.inMinutes % 60);
@@ -1086,7 +813,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     return '$hh:$mm:$ss:$dd';
   }
 
-  String _formatDistanceKm() => '${(_distanceMeters / 1000).toStringAsFixed(2)} km';
+  String _formatDistanceKm() => '${(_controller.distanceMeters / 1000).toStringAsFixed(2)} km';
 
   String _formatPaceValue(double? pace) {
     if (pace == null || !pace.isFinite || pace <= 0) return '--:--';
@@ -1100,18 +827,18 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      // Once a run is actually in progress (`_hasStarted` — set in
+      // Once a run is actually in progress (`_controller.hasStarted` — set in
       // `_beginRun`, after the pre-run countdown), the system/gesture back
       // button must not silently exit — it should behave exactly like
       // tapping "Finish" (`_confirmFinish`), not like the X button's
       // `_confirmDiscard` (which abandons the run with no summary). Before
       // that (loading, permission-denied, countdown), there's nothing to
       // protect yet, so back pops normally — matching `_confirmDiscard`'s
-      // own `!_hasStarted` fast-path. `canPop: false` only blocks the
+      // own `!_controller.hasStarted` fast-path. `canPop: false` only blocks the
       // system back gesture/`maybePop`; every explicit `Navigator.pop()`
       // call elsewhere in this file (discard, finish, summary
       // save/discard) is unaffected and still pops immediately.
-      canPop: !_hasStarted,
+      canPop: !_controller.hasStarted,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         _confirmFinish();
@@ -1119,11 +846,11 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
       child: Scaffold(
         backgroundColor: const Color(0xFFF3F5EE),
         body: SafeArea(
-          child: _isLoadingLocation
+          child: _controller.isLoadingLocation
               ? _buildLoadingView()
-              : _permissionDenied
+              : _controller.permissionDenied
                   ? _buildPermissionDeniedView()
-                  : _isCountingDown
+                  : _controller.isCountingDown
                       ? _buildCountdownView()
                       : _isMapExpanded
                           ? _buildExpandedMapView()
@@ -1172,10 +899,10 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                   return;
                 }
                 if (status.isGranted) {
-                  setState(() {
-                    _permissionDenied = false;
-                    _isLoadingLocation = true;
-                  });
+                  // reset() restores exactly the loading/not-denied state
+                  // _initLocation expects to start from.
+                  _controller.reset();
+                  _lastBreadcrumbLength = 0;
                   _initLocation();
                 }
               },
@@ -1216,7 +943,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '$_countdownValue',
+                  '${_controller.countdownValue}',
                   style: const TextStyle(
                     fontSize: 132,
                     fontWeight: FontWeight.w800,
@@ -1229,18 +956,18 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                 SizedBox(
                   width: 200,
                   child: ElevatedButton(
-                    onPressed: _toggleCountdownPause,
+                    onPressed: _controller.toggleCountdownPause,
                     style: ElevatedButton.styleFrom(
                       backgroundColor:
-                          _countdownPaused ? const Color(0xFFCAF0B8) : const Color(0xFFF4C7C3),
+                          _controller.countdownPaused ? const Color(0xFFCAF0B8) : const Color(0xFFF4C7C3),
                       foregroundColor:
-                          _countdownPaused ? const Color(0xFF2E7D32) : const Color(0xFF8A3B34),
+                          _controller.countdownPaused ? const Color(0xFF2E7D32) : const Color(0xFF8A3B34),
                       elevation: 0,
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                     ),
                     child: Text(
-                      _countdownPaused ? 'RESUME' : 'STOP',
+                      _controller.countdownPaused ? 'RESUME' : 'STOP',
                       style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16, letterSpacing: 1.0),
                     ),
                   ),
@@ -1285,6 +1012,16 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
               children: [
                 const SizedBox(height: 12),
                 _buildTimeDisplay(),
+                if (_controller.guidance != null) ...[
+                  const SizedBox(height: 18),
+                  _RouteGuidanceCard(
+                    guidance: _controller.guidance!,
+                    // The smoothed heading the map dot uses, not the raw one —
+                    // an arrow twitching on every noisy course reading is far
+                    // more distracting than a dot doing the same.
+                    heading: _displayedHeading,
+                  ),
+                ],
                 const SizedBox(height: 22),
                 Row(
                   children: [
@@ -1300,13 +1037,13 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                       child: _StatBlock(
                         icon: Icons.speed_rounded,
                         label: 'Pace (min/km)',
-                        value: _formatPaceValue(_currentPaceMinPerKm),
+                        value: _formatPaceValue(_controller.currentPaceMinPerKm),
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 18),
-                _LoopIndicator(loopsCompleted: _loopsCompleted),
+                _LoopIndicator(loopsCompleted: _controller.loopsCompleted),
                 const SizedBox(height: 18),
                 _buildMapPreviewCard(),
               ],
@@ -1337,7 +1074,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
             ),
           ),
           const Spacer(),
-          if (_isPaused)
+          if (_controller.isPaused)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
@@ -1377,9 +1114,9 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
         children: [
           Expanded(
             child: OutlinedButton.icon(
-              onPressed: _togglePause,
-              icon: Icon(_isPaused ? Icons.play_arrow_rounded : Icons.pause_rounded, size: 20),
-              label: Text(_isPaused ? 'Resume' : 'Pause'),
+              onPressed: _controller.togglePause,
+              icon: Icon(_controller.isPaused ? Icons.play_arrow_rounded : Icons.pause_rounded, size: 20),
+              label: Text(_controller.isPaused ? 'Resume' : 'Pause'),
               style: OutlinedButton.styleFrom(
                 backgroundColor: overMap ? Colors.white : null,
                 foregroundColor: const Color(0xFF425143),
@@ -1424,8 +1161,8 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           child: _ExpandedStatsBar(
             time: _formatElapsed(),
             distance: _formatDistanceKm(),
-            pace: _formatPaceValue(_currentPaceMinPerKm),
-            loopsCompleted: _loopsCompleted,
+            pace: _formatPaceValue(_controller.currentPaceMinPerKm),
+            loopsCompleted: _controller.loopsCompleted,
             onCollapse: _toggleMapExpanded,
           ),
         ),
@@ -1435,7 +1172,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           child: _RoundMapButton(
             icon: Icons.my_location_rounded,
             tooltip: 'My location',
-            onTap: (_displayedPosition ?? _currentPosition) == null ? null : _centerOnUser,
+            onTap: (_displayedPosition ?? _controller.currentPosition) == null ? null : _centerOnUser,
           ),
         ),
         Positioned(
@@ -1464,7 +1201,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// runner's live position and route so there's something to actually see
   /// before tapping through to [_buildExpandedMapView].
   Widget _buildMapPreviewCard() {
-    final center = _displayedPosition ?? _currentPosition;
+    final center = _displayedPosition ?? _controller.currentPosition;
     if (center == null) return const SizedBox.shrink();
     final connector = _startConnectorLine;
 
@@ -1572,7 +1309,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
         mapController: _mapController,
         options: MapOptions(
           initialCenter:
-              _displayedPosition ?? _currentPosition ?? const LatLng(45.4642, 9.1900),
+              _displayedPosition ?? _controller.currentPosition ?? const LatLng(45.4642, 9.1900),
           initialZoom: _defaultZoom,
           minZoom: MapStyle.minZoom,
           cameraConstraint: CameraConstraint.contain(bounds: MapStyle.safeCameraBounds),
@@ -1595,9 +1332,9 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           ClaimedAreasLayer(areas: _visibleAreas),
 
           // ── Claimed loop fills (this run's own in-progress loops) ────────
-          if (_closedLoops.isNotEmpty)
+          if (_controller.closedLoops.isNotEmpty)
             PolygonLayer(
-              polygons: _closedLoops
+              polygons: _controller.closedLoops
                   .map((poly) => Polygon(
                         points: poly,
                         color: const Color(0xFF4A8C52).withValues(alpha: 0.18),
@@ -1641,11 +1378,11 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           WaterFountainMarkerLayer(fountains: _waterFountains, visible: _fountainsVisible),
 
           // ── Runner position ────────────────────────────────────────────
-          if ((_displayedPosition ?? _currentPosition) != null)
+          if ((_displayedPosition ?? _controller.currentPosition) != null)
             MarkerLayer(
               markers: [
                 Marker(
-                  point: _displayedPosition ?? _currentPosition!,
+                  point: _displayedPosition ?? _controller.currentPosition!,
                   width: 60,
                   height: 60,
                   child: const _RunnerLocationDot(),
@@ -1697,6 +1434,163 @@ class _StatBlock extends StatelessWidget {
       ),
     );
   }
+}
+
+// ── Route guidance (direction arrow) ─────────────────────────────────────────
+
+/// Compass-style direction arrow, shown only while a planned route is active.
+///
+/// Rotates to [RouteGuidance.targetBearingDegrees] *relative to* [heading], so
+/// it points where the runner should go from where they are actually facing —
+/// the same read as a handheld compass, legible at a glance and needing no
+/// street names (which the app doesn't have; see [GeometryUtils.routeGuidance]
+/// for why this is a bearing guide rather than turn-by-turn navigation).
+///
+/// [heading] is null whenever the runner is stationary or slower than
+/// `_minSpeedForHeadingMs`, since GPS course-over-ground is meaningless there.
+/// A *relative* arrow would then be pointing confidently in a direction that
+/// means nothing, so the card drops to a neutral "no bearing yet" state and
+/// keeps showing distance remaining instead of guessing.
+class _RouteGuidanceCard extends StatelessWidget {
+  final RouteGuidance guidance;
+  final double? heading;
+
+  const _RouteGuidanceCard({required this.guidance, required this.heading});
+
+  /// Close enough to the route's final point to call it done.
+  static const double _arrivalRadiusMeters = 20.0;
+
+  /// At or above this many degrees a change of direction reads as a junction
+  /// ("Turn left"); below it, as a curve in the road ("Bear left"). Turns are
+  /// only detected at all past `turnThresholdDegrees` (35°), so everything
+  /// between the two is a genuine bend rather than polyline noise.
+  static const double _sharpTurnDegrees = 70.0;
+
+  /// Inside this distance the turn is announced as "now" rather than counted
+  /// down — a runner covers the last few metres before it lands anyway.
+  static const double _imminentTurnMeters = 15.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final offRoute = guidance.isOffRoute;
+    final arrived =
+        !offRoute && guidance.distanceRemainingMeters < _arrivalRadiusMeters;
+    // Without a heading there is no way to say "turn left" — only "the route
+    // continues north", which is worse than saying nothing.
+    final canPoint = heading != null && !arrived;
+
+    final (Color bg, Color fg) = switch ((offRoute, arrived)) {
+      (true, _) => (const Color(0xFFF4E3B2), const Color(0xFF7A5B12)),
+      (_, true) => (const Color(0xFFCAF0B8), const Color(0xFF2E7D32)),
+      _ => (const Color(0xFFF0F2EB), const Color(0xFF4A8C52)),
+    };
+
+    final String title;
+    final String subtitle;
+    if (offRoute) {
+      title = 'Off route';
+      subtitle = '${guidance.offRouteMeters.round()} m away — follow the arrow back';
+    } else if (arrived) {
+      title = 'Route complete';
+      subtitle = 'You have reached the end of the planned route';
+    } else if (canPoint) {
+      title = _turnLabel();
+      subtitle = _formatRemaining(guidance.distanceRemainingMeters);
+    } else {
+      title = 'Getting your bearing';
+      subtitle =
+          '${_formatRemaining(guidance.distanceRemainingMeters)} — start moving';
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.7),
+              shape: BoxShape.circle,
+            ),
+            child: Center(child: _buildArrow(fg, canPoint, arrived)),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: fg,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: fg.withValues(alpha: 0.75),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildArrow(Color fg, bool canPoint, bool arrived) {
+    if (arrived) {
+      return Icon(Icons.flag_rounded, size: 26, color: fg);
+    }
+    if (!canPoint) {
+      return Icon(Icons.explore_outlined, size: 26, color: fg);
+    }
+    // Plain Transform rather than AnimatedRotation: [heading] is already the
+    // per-frame smoothed [_RunTrackingPageState._displayedHeading] (which
+    // interpolates the short way around 360°), so animating again here would
+    // only add lag — and AnimatedRotation would spin the long way round on
+    // every wrap past north.
+    final relative = (guidance.targetBearingDegrees - heading!) * math.pi / 180;
+    return Transform.rotate(
+      angle: relative,
+      child: Icon(Icons.navigation_rounded, size: 28, color: fg),
+    );
+  }
+
+  /// Headline text — the next change of direction if there is one within
+  /// range, otherwise an explicit "carry on", which is more reassuring
+  /// mid-run than a bare distance.
+  String _turnLabel() {
+    final distance = guidance.distanceToTurnMeters;
+    final angle = guidance.turnAngleDegrees;
+    if (distance == null || angle == null) return 'Continue straight';
+
+    final side = angle < 0 ? 'left' : 'right';
+    final verb = angle.abs() >= _sharpTurnDegrees ? 'Turn' : 'Bear';
+    if (distance < _imminentTurnMeters) return '$verb $side now';
+
+    // Rounded to 10 m: the underlying figure is a threshold crossing on a
+    // sampled polyline, so "in 80 m" is honest where "in 83 m" implies a
+    // precision this doesn't have.
+    final rounded = (distance / 10).round() * 10;
+    return '$verb $side in $rounded m';
+  }
+
+  String _formatRemaining(double meters) => meters >= 1000
+      ? '${(meters / 1000).toStringAsFixed(2)} km to go'
+      : '${meters.round()} m to go';
 }
 
 // ── Loop indicator ─────────────────────────────────────────────────────────

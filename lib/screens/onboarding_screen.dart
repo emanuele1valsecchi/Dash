@@ -43,41 +43,35 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         ),
         const TextSpan(text: ', and '),
         const TextSpan(
-          text: 'defend',
+          text: 'expand',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
       ],
     ),
     _OnboardingData(
       backgroundImage: 'assets/images/onboarding_2.png',
-      title: 'Steal the Crown',
+      title: 'Take Their Ground',
       bodySpans: [
         const TextSpan(text: 'See a territory you want? '),
         const TextSpan(
-          text: 'Take it',
+          text: 'Close a loop around it',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
-        const TextSpan(text: '.\nOutrun the current '),
+        const TextSpan(text: '.\nThe ground you circle is '),
         const TextSpan(
-          text: 'champion',
+          text: 'taken from its owner',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
-        const TextSpan(text: ' to '),
+        const TextSpan(text: '\nand added to '),
         const TextSpan(
-          text: 'claim their XP',
+          text: 'your map',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
-        const TextSpan(text: '\nand '),
+        const TextSpan(text: '.\nYour legs draw the '),
         const TextSpan(
-          text: 'mark the map',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        const TextSpan(text: ' as yours.\nSpeed is the '),
-        const TextSpan(
-          text: 'only',
+          text: 'border',
           style: TextStyle(fontStyle: FontStyle.italic),
         ),
-        const TextSpan(text: ' currency that matters'),
       ],
     ),
     _OnboardingData(
@@ -89,16 +83,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           text: 'dominance',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
-        const TextSpan(text: ' with real-time stats and '),
+        const TextSpan(text: ' with '),
         const TextSpan(
-          text: 'audio coaching',
+          text: 'real-time stats',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         const TextSpan(
-          text: '.\nFrom average speed to total ',
+          text: '.\nFrom pace and distance to total ',
         ),
         const TextSpan(
-          text: 'land grabbed',
+          text: 'land claimed',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         const TextSpan(text: ', see\nhow you stack up '),

@@ -13,10 +13,10 @@ core loop is claiming physical map areas by running closed loops around them.
 - If a live path closes into a loop, the enclosed area is **claimed** and assigned to
   that user, earning XP.
 - Another user can **steal** a claimed area by running a closed loop that covers it.
-- A user can also become **champion** of an already-claimed area by re-running the same
-  loop faster than the current champion, without needing to physically "overwrite" it.
-- During a run Dash gives turn-by-turn directions (if a planned route is active),
-  announces elapsed time, average speed, and pace vs. the current area champion.
+- A loop that overlaps the runner's *own* existing territory is merged into it, expanding
+  that area rather than creating a second one beside it.
+- During a run Dash gives turn-by-turn directions (if a planned route is active) and shows
+  elapsed time, distance, pace, and the area claimed so far.
 - A stats/profile area shows weekly runs, average speed, total time, longest route, etc.
 
 ## Implementation status
@@ -639,6 +639,82 @@ Keep this list current — update it whenever a feature moves between these buck
   run-summary dialog shown after Finish has its own separate `PopScope(canPop: false)`,
   fully blocking back-dismissal there too — the user must explicitly choose Save or
   Discard.
+- **Direction arrow while following a planned route** (`GeometryUtils.routeGuidance` +
+  `RouteGuidance` in [lib/utils/geometry_utils.dart](lib/utils/geometry_utils.dart), rendered by `_RouteGuidanceCard` in
+  [lib/screens/run_tracking_page.dart](lib/screens/run_tracking_page.dart)) — a compass-style bearing guide, deliberately
+  **not** turn-by-turn: it needs no street names, works on any polyline including
+  hand-drawn and multi-hop stitched ones, and degrades to "head that way" rather than
+  failing. Real turn-by-turn would need ORS's `steps` (returned by the API but discarded
+  in `RoutingService`'s parse) *and* a way to concatenate instruction lists across the
+  many separate ORS calls a searched/drawn route is stitched from — not attempted.
+  The arrow rotates to the target bearing *relative to* the runner's heading, using the
+  smoothed `_displayedHeading` the map dot uses rather than raw `_lastHeading`; when
+  heading is unavailable (stationary, or below `_minSpeedForHeadingMs` where GPS
+  course-over-ground is meaningless) the card drops to a neutral "getting your bearing"
+  state instead of pointing confidently nowhere. Guidance is computed against the raw
+  `widget.plannedRoute`, never `_smoothedPlannedRoute`, for the same reason distance and
+  proximity checks are. **The non-obvious part is `previousSegmentIndex`**: nearest-point
+  matching alone breaks on exactly the routes Dash cares most about, since a closed loop
+  runs back past its own start — a runner finishing a lap matches segment 0 again and is
+  told to run the whole loop over. The caller feeds the last matched segment index back
+  in, restricting the search to a window; the hint is abandoned for a full re-scan
+  whenever nothing in that window is within the off-route threshold, so genuinely leaving
+  the route and rejoining elsewhere still re-acquires. Off-route (> 25 m from the line,
+  generous enough for GPS error plus the far pavement of a wide road) points the arrow
+  *back at* the nearest point on the route rather than further along it, and fires
+  `HapticFeedback.heavyImpact` once on the transition — felt, not read, since the whole
+  point is not having to look at the screen. `pointToSegmentDistanceMeters` was refactored
+  to delegate to a shared `_projectOntoSegment` (identical math, now also returning the
+  projection parameter `t`) so loop detection and the arrow can't drift apart.
+  **Next-turn distance** (`_findNextTurn`, surfaced as `RouteGuidance.distanceToTurnMeters`
+  / `turnAngleDegrees`, headlined by the card as "Turn left in 80 m" with distance-remaining
+  demoted to the subtitle) is derived from the polyline's own geometry for the same reason
+  the arrow is. It scans **evenly-spaced 5 m samples, never vertices** — vertex spacing
+  carries no meaning, since a road-snapped polyline rounds a corner with a dozen vertices
+  each turning a few degrees while a hand-tapped route turns 90° at one vertex — comparing
+  bearings measured over a fixed 20 m baseline so both read alike and GPS-scale wobble is
+  rejected for free. Two non-obvious details, each with a regression test: the reported
+  *distance* is the threshold crossing (35°, where the turn starts to matter) but the
+  reported *angle* is the turn's peak, because the bearing window trips as it only begins
+  to span the corner — a true 90° corner reads ~45° at that instant and would be labelled
+  "Bear left" instead of "Turn left" (the two split at 70°). And the peak scan stops on a
+  **plateau**, not on a decrease: a loop turning the same way at every corner climbs
+  90°→180°→270° monotonically, so breaking only on a decrease swallows every later corner
+  into the first one. Covered by `test/route_guidance_test.dart` (12 tests). The arrow,
+  off-route buzz and loop-finish behaviour were **confirmed on a real device** (Android,
+  outdoor GPS run); the turn indicator was added afterward and has **not** been.
+- **`RunSessionController`** ([lib/services/run_session_controller.dart](lib/services/run_session_controller.dart)) — owns everything about a
+  live run: the clock, the GPS stream, the breadcrumb trail, distance/pace/altitude,
+  closed-loop detection and planned-route guidance. `RunTrackingPage` is now purely the UI
+  on top of it and owns none of that state; what stays on the screen is the map camera,
+  the dot-smoothing chase (`_displayedPosition`/`_displayedHeading`/`_trailPoints`/
+  `_onDotTick`), water fountains, claimed areas, the 10 Hz `_uiTicker` repaint pulse, and
+  all dialogs/formatting. Extracted specifically to unblock the smartwatch work and
+  background tracking — both need run state addressable without a `RunTrackingPage` alive.
+  A **singleton** (`RunSessionController.instance`, matching `LocationService.instance` /
+  `WaterFountainService.instance`), so a run *can* outlive its screen. **Nothing exercises
+  that yet**: `RunTrackingPage.dispose` still calls `reset()`, so leaving the screen ends
+  the run exactly as it always did, and the back button still behaves as Finish. Removing
+  that one `reset()` call is what will enable minimize-and-keep-running, once a foreground
+  service exists to keep GPS alive. Never call `dispose()` on it — it's app-lifetime.
+  **The singleton's one genuine hazard is a missed `reset()`**: a second run would inherit
+  the first's breadcrumbs and go on to claim ground nobody ran. `reset()` is therefore
+  called from `initState` (defensively, before anything touches it), from `dispose`, and
+  from the permission-retry path; two tests in `test/run_session_controller_test.dart`
+  exist purely to pin that down. The extraction was deliberately **behaviour-preserving** —
+  the tracking core moved close to verbatim, which was safe because `_onPosition`,
+  `_updatePace` and `_checkLoopClosure` already contained no `setState`/`context`/`mounted`
+  (the `_uiTicker` drove rebuilds independently); only `setState` calls in the countdown and
+  pause controls became `notifyListeners()`. Two deviations from a pure move: `_isFinishing`
+  stayed on the page (it guards a `Navigator.pop`, not run state), and `_initLocation`'s
+  permission-plus-first-fix became `controller.prepare()` while the proximity-warning dialog
+  stayed on the page (it needs `context`). The page learns about new fixes by comparing
+  `breadcrumb.length` against its own `_lastBreadcrumbLength` in the listener, since the
+  controller notifies for many reasons and only a genuine new fix should advance the map
+  trail. `onPosition` is `@visibleForTesting` so synthetic fixes can drive the whole
+  pipeline with no device. Still **not** done, each deliberately separate: foreground
+  service/background GPS, the watch bridge, crash-recovery persistence, back-to-minimize,
+  and collapsing the five lifecycle booleans into a phase enum.
 - Dev-only test run creator, reached from the run-tracking countdown screen
   ([lib/screens/test_run_creator_page.dart](lib/screens/test_run_creator_page.dart)) — builds a fake run by placing pins (routed
   the same way as route creation) plus a manually-entered duration, then publishes
@@ -1005,11 +1081,14 @@ yet, except `runningSessions` writes as of the run-tracking screen and `claimedA
 writes as of the claim Cloud Function above). `favoriteRoutes` is no longer in this bucket
 — see the run-session detail page bullet below. Treat the rest as the next major
 milestones:
-- Champion re-timing: re-running the same loop *faster* than whoever currently holds it,
-  without necessarily overwriting their territory. Spatial overlap — a new loop's ground
-  taking over someone else's claimed area — **is** now handled (see "Area claiming,
-  with real territory interaction" above); champion status is a separate, still-unbuilt
-  mechanic layered on top of ground you may not even be contesting.
+- **Explicitly out of scope — do not build, and do not re-propose:** "champion" re-timing
+  (holding or taking an area by running its loop *faster* than whoever currently holds it).
+  This was never implemented and was cut by the project owner in August 2026. Territory
+  changes hands purely by **spatial overlap** — see "Area claiming, with real territory
+  interaction" above — never by speed, and speed appears nowhere in the XP formula either.
+  Onboarding copy describing an "outrun the champion / steal the crown" mechanic predated
+  the real design and was rewritten at the same time; if you find any other surviving
+  reference to a champion, it is stale and should be removed rather than implemented.
 - The scoreboard itself (leaderboard UI, and the aggregation/query layer behind it). The
   per-session data it will read from — `pointsEarned` and city/broad territory — **is** now
   computed and stored server-side (see "XP/points and scoreboard territory" above); only the
@@ -1119,7 +1198,7 @@ These are explicit, standing requirements from the project owner. Do not trade t
 for convenience, and flag it clearly if a requested change would weaken either.
 
 - Never let the client set values that represent trust/points/ranking (`totalPoints`,
-  `pointsEarned`, area ownership, champion status). Those must be computed and written
+  `pointsEarned`, area ownership). Those must be computed and written
   server-side (Cloud Functions with the Admin SDK); Firestore rules must enforce this
   on every affected collection, not just the ones that exist today.
 - Validate all user-supplied files before upload (see the `ImageUploadService` pattern:

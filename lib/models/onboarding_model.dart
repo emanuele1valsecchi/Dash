@@ -10,17 +10,17 @@ List<OnboardingContent> contents = [
   OnboardingContent(
     title: "The world is your circuit!",
     image: 'assets/images/WelcomePage1.png',
-    description: "Don't just run a route - own it. DASH transforms your neighborhood into a map for you to claim, conquer, and defend."
+    description: "Don't just run a route - own it. DASH transforms your neighborhood into a map for you to claim, conquer, and expand."
   ),
   OnboardingContent(
-    title: "Steal the Crown",
+    title: "Take Their Ground",
     image: 'assets/images/WelcomePage2.png',
-    description: "Take on territory claims from others. Outrun the current champion to claim their zone and mark the map as yours."
+    description: "See a territory you want? Close a loop around it. The ground you circle is taken from its owner and added to your map. Your legs draw the border."
   ),
   OnboardingContent(
     title: "Rule Your Territory!",
     image: 'assets/images/WelcomePage3.png',
-    description: "Track your dominance with real-time stats and audio coaching. From average speed to total land grabbed, see how you stack up against the world."
+    description: "Track your dominance with real-time stats. From pace and distance to total land claimed, see how you stack up against the world."
   ),
 ];
 
