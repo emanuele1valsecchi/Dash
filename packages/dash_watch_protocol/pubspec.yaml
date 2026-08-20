@@ -1,0 +1,10 @@
+name: dash_watch_protocol
+description: >
+  Wire format shared by the Dash phone app and its Wear OS companion. Kept as a
+  separate package, depended on by path from both, so the two can never drift
+  apart the way two hand-maintained copies of a serialization format would.
+version: 1.0.0
+publish_to: 'none'
+
+environment:
+  sdk: ^3.11.0
