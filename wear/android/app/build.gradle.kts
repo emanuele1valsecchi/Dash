@@ -24,7 +24,13 @@ android {
         applicationId = "com.example.dash.dash_wear"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // Wear OS 3 (API 30) and up. That covers Galaxy Watch 4 onward, every
+        // Pixel Watch and TicWatch Pro 5 — effectively the whole active Wear OS
+        // install base. Going lower would only reach Wear OS 2 hardware, where
+        // Flutter performs badly on weak CPUs and Play support is winding down.
+        // Note Galaxy Watch 3 and earlier run Tizen and are unreachable at any
+        // minSdk. Overrides flutter.minSdkVersion, which targets phones.
+        minSdk = 30
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
