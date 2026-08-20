@@ -1,5 +1,11 @@
 plugins {
     id("com.android.application")
+    // Required for MainActivity.kt to compile at all, and for the `kotlin { }`
+    // extension configured below to exist. Declared with its version in
+    // settings.gradle.kts (`apply false`), so no version here. Not optional
+    // while gradle.properties keeps `android.builtInKotlin=false` — without
+    // it AGP 9 provides no Kotlin support of its own.
+    id("org.jetbrains.kotlin.android")
     id("dev.flutter.flutter-gradle-plugin")
     id("com.google.gms.google-services")
 }
