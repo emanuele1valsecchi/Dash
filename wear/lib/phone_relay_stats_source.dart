@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:dash_watch_protocol/dash_watch_protocol.dart';
 import 'package:flutter/foundation.dart';
@@ -71,8 +73,19 @@ class PhoneRelayStatsSource implements RunStatsSource {
   Future<void> _requestSync() =>
       _send(WearPaths.requestSync, payload: '');
 
+  /// Fires when the phone confirms it has stored a standalone run. The watch
+  /// keeps its file until then.
+  Stream<void> get runAcks => _ackController.stream;
+  final _ackController = StreamController<void>.broadcast();
+
   void _onMessage(dynamic raw) {
     if (raw is! Map) return;
+
+    if (raw['path'] == WearPaths.runAck) {
+      if (!_ackController.isClosed) _ackController.add(null);
+      return;
+    }
+
     if (raw['path'] != WearPaths.stats) return;
 
     final decoded = RunStats.decode(raw['payload'] as String? ?? '');
@@ -115,6 +128,27 @@ class PhoneRelayStatsSource implements RunStatsSource {
   Future<void> send(WatchCommand command) =>
       _send(WearPaths.command, payload: command.name);
 
+  /// Hands a completed standalone run to the Data Layer.
+  ///
+  /// Gzipped rather than sent raw: an hour of fixes is roughly 70 KB of JSON,
+  /// uncomfortably close to the DataMap size limit, and coordinates compress
+  /// to a fraction of that. If runs ever grow past what a DataMap can hold,
+  /// the escape hatch is a Wearable `Asset`, which has no such limit — but
+  /// that costs a file-descriptor round trip this does not need yet.
+  Future<bool> sendStandaloneRun(String json) async {
+    try {
+      final bytes = Uint8List.fromList(gzip.encode(utf8.encode(json)));
+      await _channel.invokeMethod<bool>('putData', {
+        'path': WearPaths.standaloneRun,
+        'bytes': bytes,
+      });
+      return true;
+    } catch (e) {
+      debugPrint('PhoneRelay: could not queue standalone run — $e');
+      return false;
+    }
+  }
+
   Future<void> _send(String path, {required String payload}) async {
     try {
       await _channel.invokeMethod<int>('send', {
@@ -128,12 +162,18 @@ class PhoneRelayStatsSource implements RunStatsSource {
     }
   }
 
+  /// Nothing to dismiss: this source never shows a summary the watch
+  /// itself owns.
+  @override
+  void dismissSummary() {}
+
   @override
   void dispose() {
     _syncTimer?.cancel();
     _heartRateUplink?.cancel();
     _heartRateSub?.cancel();
     _incoming?.cancel();
+    _ackController.close();
     _controller.close();
   }
 }

@@ -39,6 +39,21 @@ class WearPaths {
   /// way — the watch is the only device that can measure it.
   static const String heartRate = '/dash/heart_rate';
 
+  /// Watch → phone: a completed standalone run, as a **DataItem** rather than
+  /// a message.
+  ///
+  /// The one path that must survive the devices being apart: a run recorded
+  /// with the phone left at home has, by definition, nobody listening when it
+  /// finishes. A DataItem persists in the Data Layer and syncs itself when the
+  /// two are next in range; a message would simply be dropped.
+  static const String standaloneRun = '/dash/standalone_run';
+
+  /// Phone → watch: "I have stored that run, you may delete your copy".
+  ///
+  /// The watch keeps its file until this arrives. Deleting on send would lose
+  /// runs whenever a transfer failed halfway.
+  static const String runAck = '/dash/run_ack';
+
   /// Watch → phone: "send me the current state now".
   ///
   /// Needed because messages are ephemeral rather than persisted — a watch that

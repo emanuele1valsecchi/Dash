@@ -245,6 +245,30 @@ class StandaloneRecorder {
     }
   }
 
+  /// Records that the run has been handed to the Data Layer but not yet
+  /// acknowledged. Only such a run is retried automatically on next launch —
+  /// one the runner has not chosen to send is left where it is.
+  static Future<void> markSent() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$_fileName');
+      if (!await file.exists()) return;
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is! Map) return;
+      decoded['sentAt'] = DateTime.now().millisecondsSinceEpoch;
+      await file.writeAsString(jsonEncode(decoded));
+    } catch (e) {
+      debugPrint('StandaloneRecorder: could not mark sent — $e');
+    }
+  }
+
+  /// True when a pending run has already been sent once and is still waiting
+  /// on the phone's acknowledgement.
+  static Future<bool> wasSent() async {
+    final pending = await readPending();
+    return pending != null && pending['sentAt'] != null;
+  }
+
   /// Called only once the phone has confirmed it stored the run. Deleting on
   /// send rather than on acknowledgement would lose runs whenever a transfer
   /// failed halfway.
