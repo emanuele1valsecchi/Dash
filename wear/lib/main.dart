@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'heart_rate_service.dart';
 import 'phone_relay_stats_source.dart';
+import 'watch_run_coordinator.dart';
 import 'run_stats_source.dart';
 import 'screens/watch_home.dart';
 import 'watch_theme.dart';
@@ -27,7 +28,8 @@ class DashWearApp extends StatefulWidget {
 }
 
 class _DashWearAppState extends State<DashWearApp> {
-  final PhoneRelayStatsSource _source = PhoneRelayStatsSource();
+  late final WatchRunCoordinator _source =
+      WatchRunCoordinator(relay: PhoneRelayStatsSource());
   final HeartRateService _heartRate = HeartRateService();
 
   @override

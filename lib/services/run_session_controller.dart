@@ -8,6 +8,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../utils/geometry_utils.dart';
 import 'location_service.dart';
+import 'run_foreground_service.dart';
 import 'run_session_repository.dart';
 
 /// A single accepted GPS fix, kept alongside its timestamp so pace can be
@@ -317,8 +318,48 @@ class RunSessionController extends ChangeNotifier {
     _hasStarted = true;
     _stopwatch.start();
     _startPositionStream();
+
+    // Started here, not from the screen: this is the moment a run genuinely
+    // begins, and Android 12+ only permits starting a foreground service while
+    // the app is visible — which it is, since the countdown just finished on
+    // screen. Starting it later, on backgrounding, would be refused.
+    RunForegroundService.start(
+      title: 'Recording run',
+      body: _notificationBody(),
+    );
+    _startNotificationTicker();
+
     notifyListeners();
   }
+
+  /// Refreshes the notification about once every 5 s.
+  ///
+  /// Deliberately not on every GPS fix: the text only shows distance and
+  /// elapsed time to a resolution that changes slowly, and the channel is
+  /// IMPORTANCE_LOW with `setOnlyAlertOnce`, so more frequent updates would buy
+  /// nothing but wakeups.
+  void _startNotificationTicker() {
+    _notificationTimer?.cancel();
+    _notificationTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!_hasStarted || _isFinished) return;
+      RunForegroundService.update(
+        title: _isPaused ? 'Run paused' : 'Recording run',
+        body: _notificationBody(),
+      );
+    });
+  }
+
+  String _notificationBody() {
+    final km = (_distanceMeters / 1000).toStringAsFixed(2);
+    final elapsed = _stopwatch.elapsed;
+    String two(int v) => v.toString().padLeft(2, '0');
+    final clock = elapsed.inHours > 0
+        ? '${elapsed.inHours}:${two(elapsed.inMinutes % 60)}:${two(elapsed.inSeconds % 60)}'
+        : '${two(elapsed.inMinutes % 60)}:${two(elapsed.inSeconds % 60)}';
+    return '$km km · $clock';
+  }
+
+  Timer? _notificationTimer;
 
   // ── Tracking ──────────────────────────────────────────────────────────────
 
@@ -524,6 +565,11 @@ class RunSessionController extends ChangeNotifier {
     _positionSub?.cancel();
     _positionSub = null;
     _isFinished = true;
+    // The run is over; the notification would otherwise sit there claiming
+    // otherwise until reset() eventually ran.
+    _notificationTimer?.cancel();
+    _notificationTimer = null;
+    RunForegroundService.stop();
     notifyListeners();
   }
 
@@ -550,6 +596,11 @@ class RunSessionController extends ChangeNotifier {
   void reset() {
     _countdownTimer?.cancel();
     _countdownTimer = null;
+    // Belt and braces: discard exits without ever calling stopClock(), so this
+    // is the only guaranteed teardown of the service.
+    _notificationTimer?.cancel();
+    _notificationTimer = null;
+    RunForegroundService.stop();
     _positionSub?.cancel();
     _positionSub = null;
     _stopwatch

@@ -29,6 +29,14 @@
          wrist-down and the run screen is simply gone mid-workout. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- Standalone recording: keeps the watch's own GPS alive with the screen
+         off, the same way the phone app does. Without a foreground service
+         Wear OS throttles location within seconds of the wrist dropping, which
+         would quietly shred a run recorded away from the phone. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:label="Dash"
         android:name="${applicationName}"
@@ -47,6 +55,7 @@
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:screenOrientation="nosensor"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
             <!-- Specifies an Android theme to apply to this Activity as soon as
@@ -62,6 +71,14 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Keeps the watch's own GPS alive while recording standalone. Same
+             shape as the phone's service; `location` type is what exempts it
+             from background location throttling. -->
+        <service
+            android:name=".RunForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

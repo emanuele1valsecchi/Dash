@@ -27,10 +27,22 @@ class MainActivity : FlutterActivity() {
      * flips, so there is no result callback to thread back through the engine.
      */
     private fun requestHeartRatePermissionIfNeeded() {
-        val permission = HeartRatePlugin.permissionToRequest()
-        if (checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) return
-        Log.i("DashHeartRate", "requesting $permission")
-        requestPermissions(arrayOf(permission), HEART_RATE_REQUEST)
+        // Location and notifications matter as much as the sensor now: without
+        // POST_NOTIFICATIONS the standalone foreground service cannot run at
+        // all, and without location there is nothing to record. Requested
+        // together so the runner answers one series of prompts, not three
+        // spread across the first run.
+        val wanted = listOf(
+            HeartRatePlugin.permissionToRequest(),
+            android.Manifest.permission.ACCESS_FINE_LOCATION,
+            android.Manifest.permission.POST_NOTIFICATIONS,
+        )
+        val missing = wanted.filter {
+            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) return
+        Log.i("DashHeartRate", "requesting $missing")
+        requestPermissions(missing.toTypedArray(), HEART_RATE_REQUEST)
     }
 
     override fun onRequestPermissionsResult(
@@ -54,5 +66,6 @@ class MainActivity : FlutterActivity() {
         val messenger = flutterEngine.dartExecutor.binaryMessenger
         WearBridgePlugin(applicationContext).register(messenger)
         HeartRatePlugin(applicationContext).register(messenger)
+        RunServicePlugin(applicationContext).register(messenger)
     }
 }

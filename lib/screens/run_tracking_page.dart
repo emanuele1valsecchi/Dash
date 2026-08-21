@@ -16,6 +16,7 @@ import '../services/claimed_area_repository.dart';
 import 'package:dash_watch_protocol/dash_watch_protocol.dart';
 
 import '../services/location_service.dart';
+import '../services/run_foreground_service.dart';
 import '../services/run_session_controller.dart';
 import '../services/wear_bridge.dart';
 import '../services/water_fountain_service.dart';
@@ -299,6 +300,13 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// continuous stream ([_startPositionStream], via [_beginRun]) recording
   /// breadcrumbs before the authoritative starting point exists.
   Future<void> _initLocation() async {
+    // Asked before the run starts, not when backgrounding: on Android 13+ a
+    // foreground service cannot run without a visible notification, so a
+    // refusal here silently costs background tracking. Prompting mid-run, with
+    // the phone already in a pocket, would be worse than useless.
+    await RunForegroundService.ensureNotificationPermission();
+    if (!mounted) return;
+
     await _controller.prepare(plannedRoute: widget.plannedRoute);
     if (!mounted) return;
     if (_controller.permissionDenied) return;
