@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'run_session_controller.dart';
+import 'standalone_run_importer.dart';
 
 /// Publishes the live run to the Wear OS companion, and applies the commands it
 /// sends back.
@@ -78,6 +79,7 @@ class WearBridge {
     _controller.addListener(_onControllerChanged);
 
     await refreshWatchPresence();
+    await checkForPendingWatchRuns();
   }
 
   Future<void> refreshWatchPresence() async {
@@ -94,6 +96,15 @@ class WearBridge {
   void _onMessage(dynamic raw) {
     if (raw is! Map) return;
     final path = raw['path'] as String?;
+
+    // DataItems arrive with bytes rather than a string payload — that is how
+    // the native bridge distinguishes a durable transfer from a live message.
+    final bytes = raw['bytes'];
+    if (bytes is Uint8List) {
+      if (path == WearPaths.standaloneRun) unawaited(_importStandaloneRun(bytes));
+      return;
+    }
+
     final payload = raw['payload'] as String? ?? '';
 
     switch (path) {
@@ -104,6 +115,21 @@ class WearBridge {
           return;
         }
         _applyCommand(command);
+      case WearPaths.heartRate:
+        final reading = HeartRateReading.decode(payload);
+        if (reading == null) {
+          debugPrint('WearBridge: undecodable heart rate reading');
+          return;
+        }
+        // Stored verbatim, not re-averaged: the watch sees every sample, this
+        // side sees one message every few seconds and none while the link is
+        // down. Deliberately does not echo back — the watch already displays
+        // its own reading locally.
+        _controller.reportHeartRate(
+          current: reading.currentBpm,
+          average: reading.averageBpm,
+          max: reading.maxBpm,
+        );
       case WearPaths.requestSync:
         // The watch just connected or was just opened; it has no idea what is
         // going on until we tell it.
@@ -160,6 +186,76 @@ class WearBridge {
     _publish();
   }
 
+  /// Imports a run the watch recorded on its own, then tells the watch it may
+  /// delete its copy.
+  ///
+  /// The acknowledgement is the whole safety story: until it arrives the watch
+  /// keeps the only copy, so a failed import or a phone that dies mid-write
+  /// costs nothing but a retry.
+  Future<void> _importStandaloneRun(Uint8List bytes) async {
+    final run = StandaloneRunImporter.decode(bytes);
+    if (run == null) return;
+
+    // Refuse to import over a live run. The claim function would see two
+    // sessions racing, and more practically the user is out running right now.
+    if (_controller.hasStarted) {
+      debugPrint('WearBridge: deferring watch run import — a run is in progress');
+      return;
+    }
+
+    final sessionId = await StandaloneRunImporter.import(run);
+
+    // Acknowledged even when unusable. The run decoded fine, it simply had no
+    // usable GPS in it — a watch that never hears back would hold that empty
+    // run forever and re-offer it on every launch. A genuinely corrupt payload
+    // is different: `decode` returns null above and we never get here, so it
+    // stays on the watch for another attempt.
+    if (sessionId == null) {
+      debugPrint('WearBridge: watch run had no usable GPS — acknowledging anyway');
+      _announce('A run from your watch had no usable GPS data.');
+    } else {
+      debugPrint('WearBridge: imported watch run as $sessionId');
+      _announce('Run from your watch added to your history.');
+    }
+
+    // Ack first, then clear the DataItem — otherwise the same run would be
+    // re-delivered on every reconnect.
+    await _channel.invokeMethod<int>('send', {
+      'path': WearPaths.runAck,
+      'payload': sessionId ?? '',
+    });
+    await _channel.invokeMethod<bool>('deleteData', {
+      'path': WearPaths.standaloneRun,
+    });
+  }
+
+  /// Import outcomes, for the UI to surface.
+  ///
+  /// A run arriving from the watch is otherwise completely silent — it lands in
+  /// Firestore with no indication anything happened, which reads as the send
+  /// button having done nothing at all.
+  Stream<String> get importMessages => _importMessages.stream;
+  final _importMessages = StreamController<String>.broadcast();
+
+  void _announce(String message) {
+    if (!_importMessages.isClosed) _importMessages.add(message);
+  }
+
+  /// Picks up a run that synced while this app was closed. DataItems persist
+  /// until deleted, so querying at startup catches what no live listener saw.
+  Future<void> checkForPendingWatchRuns() async {
+    try {
+      final items = await _channel.invokeMethod<List<Object?>>('getData', {
+        'path': WearPaths.standaloneRun,
+      });
+      for (final item in items ?? const []) {
+        if (item is Uint8List) await _importStandaloneRun(item);
+      }
+    } catch (e) {
+      debugPrint('WearBridge: pending-run check failed — $e');
+    }
+  }
+
   void _publishIfRunning() {
     if (_controller.hasStarted || _controller.isCountingDown) _publish();
   }
@@ -193,6 +289,10 @@ class WearBridge {
       elapsed: controller.elapsed,
       distanceMeters: controller.distanceMeters,
       paceMinPerKm: controller.currentPaceMinPerKm,
+      // Echoed back so a *second* companion (or a re-opened watch app that has
+      // not yet taken its own reading) still sees it. The reporting watch
+      // ignores this and shows its local value, which has no round-trip lag.
+      heartRateBpm: controller.heartRateBpm,
       loopsCompleted: controller.loopsCompleted,
       claimedAreaM2: controller.claimedAreaM2,
       guidance: guidance == null
@@ -217,6 +317,7 @@ class WearBridge {
     _incoming?.cancel();
     _publishTimer?.cancel();
     _commands.close();
+    _importMessages.close();
     _started = false;
   }
 }

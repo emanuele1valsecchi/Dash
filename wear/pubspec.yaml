@@ -42,6 +42,16 @@ dependencies:
   # is gone mid-workout.
   wear_plus: ^1.2.4
 
+  # The watch's own GPS, for recording with the phone left at home. Same major
+  # version as the phone app so the two behave identically on a shared
+  # breadcrumb format.
+  geolocator: ^13.0.2
+
+  # Breadcrumbs are written to a file as the run proceeds, so a crash, a reboot
+  # or a flat battery does not lose a run that has no phone to fall back on.
+  path_provider: ^2.1.4
+
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

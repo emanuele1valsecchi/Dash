@@ -12,8 +12,18 @@ class WatchTheme {
   /// Unlit on OLED. Not near-black — actual black.
   static const Color background = Color(0xFF000000);
 
-  /// Dash's accent, lightened for legibility on black.
-  static const Color accent = Color(0xFF8FE9A8);
+  /// Dash's own accent green, taken straight from the phone app rather than
+  /// approximated — `0xFFCAF0B8`, the same value used there for the active loop
+  /// indicator and primary buttons.
+  ///
+  /// Specifically **not** `0xFF4A8C52`, which is the app's most common green by
+  /// count. That one is an icon colour used *on light backgrounds*; on black it
+  /// manages only about 5:1 contrast where this reaches roughly 17:1. The phone
+  /// pairs `0xFFCAF0B8` as fill with `0xFF2E7D32` as text — on a dark watch
+  /// face those roles invert and the light green becomes the foreground, so
+  /// matching the palette means matching the *role*, not the hex with the
+  /// biggest usage count.
+  static const Color accent = Color(0xFFCAF0B8);
 
   static const Color primaryText = Color(0xFFFFFFFF);
   static const Color secondaryText = Color(0xFF9AA294);

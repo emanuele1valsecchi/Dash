@@ -32,6 +32,28 @@ class WearPaths {
   /// Watch → phone: a [WatchCommand].
   static const String command = '/dash/command';
 
+  /// Watch → phone: a [HeartRateReading].
+  ///
+  /// Separate from [command] because it is a continuous feed rather than a
+  /// one-off request, and separate from [stats] because it travels the other
+  /// way — the watch is the only device that can measure it.
+  static const String heartRate = '/dash/heart_rate';
+
+  /// Watch → phone: a completed standalone run, as a **DataItem** rather than
+  /// a message.
+  ///
+  /// The one path that must survive the devices being apart: a run recorded
+  /// with the phone left at home has, by definition, nobody listening when it
+  /// finishes. A DataItem persists in the Data Layer and syncs itself when the
+  /// two are next in range; a message would simply be dropped.
+  static const String standaloneRun = '/dash/standalone_run';
+
+  /// Phone → watch: "I have stored that run, you may delete your copy".
+  ///
+  /// The watch keeps its file until this arrives. Deleting on send would lose
+  /// runs whenever a transfer failed halfway.
+  static const String runAck = '/dash/run_ack';
+
   /// Watch → phone: "send me the current state now".
   ///
   /// Needed because messages are ephemeral rather than persisted — a watch that
@@ -251,6 +273,56 @@ class RunStats {
       final decoded = jsonDecode(source);
       if (decoded is! Map) return null;
       return RunStats.fromJson(decoded.cast<String, Object?>());
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+/// Heart rate, measured on the watch and sent to the phone.
+///
+/// Carries the running **average and maximum alongside the live value**, rather
+/// than letting the phone derive them from what it receives. The watch sees
+/// every sensor sample; the phone sees roughly one message a second and none at
+/// all while the link is down, so a phone-side average would quietly be an
+/// average of whatever happened to arrive. The watch accumulates, the phone
+/// stores what it is told.
+///
+/// Every field is nullable and all three are absent when there is no sensor, no
+/// permission, or no reading yet. Null and 0 are different: 0 bpm is not a
+/// measurement.
+class HeartRateReading {
+  final int? currentBpm;
+  final int? averageBpm;
+  final int? maxBpm;
+
+  const HeartRateReading({this.currentBpm, this.averageBpm, this.maxBpm});
+
+  bool get hasReading => currentBpm != null;
+
+  Map<String, Object?> toJson() => {
+        'bpm': currentBpm,
+        'avg': averageBpm,
+        'max': maxBpm,
+      };
+
+  factory HeartRateReading.fromJson(Map<String, Object?> json) {
+    return HeartRateReading(
+      currentBpm: _int(json['bpm']),
+      averageBpm: _int(json['avg']),
+      maxBpm: _int(json['max']),
+    );
+  }
+
+  String encode() => jsonEncode(toJson());
+
+  /// Null rather than throwing on malformed input, matching [RunStats.decode] —
+  /// a corrupt reading should be ignored, not crash a run in progress.
+  static HeartRateReading? decode(String source) {
+    try {
+      final decoded = jsonDecode(source);
+      if (decoded is! Map) return null;
+      return HeartRateReading.fromJson(decoded.cast<String, Object?>());
     } catch (_) {
       return null;
     }
