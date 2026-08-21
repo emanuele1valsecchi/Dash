@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -14,8 +15,12 @@ import '../services/water_fountain_service.dart';
 import 'explore_page.dart';
 import 'route_create_page.dart';
 import 'route_search_page.dart';
+import 'package:dash_watch_protocol/dash_watch_protocol.dart';
+
 import 'run_tracking_page.dart';
 import 'temp_profile_page.dart';
+import '../services/run_session_controller.dart';
+import '../services/wear_bridge.dart';
 import '../widgets/home/badge_progress_section.dart';
 import '../widgets/home/leaderboard_preview_card.dart';
 import '../widgets/home/start_run_overlay.dart';
@@ -75,10 +80,33 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadLeaderboardPreviews(); 
     LocationService.instance.start();
     WaterFountainService.instance.warmUp();
+
+    // App-wide, not owned by RunTrackingPage: the watch has to be able to
+    // start a run while the phone is sitting on this screen in a pocket.
+    WearBridge.instance.start();
+    _watchCommands = WearBridge.instance.commands.listen(_onWatchCommand);
   }
+
+  /// Commands the watch cannot action on its own. Only `start` is handled here;
+  /// `finish` belongs to whichever run screen is live.
+  void _onWatchCommand(WatchCommand command) {
+    if (command != WatchCommand.start) return;
+    if (!mounted) return;
+    // This screen stays mounted underneath the run screen, so without this
+    // guard a stray start from the watch would stack a second RunTrackingPage
+    // on top of a live run — and the new one would reset the controller.
+    final session = RunSessionController.instance;
+    if (session.hasStarted || session.isCountingDown) return;
+    _startRunNow();
+  }
+
+  /// Watch commands this screen listens for. The bridge itself is app-lifetime
+  /// and deliberately not disposed here — only this subscription is.
+  StreamSubscription<WatchCommand>? _watchCommands;
 
   @override
   void dispose() {
+    _watchCommands?.cancel();
     _pageController.dispose();
     super.dispose();
   }

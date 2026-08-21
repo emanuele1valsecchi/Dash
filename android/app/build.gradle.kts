@@ -41,6 +41,12 @@ kotlin {
     }
 }
 
+dependencies {
+    // Wearable Data Layer, for talking to the Wear OS companion in wear/.
+    // Keep this version in step with wear/android/app/build.gradle.kts.
+    implementation("com.google.android.gms:play-services-wearable:18.2.0")
+}
+
 flutter {
     source = "../.."
 }

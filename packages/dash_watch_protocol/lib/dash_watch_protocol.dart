@@ -17,6 +17,29 @@ import 'dart:convert';
 /// (not fail) on a mismatch — see the tolerance note above.
 const int protocolVersion = 1;
 
+/// Wearable Data Layer message paths.
+///
+/// Must be byte-identical on both sides. A typo is invisible at runtime — the
+/// Data Layer delivers to whoever is listening on that exact path and silently
+/// drops the rest, so a mismatched path looks exactly like "the watch isn't
+/// connected". Defined once here so neither app can spell them differently.
+class WearPaths {
+  WearPaths._();
+
+  /// Phone → watch: a [RunStats] snapshot.
+  static const String stats = '/dash/stats';
+
+  /// Watch → phone: a [WatchCommand].
+  static const String command = '/dash/command';
+
+  /// Watch → phone: "send me the current state now".
+  ///
+  /// Needed because messages are ephemeral rather than persisted — a watch that
+  /// reconnects mid-run, or whose app is opened after a run has already
+  /// started, has no way to learn the current state except by asking.
+  static const String requestSync = '/dash/request_sync';
+}
+
 /// Where a run currently is in its lifecycle. Mirrors the phone's
 /// `RunSessionController` flags, flattened into one value because a watch face
 /// renders one state at a time and combinations like "counting down while
