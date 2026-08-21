@@ -13,8 +13,11 @@ import '../config/map_style.dart';
 import '../models/water_fountain.dart';
 import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
+import 'package:dash_watch_protocol/dash_watch_protocol.dart';
+
 import '../services/location_service.dart';
 import '../services/run_session_controller.dart';
+import '../services/wear_bridge.dart';
 import '../services/water_fountain_service.dart';
 import '../utils/geometry_utils.dart';
 import '../widgets/map/area_visibility_toggle.dart';
@@ -183,6 +186,18 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// than moving to the controller: it guards a navigation call, not run state.
   bool _isFinishing = false;
 
+  /// The watch's stop button, forwarded by [WearBridge]. Only this screen can
+  /// action it, since finishing shows the save/discard summary.
+  StreamSubscription<WatchCommand>? _watchCommands;
+
+  void _onWatchCommand(WatchCommand command) {
+    if (command != WatchCommand.finish) return;
+    // Guard against a duplicate stop arriving mid-teardown, which would try to
+    // show a second summary over the first.
+    if (!mounted || _isFinishing) return;
+    _confirmFinish(alreadyConfirmed: true);
+  }
+
   /// The trail as painted on the map: every confirmed fix, plus a final
   /// "live" vertex that the dot-chase ([_onDotTick]) mutates in place each
   /// frame rather than rebuilding this whole list from [_controller.breadcrumb] every
@@ -215,6 +230,11 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     // sitting in it — clear before anything else touches it.
     _controller.reset();
     _controller.addListener(_onSessionChanged);
+
+    // Finishing needs the save/discard summary, which only this screen can
+    // show — so the bridge forwards the watch's stop button here rather than
+    // acting on it itself. Pause/resume it handles directly.
+    _watchCommands = WearBridge.instance.commands.listen(_onWatchCommand);
 
     _dotTicker = createTicker(_onDotTick)..start();
     final route = widget.plannedRoute;
@@ -250,6 +270,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
   @override
   void dispose() {
+    _watchCommands?.cancel();
     _controller.removeListener(_onSessionChanged);
     // Leaving this screen still ends the run, exactly as it always has. The
     // controller being a singleton means it *could* keep recording instead —
@@ -646,8 +667,12 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     if (confirmed == true && mounted) Navigator.of(context).pop();
   }
 
-  Future<void> _confirmFinish() async {
-    if (_controller.distanceMeters < 20) {
+  /// [alreadyConfirmed] skips the "barely moved" prompt. Set when the finish
+  /// came from the watch's stop button, which already required a deliberate
+  /// press-and-hold — asking again on the phone would be a second confirmation
+  /// for one decision, on a device the runner may not even be looking at.
+  Future<void> _confirmFinish({bool alreadyConfirmed = false}) async {
+    if (!alreadyConfirmed && _controller.distanceMeters < 20) {
       final confirmed = await _showConfirmDialog(
         title: 'Finish already?',
         message: "You've barely moved — finish the run anyway?",

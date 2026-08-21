@@ -97,6 +97,13 @@ class RunSessionController extends ChangeNotifier {
   bool _hasStarted = false;
   bool _isPaused = false;
 
+  /// Set by [stopClock] — the run is over and awaiting save or discard.
+  /// Distinct from `!hasStarted`: the stats are all still here to be reviewed.
+  /// Exists mainly so companions (the watch) can tell "finished" from "running"
+  /// and stop their own clocks, which they cannot infer from a stopped
+  /// stopwatch alone.
+  bool _isFinished = false;
+
   bool get isLoadingLocation => _isLoadingLocation;
   bool get permissionDenied => _permissionDenied;
   bool get isCountingDown => _isCountingDown;
@@ -104,6 +111,7 @@ class RunSessionController extends ChangeNotifier {
   int get countdownValue => _countdownValue;
   bool get hasStarted => _hasStarted;
   bool get isPaused => _isPaused;
+  bool get isFinished => _isFinished;
 
   // ── Run state ─────────────────────────────────────────────────────────────
 
@@ -164,6 +172,18 @@ class RunSessionController extends ChangeNotifier {
 
   List<List<LatLng>> get closedLoops => List.unmodifiable(_closedLoops);
   int get loopsCompleted => _closedLoops.length;
+
+  /// Total area of the loops closed so far, in square metres.
+  ///
+  /// The raw sum of each loop's own polygon, which is not the same as the
+  /// ground the server will finally credit: overlapping loops are merged, and
+  /// ground already owned is absorbed rather than added (see the claim Cloud
+  /// Function). Good enough for a live "area so far" readout, and deliberately
+  /// never used for anything score-affecting — that stays server-side.
+  double get claimedAreaM2 => _closedLoops.fold(
+        0.0,
+        (sum, loop) => sum + GeometryUtils.polygonAreaM2(loop),
+      );
 
   // ── Route guidance ────────────────────────────────────────────────────────
 
@@ -477,6 +497,7 @@ class RunSessionController extends ChangeNotifier {
     _stopwatch.stop();
     _positionSub?.cancel();
     _positionSub = null;
+    _isFinished = true;
     notifyListeners();
   }
 
@@ -514,6 +535,7 @@ class RunSessionController extends ChangeNotifier {
     _countdownValue = _countdownFrom;
     _hasStarted = false;
     _isPaused = false;
+    _isFinished = false;
 
     _plannedRoute = null;
     _breadcrumb.clear();

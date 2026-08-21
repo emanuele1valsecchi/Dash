@@ -65,6 +65,11 @@ dependencies:
   shared_preferences: ^2.5.5
   cloud_functions: ^5.6.2
 
+  # Wire format shared with the Wear OS companion in wear/. By path, so the two
+  # apps can never disagree about the shape of a message.
+  dash_watch_protocol:
+    path: packages/dash_watch_protocol
+
   # Meta / Facebook
   #flutter_facebook_auth: ^7.1.1
 

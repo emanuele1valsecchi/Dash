@@ -31,15 +31,55 @@ class WatchHome extends StatefulWidget {
 }
 
 class _WatchHomeState extends State<WatchHome> {
+  /// The phone publishes every second, so several missed messages in a row
+  /// means something is wrong rather than merely slow.
+  static const Duration _staleAfter = Duration(seconds: 5);
+
   final PageController _pager = PageController();
   late RunStats _stats = widget.source.current;
   StreamSubscription<RunStats>? _sub;
   int _lastLoopCount = 0;
 
+  /// When the last snapshot arrived from the phone, so the clock can be carried
+  /// forward locally between messages — see [_displayStats].
+  DateTime _lastMessageAt = DateTime.now();
+
+  /// Repaints between phone messages. Nothing to do with the data rate: it
+  /// exists purely so the seconds tick over smoothly.
+  Timer? _clockTicker;
+
   @override
   void initState() {
     super.initState();
     _sub = widget.source.stats.listen(_onStats);
+    _clockTicker = Timer.periodic(
+      const Duration(milliseconds: 200),
+      (_) {
+        if (mounted && _stats.phase == RunPhase.running) setState(() {});
+      },
+    );
+  }
+
+  /// The phone publishes once a second, which left the watch's clock visibly
+  /// lagging and jumping a second at a time. Rather than publish faster — which
+  /// costs Bluetooth radio time and battery on both devices for no extra
+  /// information — the watch carries the clock forward itself using the time
+  /// since the last snapshot.
+  ///
+  /// Only the clock is extrapolated. Distance, pace and heart rate hold their
+  /// last received values, because those genuinely are unknown until the phone
+  /// says otherwise; elapsed time is the one quantity the watch can derive
+  /// without guessing. Paused and finished runs are shown exactly as received,
+  /// since their clock is not moving.
+  RunStats get _displayStats {
+    if (_stats.phase != RunPhase.running) return _stats;
+    final sinceMessage = DateTime.now().difference(_lastMessageAt);
+    // Safety net: if the phone has gone quiet for longer than a few ticks, the
+    // link is down or the run ended without us hearing. Freeze rather than
+    // count into fiction — a stopped clock reads as a problem, a clock still
+    // running reads as a run still happening.
+    if (sinceMessage > _staleAfter) return _stats;
+    return _stats.copyWith(elapsed: _stats.elapsed + sinceMessage);
   }
 
   void _onStats(RunStats stats) {
@@ -53,17 +93,32 @@ class _WatchHomeState extends State<WatchHome> {
     }
     _lastLoopCount = stats.loopsCompleted;
 
-    setState(() => _stats = stats);
+    setState(() {
+      _stats = stats;
+      _lastMessageAt = DateTime.now();
+    });
   }
 
   @override
   void dispose() {
+    _clockTicker?.cancel();
     _sub?.cancel();
     _pager.dispose();
     super.dispose();
   }
 
-  void _send(WatchCommand command) => widget.source.send(command);
+  void _send(WatchCommand command) {
+    widget.source.send(command);
+
+    // Show the summary straight away rather than waiting for the phone to
+    // confirm. Ending is already deliberate — it took a 1.4 s hold — so there
+    // is nothing left to confirm, and a wrist that appears to ignore a
+    // long-press reads as broken. The phone's own `finished` message follows
+    // and simply agrees.
+    if (command == WatchCommand.finish) {
+      setState(() => _stats = _stats.copyWith(phase: RunPhase.finished));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -75,7 +130,7 @@ class _WatchHomeState extends State<WatchHome> {
           body: switch (_stats.phase) {
             RunPhase.idle => _IdleScreen(onStart: () => _send(WatchCommand.start)),
             RunPhase.countdown => _CountdownScreen(value: _stats.countdownValue),
-            RunPhase.finished => _FinishedScreen(stats: _stats),
+            RunPhase.finished => _FinishedScreen(stats: _displayStats),
             RunPhase.running || RunPhase.paused => _buildPager(ambient),
           },
         );
@@ -87,16 +142,17 @@ class _WatchHomeState extends State<WatchHome> {
     // Ambient updates arrive about once a minute and burn-in protection rules
     // out large bright areas, so ambient collapses to the metrics page only —
     // paging through screens nobody is looking at would just cost battery.
-    if (ambient) return MetricsPage(stats: _stats, ambient: true);
+    final stats = _displayStats;
+    if (ambient) return MetricsPage(stats: stats, ambient: true);
 
     return PageView(
       controller: _pager,
       scrollDirection: Axis.vertical,
       children: [
-        MetricsPage(stats: _stats, ambient: false),
-        NavigationPage(stats: _stats, ambient: false),
-        TerritoryPage(stats: _stats, ambient: false),
-        ControlsPage(stats: _stats, onCommand: _send),
+        MetricsPage(stats: stats, ambient: false),
+        NavigationPage(stats: stats, ambient: false),
+        TerritoryPage(stats: stats, ambient: false),
+        ControlsPage(stats: stats, onCommand: _send),
       ],
     );
   }
@@ -185,31 +241,64 @@ class _FinishedScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // A scroll view, not a Column: five stats plus the footer overflow a
+    // ~203 dp round screen, and this is the one screen a runner reads standing
+    // still, so scrolling costs nothing here.
     return RoundSafe(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.check_circle_outline,
-              size: 26, color: WatchTheme.accent),
-          const SizedBox(height: 8),
-          Metric(
-            value: WatchFormat.distanceKm(stats.distanceMeters),
-            label: 'KM',
-            valueSize: 30,
-          ),
-          const SizedBox(height: 6),
-          Metric(
-            value: WatchFormat.duration(stats.elapsed),
-            label: 'TIME',
-            valueSize: 19,
-          ),
-          const SizedBox(height: 10),
-          const Text(
-            'Finish on\nyour phone',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 10, color: WatchTheme.secondaryText),
-          ),
-        ],
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.check_circle_outline,
+                size: 24, color: WatchTheme.accent),
+            const SizedBox(height: 6),
+            Metric(
+              value: WatchFormat.distanceKm(stats.distanceMeters),
+              label: 'KM',
+              valueSize: 30,
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                Metric(
+                  value: WatchFormat.duration(stats.elapsed),
+                  label: 'TIME',
+                  valueSize: 18,
+                ),
+                Metric(
+                  value: WatchFormat.pace(stats.paceMinPerKm),
+                  label: '/KM',
+                  valueSize: 18,
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                Metric(
+                  value: WatchFormat.areaKm2(stats.claimedAreaM2),
+                  label: 'KM² WON',
+                  valueSize: 18,
+                  valueColor:
+                      stats.loopsCompleted > 0 ? WatchTheme.accent : null,
+                ),
+                Metric(
+                  value: '${stats.loopsCompleted}',
+                  label: 'LOOPS',
+                  valueSize: 18,
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Save or discard\non your phone',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 10, color: WatchTheme.secondaryText),
+            ),
+          ],
+        ),
       ),
     );
   }
