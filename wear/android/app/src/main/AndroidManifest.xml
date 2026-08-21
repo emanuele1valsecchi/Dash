@@ -14,7 +14,17 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <!-- Heart rate needs BOTH, because which one applies depends on the OS.
+         Android 15 (API 35) deprecated BODY_SENSORS in favour of Health
+         Connect's granular permissions, and on Wear OS 6 the heart rate sensor
+         is guarded by READ_HEART_RATE alone — verified via `dumpsys
+         sensorservice` on a Galaxy Watch 6, which reports
+         `perm: android.permission.health.READ_HEART_RATE`. Older Wear 3/4
+         devices still gate it behind BODY_SENSORS, so both are declared and
+         either being granted is treated as sufficient at runtime. -->
+    <uses-permission android:name="android.permission.BODY_SENSORS"
+        android:maxSdkVersion="34" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
     <!-- Ambient mode: without this the screen blanks a few seconds after
          wrist-down and the run screen is simply gone mid-workout. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />

@@ -35,6 +35,13 @@ class PhoneRelayStatsSource implements RunStatsSource {
   RunStats _current = RunStats.idle;
   bool _heardFromPhone = false;
 
+  /// The watch's own sensor. Merged into every snapshot below rather than
+  /// waiting for the phone to echo it back — a round trip would add a second of
+  /// latency to a number measured on this very device, and would blank out
+  /// entirely whenever the link dropped.
+  HeartRateReading _heartRate = const HeartRateReading();
+  Timer? _heartRateUplink;
+
   /// True once any message has arrived. Lets the UI distinguish "the phone says
   /// the run is idle" from "no phone here" — which look identical otherwise and
   /// mean very different things to someone standing at a start line.
@@ -78,9 +85,31 @@ class PhoneRelayStatsSource implements RunStatsSource {
     }
 
     _heardFromPhone = true;
-    _current = decoded;
-    if (!_controller.isClosed) _controller.add(decoded);
+    _current = decoded.copyWith(heartRateBpm: _heartRate.currentBpm);
+    if (!_controller.isClosed) _controller.add(_current);
   }
+
+  /// Feeds the watch's own heart rate into the display and starts relaying it
+  /// to the phone. Separate from [start] so the sensor stays optional — a watch
+  /// without one, or without permission, simply never calls this.
+  void attachHeartRate(Stream<HeartRateReading> readings) {
+    _heartRateSub = readings.listen((reading) {
+      _heartRate = reading;
+      // Show it immediately; the uplink below is a slower, separate concern.
+      _current = _current.copyWith(heartRateBpm: reading.currentBpm);
+      if (!_controller.isClosed) _controller.add(_current);
+    });
+
+    // Uplink on its own timer rather than per sample: the sensor fires several
+    // times a second and the phone only needs it often enough to store an
+    // up-to-date average and maximum at the end of the run.
+    _heartRateUplink = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!_heartRate.hasReading) return;
+      _send(WearPaths.heartRate, payload: _heartRate.encode());
+    });
+  }
+
+  StreamSubscription<HeartRateReading>? _heartRateSub;
 
   @override
   Future<void> send(WatchCommand command) =>
@@ -102,6 +131,8 @@ class PhoneRelayStatsSource implements RunStatsSource {
   @override
   void dispose() {
     _syncTimer?.cancel();
+    _heartRateUplink?.cancel();
+    _heartRateSub?.cancel();
     _incoming?.cancel();
     _controller.close();
   }

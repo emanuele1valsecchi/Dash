@@ -131,9 +131,25 @@ service cloud.firestore {
       // (see `serverOnlyRunFields`/`create`/`update` below), which this
       // doesn't touch.
       allow read: if isSignedIn();
+      // Heart rate comes from a companion watch — the only device that can
+      // measure it — so unlike points/territory it is legitimately
+      // client-written, in the same category as distance and calories. It is
+      // not trust-bearing: heart rate appears nowhere in the XP formula.
+      //
+      // Validated rather than merely permitted. `create` filters by denylist
+      // (noServerOnlyFields), so these would have been accepted with no rule at
+      // all and with no constraint on what they contained. Absent is valid —
+      // most runs have no watch — but present means a plausible bpm.
+      function validHeartRate(data, field) {
+        return !(field in data)
+          || (data[field] is int && data[field] > 0 && data[field] <= 250);
+      }
+
       allow create: if isSignedIn()
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.pointsEarned == 0
+        && validHeartRate(request.resource.data, 'avgHeartRateBpm')
+        && validHeartRate(request.resource.data, 'maxHeartRateBpm')
         && noServerOnlyFields(request.resource.data, serverOnlyRunFields());
       // Client may finalize the session (set endTime, stats) but cannot
       // change ownership, points, or any server-only field (Cloud Function

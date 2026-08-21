@@ -104,6 +104,21 @@ class WearBridge {
           return;
         }
         _applyCommand(command);
+      case WearPaths.heartRate:
+        final reading = HeartRateReading.decode(payload);
+        if (reading == null) {
+          debugPrint('WearBridge: undecodable heart rate reading');
+          return;
+        }
+        // Stored verbatim, not re-averaged: the watch sees every sample, this
+        // side sees one message every few seconds and none while the link is
+        // down. Deliberately does not echo back — the watch already displays
+        // its own reading locally.
+        _controller.reportHeartRate(
+          current: reading.currentBpm,
+          average: reading.averageBpm,
+          max: reading.maxBpm,
+        );
       case WearPaths.requestSync:
         // The watch just connected or was just opened; it has no idea what is
         // going on until we tell it.
@@ -193,6 +208,10 @@ class WearBridge {
       elapsed: controller.elapsed,
       distanceMeters: controller.distanceMeters,
       paceMinPerKm: controller.currentPaceMinPerKm,
+      // Echoed back so a *second* companion (or a re-opened watch app that has
+      // not yet taken its own reading) still sees it. The reporting watch
+      // ignores this and shows its local value, which has no round-trip lag.
+      heartRateBpm: controller.heartRateBpm,
       loopsCompleted: controller.loopsCompleted,
       claimedAreaM2: controller.claimedAreaM2,
       guidance: guidance == null

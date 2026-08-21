@@ -119,6 +119,8 @@ class RunSessionRepository {
     required int loopsCompleted,
     required List<LatLng> path,
     required List<List<LatLng>> closedLoops,
+    int? avgHeartRateBpm,
+    int? maxHeartRateBpm,
   }) async {
     final startLocality =
         path.isEmpty ? null : await _reverseGeocodeLocality(path.first);
@@ -129,6 +131,11 @@ class RunSessionRepository {
       'distanceMeters': distanceMeters,
       'durationMs': duration.inMilliseconds,
       'avgPaceMinPerKm': avgPaceMinPerKm,
+      // Only written when a watch actually reported a reading. Omitted rather
+      // than stored as 0 for a phone-only run: 0 bpm is not a measurement, and
+      // a reader cannot tell a real zero from a missing one.
+      'avgHeartRateBpm': ?avgHeartRateBpm,
+      'maxHeartRateBpm': ?maxHeartRateBpm,
       'maxPaceMinPerKm': maxPaceMinPerKm,
       'caloriesBurned': caloriesBurned,
       'elevationDifferenceMeters': elevationDifferenceMeters,

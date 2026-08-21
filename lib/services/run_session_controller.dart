@@ -157,6 +157,32 @@ class RunSessionController extends ChangeNotifier {
 
   double? get lastHeading => _lastHeading;
 
+  // ── Heart rate (measured on a companion watch) ────────────────────────────
+
+  /// Reported by the watch, which is the only device that can measure it, and
+  /// which accumulates the average and maximum itself — it sees every sample,
+  /// whereas the phone sees roughly one message every few seconds and none
+  /// while the link is down. The phone stores what it is told rather than
+  /// re-deriving it from a partial view.
+  ///
+  /// All null when no watch is connected, or the watch has no sensor. Null is
+  /// not zero: 0 bpm is not a measurement, and the difference is what lets the
+  /// UI show "--" instead of a number.
+  int? _heartRateBpm;
+  int? _avgHeartRateBpm;
+  int? _maxHeartRateBpm;
+
+  int? get heartRateBpm => _heartRateBpm;
+  int? get avgHeartRateBpm => _avgHeartRateBpm;
+  int? get maxHeartRateBpm => _maxHeartRateBpm;
+
+  void reportHeartRate({int? current, int? average, int? max}) {
+    _heartRateBpm = current;
+    _avgHeartRateBpm = average;
+    _maxHeartRateBpm = max;
+    notifyListeners();
+  }
+
   // ── Loop detection ───────────────────────────────────────────────────────
 
   final List<List<LatLng>> _closedLoops = [];
@@ -513,6 +539,8 @@ class RunSessionController extends ChangeNotifier {
       loopsCompleted: loopsCompleted,
       path: path,
       closedLoops: _closedLoops,
+      avgHeartRateBpm: _avgHeartRateBpm,
+      maxHeartRateBpm: _maxHeartRateBpm,
     );
   }
 
@@ -555,6 +583,10 @@ class RunSessionController extends ChangeNotifier {
 
     _lastHeading = null;
     _recentHeadings.clear();
+
+    _heartRateBpm = null;
+    _avgHeartRateBpm = null;
+    _maxHeartRateBpm = null;
 
     _guidance = null;
     _guidanceSegmentIndex = null;
