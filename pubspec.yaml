@@ -1,4 +1,4 @@
-name: dash_application
+name: dash
 description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
@@ -83,6 +83,32 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: "^0.14.4"
+
+# Change the icon of the application
+flutter_launcher_icons:
+  image_path: "assets/images/IconPlain.png"
+  android: true
+  min_sdk_android: 21 # android min sdk min:16, default 21
+  adaptive_icon_foreground: "assets/images/IconPlain.png"
+  adaptive_icon_background: "#173b3e"
+  adaptive_icon_foreground_inset: 28
+  ios: true
+  remove_alpha_ios: true
+  desaturate_tinted_to_grayscale_ios: true
+  background_color_ios: "#173b3e"
+  web:
+    generate: true
+    image_path: "assets/images/IconPlain.png"
+    background_color: "#173b3e"
+    theme_color: "#173b3e"
+  windows:
+    generate: true
+    image_path: "assets/images/Icon2.png"
+    icon_size: 48 # min:48, max:256, default: 48
+  macos:
+    generate: true
+    image_path: "assets/images/Icon2.png"
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -100,6 +126,7 @@ flutter:
     - assets/images/onboarding_3.png
     - assets/images/onboarding_4.png
     - assets/images/IconPlain.png
+    - assets/images/Icon2.png
     - assets/images/Registered.png
 
 

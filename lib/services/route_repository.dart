@@ -119,7 +119,7 @@ class RouteRepository {
       'loopAreaM2': loopAreaM2,
       'isPublic': false,
       'createdAt': FieldValue.serverTimestamp(),
-      if (sourceSessionId != null) 'sourceSessionId': sourceSessionId,
+      'sourceSessionId': ?sourceSessionId,
     });
     _cache = null;
     return doc.id;

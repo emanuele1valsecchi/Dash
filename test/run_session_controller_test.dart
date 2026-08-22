@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
-import 'package:dash_application/services/run_session_controller.dart';
+import 'package:dash/services/run_session_controller.dart';
 
 /// Builds a synthetic GPS fix. Defaults are deliberately "good" — accurate,
 /// running-speed, valid heading — so each test only states the field it is

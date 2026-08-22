@@ -1,4 +1,4 @@
-# dash_application
+# Dash
 
 A new Flutter project.
 

@@ -1,5 +1,5 @@
 import 'dart:math' as math;
-import 'package:dash_application/models/home_models.dart';
+import 'package:dash/models/home_models.dart';
 import 'package:flutter/material.dart';
 
 class MonthlyStatsSection extends StatelessWidget {

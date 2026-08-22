@@ -15,7 +15,7 @@
                   <BuildableReference
                      BuildableIdentifier = "primary"
                      BlueprintIdentifier = "33CC10EC2044A3C60003C045"
-                     BuildableName = "dash_application.app"
+                     BuildableName = "Dash.app"
                      BlueprintName = "Runner"
                      ReferencedContainer = "container:Runner.xcodeproj">
                   </BuildableReference>
@@ -36,7 +36,7 @@
 <<<<<<< HEAD
                BuildableName = "dash.app"
 =======
-               BuildableName = "dash_application.app"
+               BuildableName = "Dash.app"
 >>>>>>> origin/main
                BlueprintName = "Runner"
                ReferencedContainer = "container:Runner.xcodeproj">
@@ -56,7 +56,7 @@
 <<<<<<< HEAD
             BuildableName = "dash.app"
 =======
-            BuildableName = "dash_application.app"
+            BuildableName = "Dash.app"
 >>>>>>> origin/main
             BlueprintName = "Runner"
             ReferencedContainer = "container:Runner.xcodeproj">
@@ -95,7 +95,7 @@
 <<<<<<< HEAD
             BuildableName = "dash.app"
 =======
-            BuildableName = "dash_application.app"
+            BuildableName = "Dash.app"
 >>>>>>> origin/main
             BlueprintName = "Runner"
             ReferencedContainer = "container:Runner.xcodeproj">
@@ -116,7 +116,7 @@
 <<<<<<< HEAD
             BuildableName = "dash.app"
 =======
-            BuildableName = "dash_application.app"
+            BuildableName = "Dash.app"
 >>>>>>> origin/main
             BlueprintName = "Runner"
             ReferencedContainer = "container:Runner.xcodeproj">

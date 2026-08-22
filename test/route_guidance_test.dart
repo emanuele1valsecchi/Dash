@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 
-import 'package:dash_application/utils/geometry_utils.dart';
+import 'package:dash/utils/geometry_utils.dart';
 
 /// A ~100 m square loop just east of Milano centre, closing back on its own
 /// start point — the shape Dash's whole territory mechanic is built around,
