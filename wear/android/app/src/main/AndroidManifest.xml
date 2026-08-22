@@ -14,10 +14,28 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <!-- Heart rate needs BOTH, because which one applies depends on the OS.
+         Android 15 (API 35) deprecated BODY_SENSORS in favour of Health
+         Connect's granular permissions, and on Wear OS 6 the heart rate sensor
+         is guarded by READ_HEART_RATE alone — verified via `dumpsys
+         sensorservice` on a Galaxy Watch 6, which reports
+         `perm: android.permission.health.READ_HEART_RATE`. Older Wear 3/4
+         devices still gate it behind BODY_SENSORS, so both are declared and
+         either being granted is treated as sufficient at runtime. -->
+    <uses-permission android:name="android.permission.BODY_SENSORS"
+        android:maxSdkVersion="34" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
     <!-- Ambient mode: without this the screen blanks a few seconds after
          wrist-down and the run screen is simply gone mid-workout. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Standalone recording: keeps the watch's own GPS alive with the screen
+         off, the same way the phone app does. Without a foreground service
+         Wear OS throttles location within seconds of the wrist dropping, which
+         would quietly shred a run recorded away from the phone. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="Dash"
@@ -37,6 +55,7 @@
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:screenOrientation="nosensor"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
             <!-- Specifies an Android theme to apply to this Activity as soon as
@@ -52,6 +71,14 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Keeps the watch's own GPS alive while recording standalone. Same
+             shape as the phone's service; `location` type is what exempts it
+             from background location throttling. -->
+        <service
+            android:name=".RunForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import 'heart_rate_service.dart';
 import 'phone_relay_stats_source.dart';
+import 'watch_run_coordinator.dart';
 import 'run_stats_source.dart';
 import 'screens/watch_home.dart';
 import 'watch_theme.dart';
@@ -26,7 +28,9 @@ class DashWearApp extends StatefulWidget {
 }
 
 class _DashWearAppState extends State<DashWearApp> {
-  final PhoneRelayStatsSource _source = PhoneRelayStatsSource();
+  late final WatchRunCoordinator _source =
+      WatchRunCoordinator(relay: PhoneRelayStatsSource());
+  final HeartRateService _heartRate = HeartRateService();
 
   @override
   void initState() {
@@ -35,10 +39,20 @@ class _DashWearAppState extends State<DashWearApp> {
     // opening the watch app mid-run would otherwise show idle until the phone's
     // next tick.
     _source.start();
+    _startHeartRate();
+  }
+
+  /// Heart rate is entirely optional: no sensor, or permission refused, leaves
+  /// the reading null and the UI showing "--". Nothing else changes.
+  Future<void> _startHeartRate() async {
+    await _heartRate.start();
+    if (!_heartRate.isAvailable || !_heartRate.isPermitted) return;
+    _source.attachHeartRate(_heartRate.readings);
   }
 
   @override
   void dispose() {
+    _heartRate.dispose();
     _source.dispose();
     super.dispose();
   }

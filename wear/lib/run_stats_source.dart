@@ -29,6 +29,13 @@ abstract class RunStatsSource {
   /// phone owns the session and may refuse or ignore the request.
   Future<void> send(WatchCommand command);
 
+  /// Clears a finished run's summary and returns the watch to idle.
+  ///
+  /// Only meaningful for a run the watch recorded itself: a phone-owned run's
+  /// summary clears when the phone says so. Defaults to doing nothing so
+  /// sources that never show a lingering summary need not implement it.
+  void dismissSummary() {}
+
   void dispose();
 }
 
@@ -161,6 +168,11 @@ class FakeRunStatsSource implements RunStatsSource {
   void _emit() {
     if (!_controller.isClosed) _controller.add(_current);
   }
+
+  /// Nothing to dismiss: this source never shows a summary the watch
+  /// itself owns.
+  @override
+  void dismissSummary() {}
 
   @override
   void dispose() {

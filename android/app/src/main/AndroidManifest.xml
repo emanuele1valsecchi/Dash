@@ -5,6 +5,10 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Android 13+ requires this before the run notification can be shown, and
+         without a visible notification the foreground service cannot run — so a
+         refusal here costs background tracking entirely, not just the alert. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     
     <application
         android:label="Dash"
@@ -32,6 +36,15 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Keeps a run recording with the screen off. `location` type is what
+             exempts the app from background location throttling; it must be
+             started while the app is visible (Android 12+ blocks background
+             starts). Not exported: only this app ever starts it. -->
+        <service
+            android:name=".RunForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

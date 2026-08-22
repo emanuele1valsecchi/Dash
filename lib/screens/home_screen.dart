@@ -85,6 +85,8 @@ class _HomeScreenState extends State<HomeScreen> {
     // start a run while the phone is sitting on this screen in a pocket.
     WearBridge.instance.start();
     _watchCommands = WearBridge.instance.commands.listen(_onWatchCommand);
+    _watchImports =
+        WearBridge.instance.importMessages.listen(_onWatchImportMessage);
   }
 
   /// Commands the watch cannot action on its own. Only `start` is handled here;
@@ -92,6 +94,17 @@ class _HomeScreenState extends State<HomeScreen> {
   void _onWatchCommand(WatchCommand command) {
     if (command != WatchCommand.start) return;
     if (!mounted) return;
+
+    // Only act when the app is actually on screen. A backgrounded phone can
+    // receive the message and push the run screen, but cannot finish starting:
+    // Android refuses a foreground-service start from the background, so the
+    // run sits on "getting GPS position" until the user happens to open the
+    // app — at which point it springs to life and collides with the run the
+    // watch has been recording in the meantime. Ignoring it here is what lets
+    // the watch keep the run it already started.
+    if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
     // This screen stays mounted underneath the run screen, so without this
     // guard a stray start from the watch would stack a second RunTrackingPage
     // on top of a live run — and the new one would reset the controller.
@@ -103,10 +116,23 @@ class _HomeScreenState extends State<HomeScreen> {
   /// Watch commands this screen listens for. The bridge itself is app-lifetime
   /// and deliberately not disposed here — only this subscription is.
   StreamSubscription<WatchCommand>? _watchCommands;
+  StreamSubscription<String>? _watchImports;
+
+  /// A run arriving from the watch happens with no interaction at all — it can
+  /// land minutes after the user opened the app. A snackbar is the least
+  /// intrusive way to say so; anything modal would interrupt whatever they
+  /// actually opened the app to do.
+  void _onWatchImportMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
+    );
+  }
 
   @override
   void dispose() {
     _watchCommands?.cancel();
+    _watchImports?.cancel();
     _pageController.dispose();
     super.dispose();
   }

@@ -16,6 +16,7 @@ import '../services/claimed_area_repository.dart';
 import 'package:dash_watch_protocol/dash_watch_protocol.dart';
 
 import '../services/location_service.dart';
+import '../services/run_foreground_service.dart';
 import '../services/run_session_controller.dart';
 import '../services/wear_bridge.dart';
 import '../services/water_fountain_service.dart';
@@ -299,6 +300,13 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   /// continuous stream ([_startPositionStream], via [_beginRun]) recording
   /// breadcrumbs before the authoritative starting point exists.
   Future<void> _initLocation() async {
+    // Asked before the run starts, not when backgrounding: on Android 13+ a
+    // foreground service cannot run without a visible notification, so a
+    // refusal here silently costs background tracking. Prompting mid-run, with
+    // the phone already in a pocket, would be worse than useless.
+    await RunForegroundService.ensureNotificationPermission();
+    if (!mounted) return;
+
     await _controller.prepare(plannedRoute: widget.plannedRoute);
     if (!mounted) return;
     if (_controller.permissionDenied) return;
@@ -718,6 +726,8 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
         maxPace: _formatPaceValue(_controller.bestPaceMinPerKm),
         calories: '${_controller.caloriesBurned.round()} kcal',
         elevation: '${_controller.elevationDifferenceMeters.round()} m',
+        avgHeartRate: _formatBpm(_controller.avgHeartRateBpm),
+        maxHeartRate: _formatBpm(_controller.maxHeartRateBpm),
         onSave: (name) => _controller.save(name: name),
         onRequestDiscardConfirm: () => _showConfirmDialog(
           title: 'Discard this run?',
@@ -839,6 +849,10 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   }
 
   String _formatDistanceKm() => '${(_controller.distanceMeters / 1000).toStringAsFixed(2)} km';
+
+  /// Null means no watch reported a reading — not a reading of zero, which is
+  /// why this can't just print the number.
+  String _formatBpm(int? bpm) => bpm == null ? '--' : '$bpm bpm';
 
   String _formatPaceValue(double? pace) {
     if (pace == null || !pace.isFinite || pace <= 0) return '--:--';
@@ -1757,6 +1771,12 @@ class _RunSummaryDialog extends StatefulWidget {
   final String maxPace;
   final String calories;
   final String elevation;
+
+  /// "--" when no watch reported a reading, which is most runs. Shown rather
+  /// than hidden so the row's absence never reads as a value of zero.
+  final String avgHeartRate;
+  final String maxHeartRate;
+
   final Future<String> Function(String name) onSave;
   final Future<bool?> Function() onRequestDiscardConfirm;
   final VoidCallback onDiscarded;
@@ -1769,6 +1789,8 @@ class _RunSummaryDialog extends StatefulWidget {
     required this.maxPace,
     required this.calories,
     required this.elevation,
+    required this.avgHeartRate,
+    required this.maxHeartRate,
     required this.onSave,
     required this.onRequestDiscardConfirm,
     required this.onDiscarded,
@@ -1879,6 +1901,14 @@ class _RunSummaryDialogState extends State<_RunSummaryDialog> {
                         label: 'Calories',
                         value: widget.calories),
                     _SummaryStat(icon: Icons.terrain_rounded, label: 'Elevation', value: widget.elevation),
+                    _SummaryStat(
+                        icon: Icons.favorite_outline,
+                        label: 'Avg HR',
+                        value: widget.avgHeartRate),
+                    _SummaryStat(
+                        icon: Icons.favorite_rounded,
+                        label: 'Max HR',
+                        value: widget.maxHeartRate),
                   ],
                 ),
                 const SizedBox(height: 20),
