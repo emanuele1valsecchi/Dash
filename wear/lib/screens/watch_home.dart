@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:wear_plus/wear_plus.dart';
 
 import '../run_stats_source.dart';
+import '../screen_awake.dart';
 import '../watch_run_coordinator.dart';
 import '../watch_theme.dart';
 import '../widgets/controls_page.dart';
@@ -102,14 +103,34 @@ class _WatchHomeState extends State<WatchHome> {
     }
     _lastLoopCount = stats.loopsCompleted;
 
+    // The screen is kept awake for exactly as long as a run is live, and
+    // released the moment it is not — leaving the flag set would hold the
+    // display on indefinitely and flatten the watch.
+    final live = stats.phase == RunPhase.running ||
+        stats.phase == RunPhase.paused ||
+        stats.phase == RunPhase.countdown;
+    if (live != _screenHeld) {
+      _screenHeld = live;
+      ScreenAwake.set(live);
+    }
+
     setState(() {
       _stats = stats;
       _lastMessageAt = DateTime.now();
     });
   }
 
+  bool _screenHeld = false;
+
+  /// True while a run must not be walked away from.
+  bool get _runIsLive =>
+      _stats.phase == RunPhase.running ||
+      _stats.phase == RunPhase.paused ||
+      _stats.phase == RunPhase.countdown;
+
   @override
   void dispose() {
+    if (_screenHeld) ScreenAwake.set(false);
     _clockTicker?.cancel();
     _sub?.cancel();
     _sendSub?.cancel();
@@ -141,7 +162,14 @@ class _WatchHomeState extends State<WatchHome> {
 
   @override
   Widget build(BuildContext context) {
-    return AmbientMode(
+    return PopScope(
+      // Wear's swipe-in-from-the-left is the system back gesture, so blocking
+      // pop is what stops a run being dismissed by accident — a real risk on a
+      // wrist, and the reason the display went black on a real walk: once the
+      // app is gone, ambient mode has nothing to keep alive. Ending a run is
+      // deliberate (hold the stop button) and unaffected by this.
+      canPop: !_runIsLive,
+      child: AmbientMode(
       builder: (context, mode, _) {
         final ambient = mode == WearMode.ambient;
         return Scaffold(
@@ -160,6 +188,7 @@ class _WatchHomeState extends State<WatchHome> {
           },
         );
       },
+      ),
     );
   }
 

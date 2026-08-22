@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Adaptive-icon background, copied from the phone app so both devices
+         show the team's icon rather than the watch keeping Flutter's default. -->
+    <color name="ic_launcher_background">#173b3e</color>
+</resources>

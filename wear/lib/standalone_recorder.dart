@@ -78,6 +78,19 @@ class StandaloneRecorder {
   bool _dirty = false;
   bool _streamFailed = false;
 
+  /// Reported by the heart rate service as the run proceeds, and written into
+  /// the run file so the phone can store them on import. The watch is the only
+  /// device that can measure these, so if they are not carried here they are
+  /// lost the moment the run ends.
+  int? _avgHeartRateBpm;
+  int? _maxHeartRateBpm;
+
+  void setHeartRate({int? average, int? max}) {
+    _avgHeartRateBpm = average;
+    _maxHeartRateBpm = max;
+    _dirty = true;
+  }
+
   List<RecordedFix> get fixes => List.unmodifiable(_fixes);
   double get distanceMeters => _distanceMeters;
   Duration get elapsed => _stopwatch.elapsed;
@@ -133,6 +146,8 @@ class StandaloneRecorder {
     _fixes.clear();
     _distanceMeters = 0;
     _streamFailed = false;
+    _avgHeartRateBpm = null;
+    _maxHeartRateBpm = null;
     _stopwatch
       ..reset()
       ..start();
@@ -220,6 +235,8 @@ class StandaloneRecorder {
         'startedAt': DateTime.now().millisecondsSinceEpoch,
         'durationMs': _stopwatch.elapsed.inMilliseconds,
         'distanceMeters': _distanceMeters,
+        'avgHeartRateBpm': _avgHeartRateBpm,
+        'maxHeartRateBpm': _maxHeartRateBpm,
         'fixes': _fixes.map((f) => f.toJson()).toList(),
       }));
       _dirty = false;
