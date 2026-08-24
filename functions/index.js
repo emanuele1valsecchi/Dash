@@ -544,7 +544,30 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
       now: Date.now(),
     });
 
-    const toGeoPoint = (p) => new GeoPoint(p.latitude, p.longitude);
+    // Resolve each stolen-area update back to the user it was taken from
+    const victimIdByUpdateId = new Map();
+    for (const u of result.otherOwnerUpdates) {
+      const originalCandidate = candidates.find(c => c.id === u.id);
+      victimIdByUpdateId.set(u.id, originalCandidate ? originalCandidate.userId : null);
+    }
+
+    // "Coup" badge ("Take the duke area"): if any area actually taken this
+    const victimIds = new Set(
+      [...victimIdByUpdateId.values()].filter((id) => id && id !== userId)
+    );
+    let stoleFromDuke = false;
+    for (const victimId of victimIds) {
+      const dukeProgressSnap = await tx.get(
+        profilesRef.doc(victimId).collection('badge_progress').doc('duke')
+      );
+      if (dukeProgressSnap.exists && dukeProgressSnap.data().unlocked === true) {
+        stoleFromDuke = true;
+        break;
+      }
+    }
+
+    // ── Writes ────────────────────────────────────────────────────────
+    const toGeoPoint = (p) => new admin.firestore.GeoPoint(p.latitude, p.longitude);
     const polygonToFirestore = (polygon) => polygon.map((piece) => ({
       outer: piece.outer.map(toGeoPoint),
       holes: piece.holes.map((h) => ({points: h.points.map(toGeoPoint)})),
@@ -573,8 +596,7 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
     }
 
     for (const u of result.otherOwnerUpdates) {
-      const originalCandidate = candidates.find(c => c.id === u.id);
-      const victimId = originalCandidate ? originalCandidate.userId : null;
+      const victimId = victimIdByUpdateId.get(u.id);
 
       if (victimId && victimId !== userId) {
          const notifRef = notificationsRef.doc();
@@ -604,6 +626,19 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
           updatedAt: FieldValue.serverTimestamp(),
         });
       }
+    }
+
+    if (stoleFromDuke) {
+      tx.set(
+        profilesRef.doc(userId).collection('badge_progress').doc('coup'),
+        {
+          badgeId: 'coup',
+          progress: 1,
+          unlocked: true,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        {merge: true}
+      );
     }
 
     return {totalAreaM2: result.totalAreaM2, stolenAreaM2: result.stolenAreaM2};

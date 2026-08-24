@@ -42,12 +42,15 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 
-        <!-- Declares the watch app works without a phone app installed. Even in
-             companion mode this should stay true: the watch app is installable
-             on its own, and standalone GPS recording is the eventual goal. -->
+        <!-- false: this app is NOT usable on its own.
+             It can record a run without the phone nearby, but it has no account,
+             no territory and no way to save anything — a standalone run only
+             becomes real once the phone imports it. Declaring true would let
+             Play offer the watch app to people who never install the phone app,
+             and they would get something that records runs it can never keep. -->
         <meta-data
             android:name="com.google.android.wearable.standalone"
-            android:value="true" />
+            android:value="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

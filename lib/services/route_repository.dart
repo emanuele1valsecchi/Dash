@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
 /// A single user-created route as stored in Firestore.
@@ -94,6 +97,11 @@ class RouteRepository {
   /// both fields from client-side mutation after creation. [sourceSessionId],
   /// when set, marks this route as having been created by favouriting a run
   /// (see `SavedRoute.sourceSessionId`) rather than drawn/planned by hand.
+  ///
+  /// Also best-effort reverse-geocodes the route's starting point to a raw
+  /// locality name (`startLocality`, e.g. "Seregno") via Nominatim — same
+  /// field, same source, same fire-and-forget-on-failure behaviour as
+  /// `RunSessionRepository.saveSession`'s `startLocality`.
   Future<String> publishRoute({
     required String name,
     required List<LatLng> waypoints,
@@ -105,6 +113,10 @@ class RouteRepository {
     required double loopAreaM2,
     String? sourceSessionId,
   }) async {
+    final startLocality = routePolyline.isEmpty
+        ? null
+        : await _reverseGeocodeLocality(routePolyline.first);
+
     final doc = await _db.collection('routes').add({
       'userId': _uid,
       'name': name.trim().isEmpty ? 'Unnamed route' : name.trim(),
@@ -118,11 +130,43 @@ class RouteRepository {
       'isLoop': isLoop,
       'loopAreaM2': loopAreaM2,
       'isPublic': false,
+      'startLocality': startLocality,
       'createdAt': FieldValue.serverTimestamp(),
       'sourceSessionId': ?sourceSessionId,
     });
     _cache = null;
     return doc.id;
+  }
+
+  /// Best-effort Nominatim reverse geocode of [point] down to a raw locality
+  /// name — identical in behaviour to
+  /// `RunSessionRepository._reverseGeocodeLocality`, kept as a separate copy
+  /// rather than a shared helper since the two repositories don't otherwise
+  /// depend on each other.
+  Future<String?> _reverseGeocodeLocality(LatLng point) async {
+    try {
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/reverse'
+        '?lat=${point.latitude}&lon=${point.longitude}&format=json&zoom=10',
+      );
+      final response = await http
+          .get(uri, headers: {'User-Agent': 'DashApp/1.0'})
+          .timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) return null;
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final address = data['address'] as Map<String, dynamic>?;
+      if (address == null) return null;
+
+      return (address['city'] ??
+          address['town'] ??
+          address['village'] ??
+          address['municipality']) as String?;
+    } catch (_) {
+      // Best-effort only — a route should still save if reverse geocoding
+      // fails or Nominatim is unreachable.
+      return null;
+    }
   }
 
   /// Returns the current user's routes, newest first.
