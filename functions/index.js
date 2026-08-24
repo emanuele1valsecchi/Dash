@@ -59,6 +59,70 @@ const BADGE_RULES = {
     target: 7200000 // 2 hours
   },
 
+  // ── CIRCUITS & CITIES ──
+  'home_sweet_home': {
+    calculateProgress: (session, stats) => {
+      const counts = stats.allTime?.cityCounts || {};
+      const values = Object.values(counts);
+      return values.length > 0 ? Math.max(...values) : 0;
+    },
+    target: 10
+  },
+  'traveller': {
+    calculateProgress: (session, stats) => {
+      const counts = stats.allTime?.cityCounts || {};
+      const validCities = Object.keys(counts).filter(c => c !== 'Unknown');
+      return validCities.length;
+    },
+    target: 5
+  },
+  'interrail': {
+    calculateProgress: (session, stats) => {
+      const counts = stats.allTime?.cityCounts || {};
+      const validCities = Object.keys(counts).filter(c => c !== 'Unknown');
+      return validCities.length;
+    },
+    target: 10
+  },
+  'the_foreigner': {
+    calculateProgress: (session, stats) => {
+      const counts = stats.allTime?.cityCounts || {};
+      const validCities = Object.keys(counts).filter(c => c !== 'Unknown');
+      return validCities.length > 1 ? 1 : 0;
+    },
+    target: 1
+  },
+
+  // ── CONSISTENCY & STREAKS ──
+  'youre_looking_good': {
+    // 2 workouts in a single week
+    calculateProgress: (session, stats) => {
+      return stats.allTime?.streakStats?.maxRunsInAWeek || 0;
+    },
+    target: 2
+  },
+  'consistent': {
+    // 1 run per week for a whole month (4 consecutive weeks)
+    calculateProgress: (session, stats) => {
+      return stats.allTime?.streakStats?.maxConsecutiveWeeks || 0;
+    },
+    target: 4
+  },
+
+  // ── AREA CONQUEST (Cumulative) ──
+  'aspiring_boss': {
+    calculateProgress: (session, stats) => stats.allTime?.cumulativeAreaM2 || 0,
+    target: 500000
+  },
+  'gym_bro': {
+    calculateProgress: (session, stats) => stats.allTime?.cumulativeAreaM2 || 0,
+    target: 2000000
+  },
+  'duke': {
+    calculateProgress: (session, stats) => stats.allTime?.cumulativeAreaM2 || 0,
+    target: 5000000
+  },
+
   // ── TERRITORY & GAMEPLAY (Based on the current session) ──
   'its_all_mine': {
     calculateProgress: (session, stats) => session.stolenAreaM2 > 0 ? 1 : 0,
@@ -155,12 +219,29 @@ exports.onRunningSessionCompleted = onDocumentUpdated(
     const currentDuration = Number(sessionData.durationMs || 0); 
     const currentCalories = Number(sessionData.caloriesBurned || 0);
     const currentLoops = Number(sessionData.loopsCompleted || 0);
+    const currentAreaM2 = Number(sessionData.totalAreaM2 || 0);
     
     const currentMaxPace = Number(sessionData.maxPaceMinPerKm || 0);
     const currentMaxSpeedKmh = currentMaxPace > 0 ? (60 / currentMaxPace) : 0;
     
     const durationHours = currentDuration / 3600000;
     const currentAvgSpeedKmh = durationHours > 0 ? (currentDistance / 1000) / durationHours : 0;
+
+    // Retrieve and format the city 
+    const currentCity = sessionData.startLocality && sessionData.startLocality.trim() !== '' 
+      ? sessionData.startLocality.trim() 
+      : 'Unknown';
+
+    // ── 🕒 STREAK ENGINE SETUP ──
+    // Find the Monday of the week the run was performed
+    const runDate = sessionData.createdAt ? sessionData.createdAt.toDate() : new Date();
+    const day = runDate.getDay();
+    // JavaScript getDay() returns 0 for Sunday, 1 for Monday, etc.
+    const diffToMonday = runDate.getDate() - day + (day === 0 ? -6 : 1);
+    const mondayDate = new Date(runDate);
+    mondayDate.setDate(diffToMonday);
+    mondayDate.setHours(0, 0, 0, 0); 
+    const currentWeekMondayMs = mondayDate.getTime();
 
     // Execute the transaction and SAVE the final stats in finalStats
     const finalStats = await db.runTransaction(async (transaction) => {
@@ -181,7 +262,16 @@ exports.onRunningSessionCompleted = onDocumentUpdated(
           totalDurationMs: currentDuration,
           totalCaloriesBurned: currentCalories,
           totalSessions: 1,
-          totalLoopsCompleted: currentLoops
+          totalLoopsCompleted: currentLoops,
+          cumulativeAreaM2: currentAreaM2,
+          cityCounts: { [currentCity]: 1 },
+          streakStats: {
+            lastRunMondayMs: currentWeekMondayMs,
+            runsThisWeek: 1,
+            consecutiveWeeks: 1,
+            maxRunsInAWeek: 1,
+            maxConsecutiveWeeks: 1
+          }
         }
       };
 
@@ -189,13 +279,54 @@ exports.onRunningSessionCompleted = onDocumentUpdated(
         const existingData = statsDoc.data();
         const existingBest = existingData.bestOverall || {};
         const existingAllTime = existingData.allTime || {};
+        
+        const existingCityCounts = existingAllTime.cityCounts || {};
+        const updatedCityCounts = { ...existingCityCounts };
+        updatedCityCounts[currentCity] = (updatedCityCounts[currentCity] || 0) + 1;
+
+        // ── 🕒 STREAK ENGINE CALCULATION ──
+        const existingStreak = existingAllTime.streakStats || {};
+        const lastRunMondayMs = existingStreak.lastRunMondayMs || currentWeekMondayMs;
+        
+        // How many weeks apart is this run from the previous one?
+        // (7 days * 24 hours * 60 min * 60 sec * 1000 ms = 604800000)
+        const diffWeeks = Math.round((currentWeekMondayMs - lastRunMondayMs) / 604800000);
+
+        let runsThisWeek = existingStreak.runsThisWeek || 0;
+        let consecutiveWeeks = existingStreak.consecutiveWeeks || 0;
+
+        if (diffWeeks === 0) {
+          // Same week: update the weekly run count
+          runsThisWeek += 1;
+          if (consecutiveWeeks === 0) consecutiveWeeks = 1; 
+        } else if (diffWeeks === 1) {
+          // Exactly the next week: Streak maintained!
+          runsThisWeek = 1;
+          consecutiveWeeks += 1;
+        } else {
+          // Gap of 2+ weeks: User broke the consistency. Reset to 1.
+          runsThisWeek = 1;
+          consecutiveWeeks = 1;
+        }
+
+        const updatedStreakStats = {
+          lastRunMondayMs: currentWeekMondayMs,
+          runsThisWeek: runsThisWeek,
+          consecutiveWeeks: consecutiveWeeks,
+          maxRunsInAWeek: Math.max(existingStreak.maxRunsInAWeek || 0, runsThisWeek),
+          maxConsecutiveWeeks: Math.max(existingStreak.maxConsecutiveWeeks || 0, consecutiveWeeks)
+        };
+        // ──────────────────────────────────────────────────
 
         stats.allTime = {
           totalDistanceMeters: (existingAllTime.totalDistanceMeters || 0) + currentDistance,
           totalDurationMs: (existingAllTime.totalDurationMs || 0) + currentDuration,
           totalCaloriesBurned: (existingAllTime.totalCaloriesBurned || 0) + currentCalories,
           totalSessions: (existingAllTime.totalSessions || 0) + 1,
-          totalLoopsCompleted: (existingAllTime.totalLoopsCompleted || 0) + currentLoops
+          totalLoopsCompleted: (existingAllTime.totalLoopsCompleted || 0) + currentLoops,
+          cumulativeAreaM2: (existingAllTime.cumulativeAreaM2 || 0) + currentAreaM2,
+          cityCounts: updatedCityCounts,
+          streakStats: updatedStreakStats
         };
 
         stats.bestOverall = {
@@ -536,7 +667,7 @@ async function evaluateBadges(userId, sessionData, userStats) {
 
   if (badgesUpdated > 0) {
     await batch.commit();
-    console.log(`Aggiornati ${badgesUpdated} badge per l'utente ${userId}`);
+    console.log(`Updated ${badgesUpdated} badges for user ${userId}`);
   }
 }
 
@@ -591,11 +722,17 @@ exports.checkProfileBadges = onDocumentUpdated(
     const after = event.data.after.data();
     const uid = event.params.uid;
 
+    // 1. Badge: "That's me"
     const hasImageNow = after.profileImageUrl && after.profileImageUrl.trim() !== "";
     const isCompletedNow = after.profileCompleted === true;
 
     if (hasImageNow && isCompletedNow) {
       await unlockEventBadge(uid, 'thats_me', `Congratulations! You unlocked the 'That's me' badge!`);
+    }
+
+    // 2. Badge: "I'm following you"
+    if (after.followingCount >= 1) {
+      await unlockEventBadge(uid, 'im_following_you', `Congratulations! You unlocked the 'I'm following you' badge!`);
     }
     
     return null;
