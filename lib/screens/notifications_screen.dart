@@ -18,6 +18,7 @@ enum NotificationType {
   areaStolen,          // Qualcuno ha sottratto la tua area
   routeSaved,          // Qualcuno ha salvato il tuo percorso
   routeRunFaster,      // Qualcuno ha corso più velocemente il tuo percorso
+  badgeUnlocked,       // Sblocco di un nuovo badge
 }
 
 class NotificationItem {
@@ -250,6 +251,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
               ),
             );
             break;
+
+          case NotificationType.badgeUnlocked:
+            // Non navighiamo da nessuna parte per ora, la segniamo solo come letta
+            break;
         }
       },
       child: Container(
@@ -306,7 +311,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Widget _buildLeadingIcon(NotificationItem item) {
-    Widget innerIcon;
+    Widget innerIcon = const SizedBox(); // Fallback sicuro
 
     switch (item.type) {
       case NotificationType.newFollower:
@@ -341,6 +346,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
       case NotificationType.areaStolen:
         innerIcon = const Icon(Icons.share_location_rounded, color: Colors.white, size: 24);
+        break;
+
+      case NotificationType.badgeUnlocked: // ECCO DOVE ANDAVA MESSO!
+        innerIcon = const Icon(Icons.workspace_premium_rounded, color: Colors.white, size: 24);
         break;
     }
 
