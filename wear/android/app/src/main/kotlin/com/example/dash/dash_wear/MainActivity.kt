@@ -3,6 +3,8 @@ package com.example.dash.dash_wear
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
+import io.flutter.plugin.common.MethodChannel
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 
@@ -67,5 +69,26 @@ class MainActivity : FlutterActivity() {
         WearBridgePlugin(applicationContext).register(messenger)
         HeartRatePlugin(applicationContext).register(messenger)
         RunServicePlugin(applicationContext).register(messenger)
+
+        // Window flags need the Activity, which the application-context plugins
+        // above do not have — hence handling this here rather than in one of
+        // them. KEEP_SCREEN_ON stops Wear blanking the display mid-run; ambient
+        // mode still dims it, which is the behaviour we want.
+        MethodChannel(messenger, "dash/screen").setMethodCallHandler { call, result ->
+            when (call.method) {
+                "keepAwake" -> {
+                    val keep = call.argument<Boolean>("keep") ?: false
+                    runOnUiThread {
+                        if (keep) {
+                            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        } else {
+                            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        }
+                    }
+                    result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
     }
 }

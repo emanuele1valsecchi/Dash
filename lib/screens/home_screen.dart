@@ -454,10 +454,7 @@ class _HomeScreenState extends State<HomeScreen> {
           if (progressDoc.exists) {
             final data = progressDoc.data();
             final rawProgress = (data?['progress'] as num?)?.toDouble() ?? 0.0;
-
-            progress = rawProgress > 1.0
-                ? (rawProgress / 100).clamp(0.0, 1.0)
-                : rawProgress.clamp(0.0, 1.0);
+            progress = (rawProgress / 100).clamp(0.0, 1.0); 
             unlocked = data?['unlocked'] == true || progress >= 1.0;
           }
         } catch (e) {
@@ -553,6 +550,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       _loadMonthlyDistance();
       _loadLeaderboardPreviews(); 
+      setState(() {
+        _badgesFuture = _loadBadges();
+      });
     }
   }
 
@@ -601,8 +601,11 @@ class _HomeScreenState extends State<HomeScreen> {
                         color: const Color(0xFF425143),
                         backgroundColor: const Color(0xFFCAF0B8),
                         onRefresh: () async {
-                           await _loadMonthlyDistance();
-                           await _loadLeaderboardPreviews();
+                          await _loadMonthlyDistance();
+                          await _loadLeaderboardPreviews();
+                          setState(() {
+                            _badgesFuture = _loadBadges();
+                          });
                         },
                         child: SingleChildScrollView(
                           physics: const AlwaysScrollableScrollPhysics(),

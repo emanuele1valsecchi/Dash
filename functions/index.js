@@ -1,24 +1,160 @@
-const functions = require("firebase-functions/v1"); // Modulo Gen 1
-const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore"); // Modulo Gen 2
+const functions = require("firebase-functions/v1"); // Gen 1 Module
+const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore"); // Gen 2 Module
 const admin = require('firebase-admin');
-const { getFirestore } = require('firebase-admin/firestore'); // Import esplicito
+const { getFirestore, FieldValue, GeoPoint, Timestamp } = require('firebase-admin/firestore');
 const geo = require('./geo');
 const territory = require('./territory');
 const routing = require('./routing');
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 
 admin.initializeApp();
-const db = getFirestore(); // Inizializzazione sicura
+const db = getFirestore(); // Safe initialization
 
 // Server-side ORS proxy — see routing.js for why this exists (moves the
 // OpenRouteService API key out of the client entirely).
 exports.orsRoute = routing.orsRoute;
 
-// 1. INIZIALIZZAZIONE PROFILO (Restiamo su Gen 1 per l'Auth)
+const BADGE_RULES = {
+  // ── SESSIONS & LOOPS ──
+  'rookie': {
+    // Goes from 0 to 1 session (reads stats.allTime)
+    calculateProgress: (session, stats) => stats.allTime.totalSessions || 0,
+    target: 1
+  },
+  'is_it_a_triangle_or_a_square': {
+    // Unlocked when at least one shape is closed.
+    calculateProgress: (session, stats) => stats.allTime.totalLoopsCompleted || 0,
+    target: 1
+  },
+
+  // ── DISTANCE (Working directly in meters) ──
+  'warming_up': {
+    calculateProgress: (session, stats) => stats.allTime.totalDistanceMeters || 0,
+    target: 10000 // 10 km in meters
+  },
+  'hot_feet': {
+    calculateProgress: (session, stats) => stats.allTime.totalDistanceMeters || 0,
+    target: 100000 // 100 km in meters
+  },
+  'smoldering_feet': {
+    calculateProgress: (session, stats) => stats.allTime.totalDistanceMeters || 0,
+    target: 1000000 // 1000 km in meters
+  },
+
+  // ── DURATION (Working in milliseconds fetching maxDurationMs) ──
+  'starter': {
+    calculateProgress: (session, stats) => stats.bestOverall?.maxDurationMs || 0,
+    target: 1200000 // 20 min (20 * 60 * 1000 ms)
+  },
+  'need_a_break': {
+    calculateProgress: (session, stats) => stats.bestOverall?.maxDurationMs || 0,
+    target: 2400000 // 40 min
+  },
+  'great_stamina': {
+    calculateProgress: (session, stats) => stats.bestOverall?.maxDurationMs || 0,
+    target: 3600000 // 1 hour
+  },
+  'half_a_marathon': {
+    calculateProgress: (session, stats) => stats.bestOverall?.maxDurationMs || 0,
+    target: 7200000 // 2 hours
+  },
+
+  // ── CIRCUITS & CITIES ──
+  'home_sweet_home': {
+    calculateProgress: (session, stats) => {
+      const counts = stats.allTime?.cityCounts || {};
+      const values = Object.values(counts);
+      return values.length > 0 ? Math.max(...values) : 0;
+    },
+    target: 10
+  },
+  'traveller': {
+    calculateProgress: (session, stats) => {
+      const counts = stats.allTime?.cityCounts || {};
+      const validCities = Object.keys(counts).filter(c => c !== 'Unknown');
+      return validCities.length;
+    },
+    target: 5
+  },
+  'interrail': {
+    calculateProgress: (session, stats) => {
+      const counts = stats.allTime?.cityCounts || {};
+      const validCities = Object.keys(counts).filter(c => c !== 'Unknown');
+      return validCities.length;
+    },
+    target: 10
+  },
+  'the_foreigner': {
+    calculateProgress: (session, stats) => {
+      const counts = stats.allTime?.cityCounts || {};
+      const validCities = Object.keys(counts).filter(c => c !== 'Unknown');
+      return validCities.length > 1 ? 1 : 0;
+    },
+    target: 1
+  },
+
+  // ── CONSISTENCY & STREAKS ──
+  'youre_looking_good': {
+    // 2 workouts in a single week
+    calculateProgress: (session, stats) => {
+      return stats.allTime?.streakStats?.maxRunsInAWeek || 0;
+    },
+    target: 2
+  },
+  'consistent': {
+    // 1 run per week for a whole month (4 consecutive weeks)
+    calculateProgress: (session, stats) => {
+      return stats.allTime?.streakStats?.maxConsecutiveWeeks || 0;
+    },
+    target: 4
+  },
+
+  // ── AREA CONQUEST (Cumulative) ──
+  'aspiring_boss': {
+    calculateProgress: (session, stats) => stats.allTime?.cumulativeAreaM2 || 0,
+    target: 500000
+  },
+  'gym_bro': {
+    calculateProgress: (session, stats) => stats.allTime?.cumulativeAreaM2 || 0,
+    target: 2000000
+  },
+  'duke': {
+    calculateProgress: (session, stats) => stats.allTime?.cumulativeAreaM2 || 0,
+    target: 5000000
+  },
+
+  // ── TERRITORY & GAMEPLAY (Based on the current session) ──
+  'its_all_mine': {
+    calculateProgress: (session, stats) => session.stolenAreaM2 > 0 ? 1 : 0,
+    target: 1
+  },
+  'cheater': {
+    calculateProgress: (session, stats) => {
+       const pace = session.maxPaceMinPerKm || 0;
+       const kmh = pace > 0 ? (60 / pace) : 0;
+       return kmh > 35 ? 1 : 0;
+    },
+    target: 1
+  },
+  'buuuu': {
+    calculateProgress: (session, stats) => session.beatGhost === true ? 1 : 0,
+    target: 1
+  },
+  'eat_my_dust': {
+    calculateProgress: (session, stats) => session.wonChallenge === true ? 1 : 0,
+    target: 1
+  },
+  'by_a_whisker': {
+    calculateProgress: (session, stats) => session.stoppedNearEnd === true ? 1 : 0,
+    target: 1
+  }
+};
+
+// 1. PROFILE INITIALIZATION (Keeping Gen 1 for Auth)
 exports.seedUserProfileAndBadges = functions
   .region('europe-west1')
   .auth.user().onCreate(async (user) => {
-    const now = admin.firestore.FieldValue.serverTimestamp();
+    const now = FieldValue.serverTimestamp();
 
     const profileRef = db.collection('profiles').doc(user.uid);
     const badgesSnapshot = await db.collection('badges').get();
@@ -60,8 +196,7 @@ exports.seedUserProfileAndBadges = functions
     return batch.commit();
   });
 
-// 2. CALCOLO AGGREGATO 
-// FIXED: Switched to onDocumentUpdated. Only runs when pointsEarned is finally processed.
+// 2. AGGREGATE CALCULATION & BADGE EVALUATION
 exports.onRunningSessionCompleted = onDocumentUpdated(
   {
     document: 'runningSessions/{sessionId}',
@@ -84,6 +219,7 @@ exports.onRunningSessionCompleted = onDocumentUpdated(
     const currentDuration = Number(sessionData.durationMs || 0); 
     const currentCalories = Number(sessionData.caloriesBurned || 0);
     const currentLoops = Number(sessionData.loopsCompleted || 0);
+    const currentAreaM2 = Number(sessionData.totalAreaM2 || 0);
     
     const currentMaxPace = Number(sessionData.maxPaceMinPerKm || 0);
     const currentMaxSpeedKmh = currentMaxPace > 0 ? (60 / currentMaxPace) : 0;
@@ -91,7 +227,24 @@ exports.onRunningSessionCompleted = onDocumentUpdated(
     const durationHours = currentDuration / 3600000;
     const currentAvgSpeedKmh = durationHours > 0 ? (currentDistance / 1000) / durationHours : 0;
 
-    return db.runTransaction(async (transaction) => {
+    // Retrieve and format the city 
+    const currentCity = sessionData.startLocality && sessionData.startLocality.trim() !== '' 
+      ? sessionData.startLocality.trim() 
+      : 'Unknown';
+
+    // ── 🕒 STREAK ENGINE SETUP ──
+    // Find the Monday of the week the run was performed
+    const runDate = sessionData.createdAt ? sessionData.createdAt.toDate() : new Date();
+    const day = runDate.getDay();
+    // JavaScript getDay() returns 0 for Sunday, 1 for Monday, etc.
+    const diffToMonday = runDate.getDate() - day + (day === 0 ? -6 : 1);
+    const mondayDate = new Date(runDate);
+    mondayDate.setDate(diffToMonday);
+    mondayDate.setHours(0, 0, 0, 0); 
+    const currentWeekMondayMs = mondayDate.getTime();
+
+    // Execute the transaction and SAVE the final stats in finalStats
+    const finalStats = await db.runTransaction(async (transaction) => {
       const statsDoc = await transaction.get(statsRef);
       
       let stats = {
@@ -109,7 +262,16 @@ exports.onRunningSessionCompleted = onDocumentUpdated(
           totalDurationMs: currentDuration,
           totalCaloriesBurned: currentCalories,
           totalSessions: 1,
-          totalLoopsCompleted: currentLoops
+          totalLoopsCompleted: currentLoops,
+          cumulativeAreaM2: currentAreaM2,
+          cityCounts: { [currentCity]: 1 },
+          streakStats: {
+            lastRunMondayMs: currentWeekMondayMs,
+            runsThisWeek: 1,
+            consecutiveWeeks: 1,
+            maxRunsInAWeek: 1,
+            maxConsecutiveWeeks: 1
+          }
         }
       };
 
@@ -117,13 +279,54 @@ exports.onRunningSessionCompleted = onDocumentUpdated(
         const existingData = statsDoc.data();
         const existingBest = existingData.bestOverall || {};
         const existingAllTime = existingData.allTime || {};
+        
+        const existingCityCounts = existingAllTime.cityCounts || {};
+        const updatedCityCounts = { ...existingCityCounts };
+        updatedCityCounts[currentCity] = (updatedCityCounts[currentCity] || 0) + 1;
+
+        // ── 🕒 STREAK ENGINE CALCULATION ──
+        const existingStreak = existingAllTime.streakStats || {};
+        const lastRunMondayMs = existingStreak.lastRunMondayMs || currentWeekMondayMs;
+        
+        // How many weeks apart is this run from the previous one?
+        // (7 days * 24 hours * 60 min * 60 sec * 1000 ms = 604800000)
+        const diffWeeks = Math.round((currentWeekMondayMs - lastRunMondayMs) / 604800000);
+
+        let runsThisWeek = existingStreak.runsThisWeek || 0;
+        let consecutiveWeeks = existingStreak.consecutiveWeeks || 0;
+
+        if (diffWeeks === 0) {
+          // Same week: update the weekly run count
+          runsThisWeek += 1;
+          if (consecutiveWeeks === 0) consecutiveWeeks = 1; 
+        } else if (diffWeeks === 1) {
+          // Exactly the next week: Streak maintained!
+          runsThisWeek = 1;
+          consecutiveWeeks += 1;
+        } else {
+          // Gap of 2+ weeks: User broke the consistency. Reset to 1.
+          runsThisWeek = 1;
+          consecutiveWeeks = 1;
+        }
+
+        const updatedStreakStats = {
+          lastRunMondayMs: currentWeekMondayMs,
+          runsThisWeek: runsThisWeek,
+          consecutiveWeeks: consecutiveWeeks,
+          maxRunsInAWeek: Math.max(existingStreak.maxRunsInAWeek || 0, runsThisWeek),
+          maxConsecutiveWeeks: Math.max(existingStreak.maxConsecutiveWeeks || 0, consecutiveWeeks)
+        };
+        // ──────────────────────────────────────────────────
 
         stats.allTime = {
           totalDistanceMeters: (existingAllTime.totalDistanceMeters || 0) + currentDistance,
           totalDurationMs: (existingAllTime.totalDurationMs || 0) + currentDuration,
           totalCaloriesBurned: (existingAllTime.totalCaloriesBurned || 0) + currentCalories,
           totalSessions: (existingAllTime.totalSessions || 0) + 1,
-          totalLoopsCompleted: (existingAllTime.totalLoopsCompleted || 0) + currentLoops
+          totalLoopsCompleted: (existingAllTime.totalLoopsCompleted || 0) + currentLoops,
+          cumulativeAreaM2: (existingAllTime.cumulativeAreaM2 || 0) + currentAreaM2,
+          cityCounts: updatedCityCounts,
+          streakStats: updatedStreakStats
         };
 
         stats.bestOverall = {
@@ -136,9 +339,18 @@ exports.onRunningSessionCompleted = onDocumentUpdated(
         };
       }
 
-      stats.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+      stats.updatedAt = FieldValue.serverTimestamp();
       transaction.set(statsRef, stats, { merge: true });
+      
+      return stats; // Return the object to use it later!
     });
+
+    // ── BADGES EVALUATION ──
+    if (finalStats) {
+      await evaluateBadges(userId, sessionData, finalStats);
+    }
+
+    return null;
   }
 );
 
@@ -148,7 +360,7 @@ const XP_PER_KM = 100;
 const AREA_M2_PER_XP = 1000;
 const STOLEN_AREA_M2_PER_XP = 333;
 
-// 3. CLAIM DELLE AREE E ASSEGNAZIONE PUNTI
+// 3. AREA CLAIMS AND POINTS ASSIGNMENT
 exports.onRunningSessionCreateClaimedAreas = onDocumentCreated(
   {
     document: 'runningSessions/{sessionId}',
@@ -205,14 +417,12 @@ async function awardSessionPoints({userId, sessionId, sessionData, totalAreaM2, 
   const path = sessionData.path;
   const start = Array.isArray(path) && path.length > 0 ? path[0] : null;
 
-  // Usa startLocality (stessa fonte della leaderboard) invece di
-  // richiamare territory.resolveTerritory per la città.
   const startLocality = sessionData.startLocality || null;
   const resolvedBroad = start ?
     await territory.resolveTerritory(start.latitude, start.longitude) :
     {broad: null, broadType: null};
 
-  const city = startLocality; // ← ora coerente con la leaderboard
+  const city = startLocality;
 
   const batch = db.batch();
   batch.update(db.collection('runningSessions').doc(sessionId), {
@@ -229,7 +439,7 @@ async function awardSessionPoints({userId, sessionId, sessionData, totalAreaM2, 
   });
   batch.set(
     db.collection('profiles').doc(userId),
-    {totalPoints: admin.firestore.FieldValue.increment(xp)},
+    {totalPoints: FieldValue.increment(xp)},
     {merge: true}
   );
   await batch.commit();
@@ -239,9 +449,6 @@ async function awardSessionPoints({userId, sessionId, sessionData, totalAreaM2, 
   }
 }
 
-/** Increments the user's point total for this specific city, computes their
- * new rank in that city's leaderboard via a count() aggregation query, and
- * fires a "leaderboardCityEntry" notification the first time */
 async function updateCityRankAndNotify({userId, city, xp}) {
   const cityUserRef = db.collection('cityStats').doc(city).collection('users').doc(userId);
 
@@ -254,7 +461,7 @@ async function updateCityRankAndNotify({userId, city, xp}) {
     tx.set(cityUserRef, {
       userId,
       totalPoints: newTotal,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
     }, {merge: true});
 
     return {newTotal, previousRank};
@@ -280,7 +487,7 @@ async function updateCityRankAndNotify({userId, city, xp}) {
       cityName: city,
       rank: newRank,
       actorId: 'system',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: FieldValue.serverTimestamp(),
       isRead: false,
     });
   }
@@ -296,7 +503,6 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
   const bounds = geo.geohashBoundsForLoop(points);
 
   return db.runTransaction(async (tx) => {
-    // ── Reads first ──
     const candidateDocs = new Map();
     for (const [start, end] of bounds) {
       const snap = await tx.get(areasRef.orderBy('geohash').startAt(start).endAt(end));
@@ -328,7 +534,6 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
     const thiefName = thiefData ? (thiefData.displayName || thiefData.username || "Someone") : "Someone";
     const thiefImageUrl = thiefData ? (thiefData.profileImageUrl || "") : "";
 
-    // ── Pure geometry computation (no Firestore calls) ──────────────────
     const result = geo.computeClaim({
       newLoopPoints: points,
       userId,
@@ -338,6 +543,28 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
       sessionData,
       now: Date.now(),
     });
+
+    // Resolve each stolen-area update back to the user it was taken from
+    const victimIdByUpdateId = new Map();
+    for (const u of result.otherOwnerUpdates) {
+      const originalCandidate = candidates.find(c => c.id === u.id);
+      victimIdByUpdateId.set(u.id, originalCandidate ? originalCandidate.userId : null);
+    }
+
+    // "Coup" badge ("Take the duke area"): if any area actually taken this
+    const victimIds = new Set(
+      [...victimIdByUpdateId.values()].filter((id) => id && id !== userId)
+    );
+    let stoleFromDuke = false;
+    for (const victimId of victimIds) {
+      const dukeProgressSnap = await tx.get(
+        profilesRef.doc(victimId).collection('badge_progress').doc('duke')
+      );
+      if (dukeProgressSnap.exists && dukeProgressSnap.data().unlocked === true) {
+        stoleFromDuke = true;
+        break;
+      }
+    }
 
     // ── Writes ────────────────────────────────────────────────────────
     const toGeoPoint = (p) => new admin.firestore.GeoPoint(p.latitude, p.longitude);
@@ -353,14 +580,14 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
         sessionId: c.sessionId,
         durationMs: c.durationMs,
         avgPaceMinPerKm: c.avgPaceMinPerKm,
-        conquestDate: admin.firestore.Timestamp.fromMillis(c.conquestDateMillis),
+        conquestDate: Timestamp.fromMillis(c.conquestDateMillis),
       })),
       startLocality: result.newArea.startLocality,
       geohash: result.newArea.geohash,
       createdAt: result.newArea.earliestCreatedAtMillis != null
-        ? admin.firestore.Timestamp.fromMillis(result.newArea.earliestCreatedAtMillis)
-        : admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        ? Timestamp.fromMillis(result.newArea.earliestCreatedAtMillis)
+        : FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
       deleted: false,
     });
 
@@ -369,8 +596,7 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
     }
 
     for (const u of result.otherOwnerUpdates) {
-      const originalCandidate = candidates.find(c => c.id === u.id);
-      const victimId = originalCandidate ? originalCandidate.userId : null;
+      const victimId = victimIdByUpdateId.get(u.id);
 
       if (victimId && victimId !== userId) {
          const notifRef = notificationsRef.doc();
@@ -382,7 +608,7 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
             actorImageUrl: thiefImageUrl,
             actorId: userId,
             sessionId: sessionId, 
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            createdAt: FieldValue.serverTimestamp(),
             isRead: false,
          });
       }
@@ -391,20 +617,163 @@ async function claimLoop({userId, sessionId, loopIndex, points, sessionData}) {
         tx.update(areasRef.doc(u.id), {
           deleted: true,
           polygon: [],
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
         });
       } else {
         tx.update(areasRef.doc(u.id), {
           polygon: polygonToFirestore(u.polygon),
           geohash: u.geohash,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
         });
       }
+    }
+
+    if (stoleFromDuke) {
+      tx.set(
+        profilesRef.doc(userId).collection('badge_progress').doc('coup'),
+        {
+          badgeId: 'coup',
+          progress: 1,
+          unlocked: true,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        {merge: true}
+      );
     }
 
     return {totalAreaM2: result.totalAreaM2, stolenAreaM2: result.stolenAreaM2};
   });
 }
+
+/**
+ * Evaluates badge progress based on the rules defined in BADGE_RULES.
+ */
+async function evaluateBadges(userId, sessionData, userStats) {
+  const badgeProgressRef = db.collection('profiles').doc(userId).collection('badge_progress');
+  const currentProgressSnap = await badgeProgressRef.get();
+  
+  const batch = db.batch();
+  let badgesUpdated = 0;
+
+  for (const doc of currentProgressSnap.docs) {
+    const badgeId = doc.id;
+    const currentData = doc.data();
+    
+    // Skip if already unlocked or not in BADGE_RULES
+    if (currentData.unlocked || !BADGE_RULES[badgeId]) continue;
+
+    const rule = BADGE_RULES[badgeId];
+    const rawValue = rule.calculateProgress(sessionData, userStats);
+    
+    // Calculate 0-100 percentage (capped at 100)
+    let newProgress = (rawValue / rule.target) * 100;
+    if (newProgress > 100) newProgress = 100;
+    
+    // Round to one decimal (e.g. 45.5)
+    newProgress = Math.round(newProgress * 10) / 10;
+
+    // Update only if there is an advancement
+    if (newProgress > (currentData.progress || 0)) {
+      const isNowUnlocked = newProgress >= 100;
+      
+      batch.update(doc.ref, {
+        progress: newProgress,
+        unlocked: isNowUnlocked,
+        updatedAt: FieldValue.serverTimestamp()
+      });
+
+      // If unlocked for the first time, notify the user
+      if (isNowUnlocked && !currentData.unlocked) {
+        const notifRef = db.collection('notifications').doc();
+        batch.set(notifRef, {
+          userId: userId,
+          type: 'badgeUnlocked', // (Remember to add it to the Flutter enum!)
+          actorName: 'System',
+          message: `Congratulations! You unlocked the '${badgeId}' badge!`,
+          actorImageUrl: "",
+          actorId: "system",
+          createdAt: FieldValue.serverTimestamp(),
+          isRead: false
+        });
+      }
+      badgesUpdated++;
+    }
+  }
+
+  if (badgesUpdated > 0) {
+    await batch.commit();
+    console.log(`Updated ${badgesUpdated} badges for user ${userId}`);
+  }
+}
+
+// ==============================================================================
+// ── EVENT-DRIVEN BADGES HELPER ──
+// ==============================================================================
+
+/**
+ * Helper function to instantly unlock event-driven badges (non-running related).
+ * It checks if the badge is already unlocked, and if not, unlocks it and sends a notification.
+ */
+async function unlockEventBadge(uid, badgeId, notificationMessage) {
+  const badgeRef = db.collection('profiles').doc(uid).collection('badge_progress').doc(badgeId);
+  const badgeSnap = await badgeRef.get();
+
+  if (badgeSnap.exists) {
+    const badgeData = badgeSnap.data();
+    
+    if (badgeData.unlocked !== true) {
+      const batch = db.batch();
+      
+      batch.update(badgeRef, {
+        progress: 100,
+        unlocked: true,
+        updatedAt: FieldValue.serverTimestamp()
+      });
+
+      const notifRef = db.collection('notifications').doc();
+      batch.set(notifRef, {
+        userId: uid,
+        type: 'badgeUnlocked',
+        actorName: 'System',
+        message: notificationMessage,
+        actorImageUrl: "",
+        actorId: "system",
+        createdAt: FieldValue.serverTimestamp(),
+        isRead: false
+      });
+
+      await batch.commit();
+      console.log(`Badge '${badgeId}' unlocked for user ${uid}`);
+    }
+  }
+}
+
+exports.checkProfileBadges = onDocumentUpdated(
+  {
+    document: "profiles/{uid}",
+    region: "europe-west1"
+  },
+  async (event) => {
+    const after = event.data.after.data();
+    const uid = event.params.uid;
+
+    // 1. Badge: "That's me"
+    const hasImageNow = after.profileImageUrl && after.profileImageUrl.trim() !== "";
+    const isCompletedNow = after.profileCompleted === true;
+
+    if (hasImageNow && isCompletedNow) {
+      await unlockEventBadge(uid, 'thats_me', `Congratulations! You unlocked the 'That's me' badge!`);
+    }
+
+    // 2. Badge: "I'm following you"
+    if (after.followingCount >= 1) {
+      await unlockEventBadge(uid, 'im_following_you', `Congratulations! You unlocked the 'I'm following you' badge!`);
+    }
+    
+    return null;
+  }
+);
+
 
 // ==============================================================================
 // ── NOTIFICATIONS (Gen 2) ──
@@ -437,7 +806,7 @@ exports.notifyNewFollower = onDocumentCreated(
                 message: "started following you.", 
                 actorImageUrl: followerImageUrl,
                 actorId: followerId, 
-                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                createdAt: FieldValue.serverTimestamp(),
                 isRead: false,
             });
 
@@ -487,7 +856,7 @@ exports.notifyRouteSaved = onDocumentCreated(
                 actorImageUrl: saverImageUrl,
                 actorId: saverId,
                 routeId: routeId, 
-                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                createdAt: FieldValue.serverTimestamp(),
                 isRead: false,
             });
 
@@ -534,7 +903,7 @@ exports.notifyNewRouteFromFollowing = onDocumentCreated(
 
             let batch = db.batch();
             let count = 0;
-            const now = admin.firestore.FieldValue.serverTimestamp();
+            const now = FieldValue.serverTimestamp();
 
             for (const followDoc of followersSnap.docs) {
                 const followerId = followDoc.data().followerId;
@@ -574,8 +943,6 @@ exports.notifyNewRouteFromFollowing = onDocumentCreated(
     }
 );
 
-// FIXED: Switched to onDocumentUpdated & added Transaction to prevent race conditions
-// FIXED: Reads before writes inside the transaction
 exports.notifyRouteRunFaster = onDocumentUpdated(
     {
         document: "runningSessions/{sessionId}",
@@ -585,7 +952,6 @@ exports.notifyRouteRunFaster = onDocumentUpdated(
         const before = event.data.before.data();
         const after = event.data.after.data();
 
-        // Only proceed if pointsProcessed just flipped to true
         if (before.pointsProcessed === true || after.pointsProcessed !== true) return null;
         if (!after.routeId || !after.durationMs) return null;
 
@@ -594,12 +960,11 @@ exports.notifyRouteRunFaster = onDocumentUpdated(
         const currentDuration = Number(after.durationMs);
 
         try {
-            const db = admin.firestore();
+            const db = getFirestore();
             const routeRef = db.collection("routes").doc(routeId);
-            const runnerProfileRef = db.collection("profiles").doc(runnerId); // Reference ready
+            const runnerProfileRef = db.collection("profiles").doc(runnerId); 
 
             await db.runTransaction(async (transaction) => {
-                // ── 1. ALL READS FIRST ──
                 const routeDoc = await transaction.get(routeRef);
                 
                 if (!routeDoc.exists) return;
@@ -612,12 +977,10 @@ exports.notifyRouteRunFaster = onDocumentUpdated(
                 const previousBest = routeData.bestDurationMs ? Number(routeData.bestDurationMs) : Infinity;
 
                 if (currentDuration < previousBest) {
-                    // Read runner profile BEFORE any writes
                     const runnerProfileSnap = await transaction.get(runnerProfileRef);
                     const runnerName = runnerProfileSnap.exists ? (runnerProfileSnap.data().displayName || runnerProfileSnap.data().username) : "Someone";
                     const runnerImage = runnerProfileSnap.exists ? (runnerProfileSnap.data().profileImageUrl || "") : "";
 
-                    // ── 2. ALL WRITES SECOND ──
                     transaction.update(routeRef, {
                         bestDurationMs: currentDuration,
                         recordHolderId: runnerId
@@ -632,7 +995,7 @@ exports.notifyRouteRunFaster = onDocumentUpdated(
                         actorImageUrl: runnerImage,
                         actorId: runnerId,
                         routeId: routeId,
-                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        createdAt: FieldValue.serverTimestamp(),
                         isRead: false,
                     });
                 }
@@ -645,7 +1008,6 @@ exports.notifyRouteRunFaster = onDocumentUpdated(
     }
 );
 
-// FIXED: Corrected batch variable scope to prevent write reuse after commit
 exports.processLeaderboards = onSchedule({
     schedule: "0 2 * * *", 
     timeZone: "Europe/Rome",
@@ -657,9 +1019,9 @@ exports.processLeaderboards = onSchedule({
             .get();
 
         let currentRank = 1;
-        let batch = db.batch(); // Replaced const with let
+        let batch = db.batch(); 
         let operations = 0;
-        const now = admin.firestore.FieldValue.serverTimestamp();
+        const now = FieldValue.serverTimestamp();
 
         for (const doc of profilesSnap.docs) {
             const userData = doc.data();
@@ -703,7 +1065,7 @@ exports.processLeaderboards = onSchedule({
 
             if (operations >= 490) {
                 await batch.commit();
-                batch = db.batch(); // Successfully re-instantiate batch object
+                batch = db.batch(); 
                 operations = 0;
             }
             

@@ -101,8 +101,30 @@ class WatchRunCoordinator implements RunStatsSource {
     });
   }
 
-  void attachHeartRate(Stream<HeartRateReading> readings) =>
-      _relay.attachHeartRate(readings);
+  /// Heart rate has to reach *both* paths.
+  ///
+  /// The relay forwards it to the phone during a companion run. But a
+  /// standalone run has no phone to echo it back, so the coordinator also keeps
+  /// its own copy — without this the watch showed "--" for an entire phone-free
+  /// run even though the sensor was reading perfectly well, and the imported
+  /// run carried no heart rate at all.
+  void attachHeartRate(Stream<HeartRateReading> readings) {
+    _relay.attachHeartRate(readings);
+    _heartRateSub = readings.listen((reading) {
+      _heartRate = reading;
+      // Carried into the recorded file so the phone stores avg/max on import.
+      _recorder.setHeartRate(
+        average: reading.averageBpm,
+        max: reading.maxBpm,
+      );
+      if (_standalone && _local.phase == RunPhase.running) {
+        _emitLocal(phase: _local.phase);
+      }
+    });
+  }
+
+  HeartRateReading _heartRate = const HeartRateReading();
+  StreamSubscription<HeartRateReading>? _heartRateSub;
 
   @override
   Future<void> send(WatchCommand command) async {
@@ -316,7 +338,7 @@ class WatchRunCoordinator implements RunStatsSource {
       elapsed: elapsed,
       distanceMeters: _recorder.distanceMeters,
       paceMinPerKm: km > 0.01 ? (elapsed.inSeconds / 60) / km : null,
-      heartRateBpm: _local.heartRateBpm,
+      heartRateBpm: _heartRate.currentBpm,
       loopsCompleted: 0,
       claimedAreaM2: 0,
     );
@@ -329,6 +351,7 @@ class WatchRunCoordinator implements RunStatsSource {
     _countdownTimer?.cancel();
     _relaySub?.cancel();
     _ackSub?.cancel();
+    _heartRateSub?.cancel();
     _sendStateController.close();
     _relay.dispose();
     _controller.close();
