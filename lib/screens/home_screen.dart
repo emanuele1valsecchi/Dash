@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/screens/calendar_screen.dart';
+import 'package:dash/screens/profile_page.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
@@ -18,7 +19,6 @@ import 'route_search_page.dart';
 import 'package:dash_watch_protocol/dash_watch_protocol.dart';
 
 import 'run_tracking_page.dart';
-import 'temp_profile_page.dart';
 import '../services/run_session_controller.dart';
 import '../services/wear_bridge.dart';
 import '../widgets/home/badge_progress_section.dart';
@@ -1055,7 +1055,7 @@ class _HomeScreenState extends State<HomeScreen> {
           }
           if (index == 2) {
             Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const TempProfilePage()),
+              MaterialPageRoute(builder: (_) => const ProfilePage()),
             );
             return;
           }

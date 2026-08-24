@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' as math; // <--- AGGIUNTO PER IL TAP SIMULATO
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -249,7 +248,7 @@ class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin
           _areaHitNotifier.value = LayerHitResult<String>(
             hitValues: [targetArea.id],
             coordinate: centerPoint,
-            point: const math.Point(0, 0),
+            point: const Offset(0, 0),
           );
 
           handleAreaTap(context, _areaHitNotifier, _visibleAreas);

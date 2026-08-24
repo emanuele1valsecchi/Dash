@@ -372,7 +372,7 @@ class _EnhancedMapGesturesState extends State<EnhancedMapGestures>
     final midpoint = Offset((p1.dx + p2.dx) / 2, (p1.dy + p2.dy) / 2);
     widget.mapController.rotateAroundPoint(
       baseMapRotation + appliedDelta,
-      point: math.Point<double>(midpoint.dx, midpoint.dy),
+      offset: midpoint,
     );
   }
 
@@ -426,7 +426,7 @@ class _EnhancedMapGesturesState extends State<EnhancedMapGestures>
     final curved = Curves.easeOut.transform(_inertiaController.value);
     final newZoom = _inertiaStartZoom + _inertiaExtraZoom * curved;
     final newCenter = widget.mapController.camera.focusedZoomCenter(
-      math.Point<double>(_inertiaFocal.dx, _inertiaFocal.dy),
+      _inertiaFocal,
       newZoom,
     );
     widget.mapController.move(newCenter, newZoom);
