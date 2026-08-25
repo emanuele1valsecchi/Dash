@@ -29,6 +29,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'leaderboard_screen.dart';
 import 'notifications_screen.dart';
 
+
 class _NoOverscrollBehavior extends ScrollBehavior {
   const _NoOverscrollBehavior();
 
@@ -431,7 +432,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) return [];
 
-      final badges = await _badgeService.getDefaultBadges();
+      final badges = await BadgeService().getHomeBadges(FirebaseAuth.instance.currentUser?.uid ?? '');
       final result = <HomeBadgeUiModel>[];
       for (final badge in badges) {
         String imageUrl = '';

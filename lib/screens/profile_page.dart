@@ -3,6 +3,7 @@ import 'package:dash/widgets/dash_navigation_bar.dart';
 import 'package:dash/widgets/profile/profile_picture_avatar.dart';
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
+import 'settings_page.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -34,7 +35,12 @@ class _ProfilePageState extends State<ProfilePage> {
               Symbols.settings_rounded, 
               color: Theme.of(context).colorScheme.secondary),
             onPressed: () {
-              // TODO: add settings
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const SettingsPage(),
+                ),
+              );
             },
           ),
         ],

@@ -71,6 +71,8 @@ dependencies:
   # apps can never disagree about the shape of a message.
   dash_watch_protocol:
     path: packages/dash_watch_protocol
+  firebase_messaging: ^16.6.0
+  flutter_local_notifications: ^22.3.0
 
   # Meta / Facebook
   #flutter_facebook_auth: ^7.1.1
