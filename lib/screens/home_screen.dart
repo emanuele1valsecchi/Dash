@@ -65,7 +65,6 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoadingKm = true;
   List<MonthlyStatData> _monthlyStats = []; 
 
-  final BadgeService _badgeService = BadgeService();
   final StorageService _storageService = StorageService();
 
   late Future<List<HomeBadgeUiModel>> _badgesFuture;
@@ -315,117 +314,122 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadLeaderboardPreviews() async {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
-      final db = FirebaseFirestore.instance;
+  try {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final db = FirebaseFirestore.instance;
 
-      final followsSnap = await db.collection('follows').where('followerId', isEqualTo: user.uid).get();
-      final List<String> followingIds = followsSnap.docs.map((d) => d.data()['followingId'] as String).toList();
+    final followsSnap = await db.collection('follows').where('followerId', isEqualTo: user.uid).get();
+    final List<String> followingIds = followsSnap.docs.map((d) => d.data()['followingId'] as String).toList();
 
-      final sessionsSnap = await db.collection('runningSessions').get();
-      
-      Map<String, Map<String, int>> cityUserPoints = {};
-      Map<String, int> globalUserPoints = {};
-      Map<String, DateTime> currentUserCities = {};
+    final sessionsSnap = await db.collection('runningSessions').get();
 
-      for (var doc in sessionsSnap.docs) {
-        final data = doc.data();
-        final userId = data['userId'] as String?;
-        final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
-        final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
-        
-        final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
-        final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
-        final city = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
+    Map<String, Map<String, int>> cityUserPoints = {};
+    Map<String, int> globalUserPoints = {};
+    Map<String, DateTime> currentUserCities = {};
 
-        if (userId != null && createdAt != null) {
-          globalUserPoints[userId] = (globalUserPoints[userId] ?? 0) + points;
+    for (var doc in sessionsSnap.docs) {
+      final data = doc.data();
+      final userId = data['userId'] as String?;
+      final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
+      final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
 
-          if (city != 'Unknown') {
-            cityUserPoints.putIfAbsent(city, () => {});
-            cityUserPoints[city]![userId] = (cityUserPoints[city]![userId] ?? 0) + points;
-            
-            if (userId == user.uid) {
-              if (!currentUserCities.containsKey(city) || createdAt.isAfter(currentUserCities[city]!)) {
-                currentUserCities[city] = createdAt;
-              }
+      final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
+      final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
+      final city = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
+
+      if (userId != null && createdAt != null) {
+        globalUserPoints[userId] = (globalUserPoints[userId] ?? 0) + points;
+
+        if (city != 'Unknown') {
+          cityUserPoints.putIfAbsent(city, () => {});
+          cityUserPoints[city]![userId] = (cityUserPoints[city]![userId] ?? 0) + points;
+
+          if (userId == user.uid) {
+            if (!currentUserCities.containsKey(city) || createdAt.isAfter(currentUserCities[city]!)) {
+              currentUserCities[city] = createdAt;
             }
           }
         }
       }
-
-      var sortedCities = currentUserCities.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
-      var allUserCities = sortedCities.map((e) => e.key).toList();
-
-      List<LeaderboardPreviewData> previews = [];
-
-      Future<LeaderboardPreviewData> buildCardData(Map<String, int> pointsMap, String title) async {
-        if (!pointsMap.containsKey(user.uid)) pointsMap[user.uid] = 0;
-        var sortedMap = pointsMap.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
-        final currentUserPoints = pointsMap[user.uid]!;
-        final currentRank = sortedMap.indexWhere((e) => e.key == user.uid) + 1;
-
-        Set<String> selectedUserIds = {user.uid};
-        for (var id in followingIds) {
-          if (pointsMap.containsKey(id) && selectedUserIds.length < 10) selectedUserIds.add(id);
-        }
-        
-        int upIndex = currentRank - 2; 
-        int downIndex = currentRank;   
-        while (selectedUserIds.length < 10 && (upIndex >= 0 || downIndex < sortedMap.length)) {
-          if (upIndex >= 0) { selectedUserIds.add(sortedMap[upIndex].key); upIndex--; }
-          if (selectedUserIds.length < 10 && downIndex < sortedMap.length) {
-            selectedUserIds.add(sortedMap[downIndex].key); downIndex++;
-          }
-        }
-
-        List<PreviewPin> pins = [];
-        int maxPointsInSelection = 1; 
-        for (var id in selectedUserIds) {
-          if ((pointsMap[id] ?? 0) > maxPointsInSelection) maxPointsInSelection = pointsMap[id]!;
-        }
-
-        for (var id in selectedUserIds) {
-          final profileDoc = await db.collection('profiles').doc(id).get();
-          final profileUrl = profileDoc.data()?['profileImageUrl'] as String? ?? '';
-          
-          final pts = pointsMap[id] ?? 0;
-          double normalized = pts / maxPointsInSelection; 
-          if (id != user.uid) normalized += (id.hashCode % 10) / 1000.0; 
-
-          pins.add(PreviewPin(
-            userId: id,
-            profileImageUrl: profileUrl,
-            normalizedPosition: normalized.clamp(0.0, 1.0),
-            isCurrentUser: id == user.uid,
-          ));
-        }
-
-        return LeaderboardPreviewData(
-          position: currentRank,
-          points: currentUserPoints,
-          variation: null, 
-          city: title,
-          pins: pins,
-        );
-      }
-
-      for (var city in allUserCities) {
-        previews.add(await buildCardData(cityUserPoints[city]!, city));
-      }
-
-      previews.add(await buildCardData(globalUserPoints, 'Global Leaderboard'));
-
-      if (mounted) {
-        setState(() {
-          _leaderboards = previews;
-        });
-      }
-    } catch (e) {
-      debugPrint("Errore Widget Leaderboard: $e");
     }
+
+    var sortedCities = currentUserCities.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    var allUserCities = sortedCities.map((e) => e.key).toList();
+
+    List<LeaderboardPreviewData> previews = [];
+
+    Future<LeaderboardPreviewData> buildCardData(Map<String, int> pointsMap, String title) async {
+      if (!pointsMap.containsKey(user.uid)) pointsMap[user.uid] = 0;
+      var sortedMap = pointsMap.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+      final currentUserPoints = pointsMap[user.uid]!;
+      final currentRank = sortedMap.indexWhere((e) => e.key == user.uid) + 1;
+
+      Set<String> selectedUserIds = {user.uid};
+      for (var id in followingIds) {
+        if (pointsMap.containsKey(id) && selectedUserIds.length < 10) selectedUserIds.add(id);
+      }
+
+      int upIndex = currentRank - 2;
+      int downIndex = currentRank;
+      while (selectedUserIds.length < 10 && (upIndex >= 0 || downIndex < sortedMap.length)) {
+        if (upIndex >= 0) { selectedUserIds.add(sortedMap[upIndex].key); upIndex--; }
+        if (selectedUserIds.length < 10 && downIndex < sortedMap.length) {
+          selectedUserIds.add(sortedMap[downIndex].key); downIndex++;
+        }
+      }
+
+      List<PreviewPin> pins = [];
+      int maxPointsInSelection = 1;
+      for (var id in selectedUserIds) {
+        if ((pointsMap[id] ?? 0) > maxPointsInSelection) maxPointsInSelection = pointsMap[id]!;
+      }
+
+      for (var id in selectedUserIds) {
+        final profileDoc = await db.collection('profiles').doc(id).get();
+        final storedField = profileDoc.data()?['profileImageUrl'] as String? ?? '';
+
+        // Resolve a fresh, valid download URL instead of trusting a
+        // possibly-stale one. Falls back to '' on any failure, which
+        // _MapPin renders as a plain person icon.
+        final resolvedUrl = await _storageService.getDownloadUrlSafe(storedField) ?? '';
+
+        final pts = pointsMap[id] ?? 0;
+        double normalized = pts / maxPointsInSelection;
+        if (id != user.uid) normalized += (id.hashCode % 10) / 1000.0;
+
+        pins.add(PreviewPin(
+          userId: id,
+          profileImageUrl: resolvedUrl,
+          normalizedPosition: normalized.clamp(0.0, 1.0),
+          isCurrentUser: id == user.uid,
+        ));
+      }
+
+      return LeaderboardPreviewData(
+        position: currentRank,
+        points: currentUserPoints,
+        variation: null,
+        city: title,
+        pins: pins,
+      );
+    }
+
+    for (var city in allUserCities) {
+      previews.add(await buildCardData(cityUserPoints[city]!, city));
+    }
+
+    previews.add(await buildCardData(globalUserPoints, 'Global Leaderboard'));
+
+    if (mounted) {
+      setState(() {
+        _leaderboards = previews;
+      });
+    }
+  } catch (e) {
+    debugPrint("Errore Widget Leaderboard: $e");
   }
+}
 
   Future<List<HomeBadgeUiModel>> _loadBadges() async {
     try {

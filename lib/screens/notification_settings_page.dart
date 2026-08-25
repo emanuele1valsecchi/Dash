@@ -17,7 +17,7 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
 
   // Local map to manage switch states. 
   // By default, we set everything to true (active).
-  Map<String, bool> _preferences = {
+  final Map<String, bool> _preferences = {
     'newFollower': true,
     'newRoutePublished': true,
     'routeSaved': true,
@@ -163,7 +163,7 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
 
   Widget _buildSwitch(String prefKey, String title, String subtitle) {
     return SwitchListTile(
-      activeColor: const Color(0xFF4A8C52),
+      activeThumbColor: const Color(0xFF4A8C52),
       title: Text(
         title,
         style: const TextStyle(

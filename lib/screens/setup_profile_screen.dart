@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-// import '../widgets/profile_avatar_widget.dart'; // re-enable when Storage is set up
+import '../widgets/profile_avatar_widget.dart';
 import 'home_screen.dart';
 
 class SetupProfileScreen extends StatefulWidget {
@@ -19,13 +19,13 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
 
   bool _isLoading = false;
 
-  // re-enable when Storage is set up
-  // String? _profileImageUrl;
-  // @override
-  // void initState() {
-  //   super.initState();
-  //   _profileImageUrl = FirebaseAuth.instance.currentUser?.photoURL;
-  // }
+  String? _profileImageUrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _profileImageUrl = FirebaseAuth.instance.currentUser?.photoURL;
+  }
 
   @override
   void dispose() {
@@ -75,15 +75,30 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
       // Atomic write: profile document + nickname claim
       final batch = firestore.batch();
 
-      batch.set(firestore.collection('profiles').doc(user.uid), {
+      // Build the profile data map to update
+      final profileData = <String, dynamic>{
         'username': username,
         'name': _nameController.text.trim(),
         'surname': _surnameController.text.trim(),
         'bio': _bioController.text.trim(),
-        'profileImageUrl': '', // re-enable: _profileImageUrl ?? '' when Storage is set up
-        'totalPoints': 0,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+        // Do not overwrite totalPoints or createdAt if the profile already exists!
+      };
+
+      // ImageUploadService writes to Storage AND updates the 'profiles'
+      // document itself (profileImageUrl + profileImagePath) as soon as
+      // the upload succeeds, via ProfileAvatarWidget.onImageUploaded.
+      // We still mirror the URL here so it's included in this same atomic
+      // batch write, in case the user picked an image right before saving.
+      if (_profileImageUrl != null && _profileImageUrl!.isNotEmpty) {
+        profileData['profileImageUrl'] = _profileImageUrl!;
+      }
+
+      // Use merge: true to avoid destroying existing fields (e.g., fcmTokens, pre-existing profileImageUrl, etc.)
+      batch.set(
+        firestore.collection('profiles').doc(user.uid),
+        profileData,
+        SetOptions(merge: true),
+      );
 
       // nicknames rule requires field named 'uid' (not 'userId')
       batch.set(firestore.collection('nicknames').doc(username), {
@@ -146,35 +161,34 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
             children: [
               const SizedBox(height: 20),
 
-              // re-enable when Storage is set up:
-              // ProfileAvatarWidget(
-              //   initialImageUrl: _profileImageUrl,
-              //   size: 120,
-              //   onImageUploaded: (newUrl) {
-              //     setState(() => _profileImageUrl = newUrl);
-              //     ScaffoldMessenger.of(context).showSnackBar(
-              //       const SnackBar(
-              //         content: Text("Profile picture updated!"),
-              //         backgroundColor: Color(0xFF4A5D3F),
-              //         behavior: SnackBarBehavior.floating,
-              //       ),
-              //     );
-              //   },
-              // ),
-              // const SizedBox(height: 8),
-              // const Text(
-              //   "Select Profile Picture",
-              //   style: TextStyle(
-              //     color: Color(0xFF4A5D3F),
-              //     fontWeight: FontWeight.bold,
-              //     fontStyle: FontStyle.italic,
-              //     fontSize: 12,
-              //   ),
-              // ),
+              ProfileAvatarWidget(
+                initialImageUrl: _profileImageUrl,
+                size: 120,
+                onImageUploaded: (newUrl) {
+                  setState(() => _profileImageUrl = newUrl);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("Profile picture updated!"),
+                      backgroundColor: Color(0xFF4A5D3F),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                "Select Profile Picture",
+                style: TextStyle(
+                  color: Color(0xFF4A5D3F),
+                  fontWeight: FontWeight.bold,
+                  fontStyle: FontStyle.italic,
+                  fontSize: 12,
+                ),
+              ),
 
               const SizedBox(height: 40),
 
-              // --- CAMPI DI TESTO ---
+              // --- TEXT FIELDS ---
               _buildTextField(
                 label: "Username",
                 hint: "@username",
@@ -205,7 +219,7 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
 
               const SizedBox(height: 40),
 
-              // --- BOTTONE SALVATAGGIO ---
+              // --- SAVE BUTTON ---
               SizedBox(
                 width: double.infinity,
                 height: 55,

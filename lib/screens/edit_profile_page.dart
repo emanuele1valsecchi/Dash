@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:dash/widgets/dash_text_form_field.dart';
 import 'package:dash/widgets/profile/profile_picture_avatar.dart';
@@ -8,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/utils/strings_utils.dart';
+import '../services/image_upload_service.dart';
 
 class EditProfilePage extends StatefulWidget {
   const EditProfilePage({super.key});
@@ -17,17 +17,18 @@ class EditProfilePage extends StatefulWidget {
 }
 
 class _EditProfilePageState extends State<EditProfilePage> {
-
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _surnameController = TextEditingController();
   final _bioController = TextEditingController();
 
-  File? _profileImage;
+  // No longer need a local File — ImageUploadService.pickAndUpload()
+  // does its own picking AND uploads straight to Storage, returning
+  // the final download URL. Keeping only the URL avoids the earlier bug
+  // where the picked File was shown locally but never actually uploaded.
   String? _existingImageUrl;
   bool _isLoading = true;
-
-  final ImagePicker _picker = ImagePicker();
+  bool _isUploadingImage = false;
 
   @override
   void initState() {
@@ -51,52 +52,72 @@ class _EditProfilePageState extends State<EditProfilePage> {
         title: 'Edit profile',
         actions: [
           IconButton(
-            onPressed: _isLoading ? null : _saveProfileChanges, 
+            onPressed: _isLoading ? null : _saveProfileChanges,
             tooltip: 'Confirm changes',
-            icon: Icon(Symbols.check_rounded)
-        )],
+            icon: Icon(Symbols.check_rounded),
+          ),
+        ],
       ),
-      body: _isLoading 
-        ? Center(
-            child: CircularProgressIndicator(
-              color: Theme.of(context).colorScheme.primary,
-            ),
-          )
-        : Center(
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  ProfilePictureAvatar(
-                    aspectRatio: 0.2, 
-                    imageFile : _profileImage,
-                    imageUrl: _existingImageUrl,
-                    initialNameSurname: getFirstLetters(_nameController.text, _surnameController.text),
-                  ),
-                  _changeProfilePictureButton(context),
-                  SizedBox( height: MediaQuery.heightOf(context) * 0.04, ),
-                  UserDataForm(
-                    formKey: _formKey, 
-                    nameController : _nameController, 
-                    surnameController : _surnameController,
-                    bioController : _bioController,
-                  )
-                ],
+      body: _isLoading
+          ? Center(
+              child: CircularProgressIndicator(
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            )
+          : Center(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    ProfilePictureAvatar(
+                      aspectRatio: 0.2,
+                      // imageFile removed: the avatar now always shows
+                      // the current remote URL, updated only after a
+                      // successful upload. See _pickAndUploadImage().
+                      imageFile: null,
+                      imageUrl: _existingImageUrl,
+                      initialNameSurname: getFirstLetters(
+                        _nameController.text,
+                        _surnameController.text,
+                      ),
+                    ),
+                    if (_isUploadingImage)
+                      const Padding(
+                        padding: EdgeInsets.only(top: 8),
+                        child: SizedBox(
+                          height: 16,
+                          width: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                    _changeProfilePictureButton(context),
+                    SizedBox(height: MediaQuery.heightOf(context) * 0.04),
+                    UserDataForm(
+                      formKey: _formKey,
+                      nameController: _nameController,
+                      surnameController: _surnameController,
+                      bioController: _bioController,
+                    ),
+                  ],
+                ),
               ),
             ),
-          ),
     );
   }
 
   Future<void> _saveProfileChanges() async {
-    if (_formKey.currentState!.validate()) {      
-      try{
+    if (_formKey.currentState!.validate()) {
+      try {
         final user = FirebaseAuth.instance.currentUser!;
         final firestore = FirebaseFirestore.instance;
 
         final batch = firestore.batch();
 
+        // profileImageUrl is intentionally NOT written here: it's already
+        // saved directly by ImageUploadService as soon as the upload
+        // succeeds (see _pickAndUploadImage), so this save only needs
+        // to persist the text fields.
         batch.update(firestore.collection('profiles').doc(user.uid), {
           'name': _nameController.text.trim(),
           'surname': _surnameController.text.trim(),
@@ -115,8 +136,8 @@ class _EditProfilePageState extends State<EditProfilePage> {
           );
           Navigator.pop(context, true);
         }
-      } catch( e ){
-        if (mounted){
+      } catch (e) {
+        if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text("Error occurred while saving profile: $e"),
@@ -129,15 +150,17 @@ class _EditProfilePageState extends State<EditProfilePage> {
     }
   }
 
-  Widget _changeProfilePictureButton(BuildContext context){
+  Widget _changeProfilePictureButton(BuildContext context) {
     return TextButton(
-      onPressed: () => _showImageSourceActionSheet(context), 
+      onPressed: _isUploadingImage
+          ? null
+          : () => _showImageSourceActionSheet(context),
       child: Text(
         'Change Profile Picture',
         style: Theme.of(context).textTheme.bodyMedium!.copyWith(
-          color: Theme.of(context).colorScheme.tertiary
-        ),
-      ) 
+              color: Theme.of(context).colorScheme.tertiary,
+            ),
+      ),
     );
   }
 
@@ -154,12 +177,12 @@ class _EditProfilePageState extends State<EditProfilePage> {
               ListTile(
                 leading: const Icon(Symbols.photo_library_rounded),
                 title: const Text('Choose from Gallery'),
-                onTap: () => _pickImage(ImageSource.gallery),
+                onTap: () => _pickAndUploadImage(ImageSource.gallery),
               ),
               ListTile(
                 leading: const Icon(Symbols.camera_alt_rounded),
                 title: const Text('Take a Picture'),
-                onTap: () => _pickImage(ImageSource.camera),
+                onTap: () => _pickAndUploadImage(ImageSource.camera),
               ),
             ],
           ),
@@ -168,27 +191,46 @@ class _EditProfilePageState extends State<EditProfilePage> {
     );
   }
 
-  Future<void> _pickImage(ImageSource source) async {
-    try {
-      final XFile? pickedFile = await _picker.pickImage(source: source);
-      
-      if (pickedFile != null) {
-        setState(() {
-          _profileImage = File(pickedFile.path);
-        });
-      }
-    } catch (e) {
+  /// Picks AND uploads in one step, using the same ImageUploadService
+  /// already used successfully during registration. This is the fix:
+  /// the previous version only picked a local File and never uploaded
+  /// it, so profileImageUrl in Firestore was never updated.
+  Future<void> _pickAndUploadImage(ImageSource source) async {
+    if (context.mounted) {
+      Navigator.pop(context); // close the bottom sheet immediately
+    }
+
+    setState(() => _isUploadingImage = true);
+
+    final String? uploadedUrl = await ImageUploadService.pickAndUpload(
+      source: source,
+      onError: (err) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(err),
+            backgroundColor: Theme.of(context).colorScheme.error,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      },
+    );
+
+    if (!mounted) return;
+    setState(() => _isUploadingImage = false);
+
+    if (uploadedUrl != null) {
+      // ImageUploadService already wrote profileImageUrl/profileImagePath
+      // to Firestore internally, so this setState only refreshes the
+      // preview shown on this screen.
+      setState(() => _existingImageUrl = uploadedUrl);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text("Error picking image: $e"),
-          backgroundColor: Theme.of(context).colorScheme.error,
+          content: const Text("Profile picture updated!"),
+          backgroundColor: Theme.of(context).colorScheme.primaryContainer,
           behavior: SnackBarBehavior.floating,
         ),
       );
-    }
-    
-    if (context.mounted) {
-      Navigator.pop(context);
     }
   }
 
@@ -223,19 +265,18 @@ class _EditProfilePageState extends State<EditProfilePage> {
   }
 }
 
-
 class UserDataForm extends StatelessWidget {
-  final GlobalKey<FormState>  formKey;
+  final GlobalKey<FormState> formKey;
   final TextEditingController nameController;
   final TextEditingController surnameController;
   final TextEditingController bioController;
-  
+
   const UserDataForm({
-    super.key, 
-    required this.formKey, 
-    required this.nameController, 
-    required this.surnameController, 
-    required this.bioController
+    super.key,
+    required this.formKey,
+    required this.nameController,
+    required this.surnameController,
+    required this.bioController,
   });
 
   @override
@@ -245,41 +286,41 @@ class UserDataForm extends StatelessWidget {
       child: Column(
         children: <Widget>[
           DashTextFormField(
-            label: 'Name', 
+            label: 'Name',
             clearOption: true,
             controller: nameController,
             validator: _textFormFieldValidator,
           ),
-          SizedBox(height: MediaQuery.heightOf(context) * 0.04,),
+          SizedBox(height: MediaQuery.heightOf(context) * 0.04),
           DashTextFormField(
-            label: 'Surname', 
+            label: 'Surname',
             clearOption: true,
             controller: surnameController,
             validator: _textFormFieldValidator,
           ),
-          SizedBox(height: MediaQuery.heightOf(context) * 0.04,),
+          SizedBox(height: MediaQuery.heightOf(context) * 0.04),
           DashTextFormField(
             label: 'Bio',
             largeText: true,
             clearOption: true,
-            controller: bioController,),
+            controller: bioController,
+          ),
         ],
       ),
     );
   }
 
-  String? _textFormFieldValidator(String? content){
+  String? _textFormFieldValidator(String? content) {
     if (content == null || content.trim().isEmpty) {
       return 'This field cannot be empty';
     }
 
     final RegExp nameRegExp = RegExp(r'^[\p{L}\s]+$', unicode: true);
-    
-    if(!nameRegExp.hasMatch(content)){
+
+    if (!nameRegExp.hasMatch(content)) {
       return 'Only letters and spaces are allowed';
     }
 
     return null;
   }
 }
-

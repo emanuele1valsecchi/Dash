@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../../models/home_models.dart'; 
+import '../../models/home_models.dart';
 
 class LeaderboardPreviewCard extends StatelessWidget {
   final LeaderboardPreviewData data;
@@ -13,7 +13,6 @@ class LeaderboardPreviewCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Troviamo il pin dell'utente corrente per sapere dove fermare la linea scura
     final currentUserPin = data.pins.where((p) => p.isCurrentUser).firstOrNull;
     final progressPercent = currentUserPin?.normalizedPosition ?? 0.0;
 
@@ -29,7 +28,6 @@ class LeaderboardPreviewCard extends StatelessWidget {
         ),
         child: Column(
           children: [
-            // ── Intestazione con la Città ──
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
@@ -46,21 +44,17 @@ class LeaderboardPreviewCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
-
-            // ── Sezione Grafica (Track & Pins) ──
             SizedBox(
               height: 110,
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final maxWidth = constraints.maxWidth;
-                  // Sottraiamo la larghezza del pin (42) per evitare che escano dal bordo destro
-                  final trackWidth = maxWidth - 42; 
+                  final trackWidth = maxWidth - 42;
 
                   return Stack(
                     alignment: Alignment.centerLeft,
                     clipBehavior: Clip.none,
                     children: [
-                      // Linea di sfondo (grigio/azzurrino)
                       Container(
                         height: 8,
                         width: maxWidth,
@@ -69,24 +63,20 @@ class LeaderboardPreviewCard extends StatelessWidget {
                           borderRadius: BorderRadius.circular(4),
                         ),
                       ),
-                      
-                      // Linea di progresso (Verde scuro) fino all'utente corrente
                       Container(
                         height: 8,
-                        width: (trackWidth * progressPercent) + 21, // +21 per farla arrivare al centro del pin
+                        width: (trackWidth * progressPercent) + 21,
                         decoration: BoxDecoration(
                           color: const Color(0xFF3B5E62),
                           borderRadius: BorderRadius.circular(4),
                         ),
                       ),
-
-                      // ── Renderizza tutti i Pin dinamicamente ──
                       ...data.pins.map((pin) {
                         return Positioned(
-                          // Se non è l'utente corrente va sopra, altrimenti va sotto
-                          top: pin.isCurrentUser ? 50 : 0, 
+                          top: pin.isCurrentUser ? 50 : 0,
                           left: trackWidth * pin.normalizedPosition,
                           child: _MapPin(
+                            key: ValueKey(pin.userId),
                             imageUrl: pin.profileImageUrl,
                             isCurrentUser: pin.isCurrentUser,
                             isTop: !pin.isCurrentUser,
@@ -98,10 +88,7 @@ class LeaderboardPreviewCard extends StatelessWidget {
                 },
               ),
             ),
-            
             const SizedBox(height: 16),
-            
-            // ── Sezione Statistiche ──
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
@@ -143,21 +130,41 @@ class LeaderboardPreviewCard extends StatelessWidget {
 }
 
 // ── Widget Custom per disegnare il Map Pin ──
-class _MapPin extends StatelessWidget {
+// Convertito in StatefulWidget per gestire il fallback quando l'immagine
+// fallisce (es. 403 da Firebase Storage con URL/token scaduto o inesistente).
+class _MapPin extends StatefulWidget {
   final String imageUrl;
   final bool isCurrentUser;
   final bool isTop;
 
   const _MapPin({
+    super.key,
     required this.imageUrl,
     required this.isCurrentUser,
     required this.isTop,
   });
 
   @override
+  State<_MapPin> createState() => _MapPinState();
+}
+
+class _MapPinState extends State<_MapPin> {
+  bool _imageFailed = false;
+
+  @override
+  void didUpdateWidget(covariant _MapPin oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Se l'URL cambia (es. dopo un refresh), riprova a mostrare l'immagine.
+    if (oldWidget.imageUrl != widget.imageUrl) {
+      _imageFailed = false;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final pinColor = isCurrentUser ? const Color(0xFF3B5E62) : const Color(0xFFD3D6CE);
-    final size = isCurrentUser ? 46.0 : 38.0; // Utente corrente leggermente più grande
+    final pinColor = widget.isCurrentUser ? const Color(0xFF3B5E62) : const Color(0xFFD3D6CE);
+    final size = widget.isCurrentUser ? 46.0 : 38.0;
+    final hasValidImage = widget.imageUrl.isNotEmpty && !_imageFailed;
 
     return SizedBox(
       width: size,
@@ -166,10 +173,10 @@ class _MapPin extends StatelessWidget {
         alignment: Alignment.center,
         children: [
           Positioned(
-            bottom: isTop ? 0 : null,
-            top: !isTop ? 0 : null,
+            bottom: widget.isTop ? 0 : null,
+            top: !widget.isTop ? 0 : null,
             child: Transform.rotate(
-              angle: isTop ? 0.785398 : 3.92699, // 45° o 225°
+              angle: widget.isTop ? 0.785398 : 3.92699,
               child: Container(
                 width: 14,
                 height: 14,
@@ -182,10 +189,9 @@ class _MapPin extends StatelessWidget {
               ),
             ),
           ),
-          
           Positioned(
-            top: isTop ? 0 : null,
-            bottom: !isTop ? 0 : null,
+            top: widget.isTop ? 0 : null,
+            bottom: !widget.isTop ? 0 : null,
             child: Container(
               width: size,
               height: size,
@@ -197,10 +203,17 @@ class _MapPin extends StatelessWidget {
                 padding: const EdgeInsets.all(3.0),
                 child: CircleAvatar(
                   backgroundColor: Colors.grey.shade300,
-                  backgroundImage: imageUrl.isNotEmpty ? NetworkImage(imageUrl) : null,
-                  child: imageUrl.isEmpty 
-                    ? Icon(Icons.person, size: isCurrentUser ? 20 : 16, color: Colors.grey.shade600)
-                    : null,
+                  backgroundImage: hasValidImage ? NetworkImage(widget.imageUrl) : null,
+                  onBackgroundImageError: hasValidImage
+                      ? (exception, stackTrace) {
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (mounted) setState(() => _imageFailed = true);
+                          });
+                        }
+                      : null,
+                  child: !hasValidImage
+                      ? Icon(Icons.person, size: widget.isCurrentUser ? 20 : 16, color: Colors.grey.shade600)
+                      : null,
                 ),
               ),
             ),
