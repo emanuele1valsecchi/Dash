@@ -136,7 +136,22 @@ class _ProfilePageState extends State<ProfilePage> {
   Widget _buildActionButtons() {
     return Row(
       children: [
-        ProfileActionButton(type: ProfileActionButtonType.edit),
+        ProfileActionButton(
+          type: ProfileActionButtonType.edit,
+          onPressedOverride: () async {
+            final didUpdate = await Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const EditProfilePage()),
+            );
+            
+            if (didUpdate == true) {
+              setState(() {
+                _isLoading = true;
+              });
+              await _loadProfileData();
+            }
+          },
+        ),
         Spacer(),
         ProfileActionButton(type: ProfileActionButtonType.share),
         ProfileActionButton(type: ProfileActionButtonType.add)
@@ -164,7 +179,7 @@ class _ProfilePageState extends State<ProfilePage> {
         
         setState(() {
           // Use a fallback chain for the name just like in HomeScreen
-          _name = data['username'] ?? data['nickname'] ?? data['name'] ?? 'No Name';
+          _name = data['name'] ?? 'No Name';
           _surname = data['surname'];
           _email = data['email'] ?? 'No Email';
           _bio = data['bio'] ?? 'No bio provided.';
@@ -252,8 +267,13 @@ enum ProfileActionButtonType{
 
 class ProfileActionButton extends StatelessWidget{
   final ProfileActionButtonType type;
+  final VoidCallback? onPressedOverride;
   
-  const ProfileActionButton({super.key, required this.type});
+  const ProfileActionButton({
+    super.key, 
+    required this.type,
+    this.onPressedOverride,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -269,7 +289,7 @@ class ProfileActionButton extends StatelessWidget{
 
     if (type == ProfileActionButtonType.add){
       return ElevatedButton(
-        onPressed: () => type.action(context),
+        onPressed: onPressedOverride ?? () => type.action(context),
         style: style.copyWith(
           padding: const WidgetStatePropertyAll<EdgeInsetsGeometry>(EdgeInsets.all(1)),
           shape: const WidgetStatePropertyAll<OutlinedBorder>(CircleBorder())
@@ -284,7 +304,7 @@ class ProfileActionButton extends StatelessWidget{
       label: Text(
         type.label
       ),
-      onPressed: () => type.action(context),
+      onPressed: onPressedOverride ?? () => type.action(context),
     );
   }
 }

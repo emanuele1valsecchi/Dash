@@ -90,9 +90,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
   }
 
   Future<void> _saveProfileChanges() async {
-    if (_formKey.currentState!.validate()) {
-      final String name = _nameController.text.trim();
-      
+    if (_formKey.currentState!.validate()) {      
       try{
         final user = FirebaseAuth.instance.currentUser!;
         final firestore = FirebaseFirestore.instance;
