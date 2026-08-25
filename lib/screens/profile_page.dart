@@ -5,6 +5,7 @@ import 'package:dash/widgets/profile/profile_picture_avatar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
+import 'settings_page.dart';
 import 'package:dash/utils/strings_utils.dart';
 
 class ProfilePage extends StatefulWidget {
@@ -47,7 +48,12 @@ class _ProfilePageState extends State<ProfilePage> {
               Symbols.settings_rounded, 
               color: Theme.of(context).colorScheme.secondary),
             onPressed: () {
-              // TODO: add settings
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const SettingsPage(),
+                ),
+              );
             },
           ),
         ],

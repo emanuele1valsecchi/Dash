@@ -6,6 +6,7 @@ import 'register_screen.dart';
 import '../services/profile_service.dart';
 import 'welcome_register_screen.dart';
 import '../screens/home_screen.dart';
+import '../services/push_notification_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -94,19 +95,23 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _navigateAfterLogin(BuildContext context) async {
-  final profileService = ProfileService();
-  final exists = await profileService.isProfileComplete();
-  if (!context.mounted) return;
-  if (exists) {
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const HomeScreen()),
-    );
-  } else {
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const WelcomeRegisterScreen()),
-    );
+    final profileService = ProfileService();
+    final exists = await profileService.isProfileComplete();
+    
+    await PushNotificationService().initialize();
+    
+    if (!context.mounted) return;
+    
+    if (exists) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
+      );
+    } else {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const WelcomeRegisterScreen()),
+      );
+    }
   }
-}
 
   String _parseError(String error) {
     if (error.contains('user-not-found'))    return 'No account found with this email';

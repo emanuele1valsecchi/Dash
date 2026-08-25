@@ -16,6 +16,7 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -45,6 +46,7 @@ dependencies {
     // Wearable Data Layer, for talking to the Wear OS companion in wear/.
     // Keep this version in step with wear/android/app/build.gradle.kts.
     implementation("com.google.android.gms:play-services-wearable:18.2.0")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 
 flutter {
