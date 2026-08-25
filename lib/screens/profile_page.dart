@@ -1,8 +1,11 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/screens/edit_profile_page.dart';
 import 'package:dash/widgets/dash_navigation_bar.dart';
 import 'package:dash/widgets/profile/profile_picture_avatar.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
+import 'package:dash/utils/strings_utils.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -12,10 +15,20 @@ class ProfilePage extends StatefulWidget {
 }
 
 class _ProfilePageState extends State<ProfilePage> {
+  bool _isLoading = true;
+  String _name = '';
+  String _surname = '';
+  String _email = '';
+  String _bio = '';
+  int _followers = 0;
+  int _following = 0;
+  String _profileImageUrl = '';
 
   @override
   void initState() {
     super.initState();
+
+    _loadProfileData();
   }
 
   @override
@@ -39,51 +52,53 @@ class _ProfilePageState extends State<ProfilePage> {
           ),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: EdgeInsets.symmetric(horizontal: elementsPadding),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(height: sizedBoxDim),
-            _buildProfileHeader(),
-            SizedBox(height: sizedBoxDim),
-            BioTextBox(bio: 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.'),
-            SizedBox(height: sizedBoxDim),
-            _buildActionButtons(),
-            SizedBox(height: sizedBoxDim),
-          ],
-        ),
-      ),
+
+      body: _isLoading 
+        ? const Center(child: CircularProgressIndicator())
+        : SingleChildScrollView(
+            padding: EdgeInsets.symmetric(horizontal: elementsPadding),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(height: sizedBoxDim),
+                _buildProfileHeader(),
+                SizedBox(height: sizedBoxDim),
+                BioTextBox(bio: _bio),
+                SizedBox(height: sizedBoxDim),
+                _buildActionButtons(),
+                SizedBox(height: sizedBoxDim),
+              ],
+            ),
+          ),
+      
       bottomNavigationBar: DashNavigationbar(),
     );
   }
 
-  // --- WIDGET COMPONENTS ---
-
-  Widget _buildProfileHeader() {
-    final double screenWidth = MediaQuery.sizeOf(context).width;
-    final double screenHeight = MediaQuery.sizeOf(context).height;
+  Widget _buildProfileHeader(){
+    final double screenWidth = MediaQuery.widthOf(context);
+    final double screenHeight = MediaQuery.heightOf(context);
 
     return Row(
       children: [
-        ProfilePictureAvatar(),
+        ProfilePictureAvatar(imageUrl: _profileImageUrl, initialNameSurname: getFirstLetters(_name, _surname),),
         SizedBox(width: screenWidth * 0.08),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                "Name Surname",
+                '$_name $_surname',
                 style: Theme.of(context).textTheme.headlineSmall),
               Text(
-                "lamiaemail@polimi.it",
+                _email,
                 style: Theme.of(context).textTheme.labelLarge!.copyWith(color: Theme.of(context).colorScheme.outline)
               ),
               SizedBox(height: screenHeight * 0.02),
               Row(
                 children: [
-                  _buildFollowersCount('10k', 'Followers'),
-                  _buildFollowersCount('1000', 'Following'),
+                  _buildFollowersCount(formatNumber(_followers), 'Followers'),
+                  _buildFollowersCount(formatNumber(_following), 'Following'),
                 ],
               ),
             ],
@@ -121,6 +136,44 @@ class _ProfilePageState extends State<ProfilePage> {
         ProfileActionButton(type: ProfileActionButtonType.add)
       ],
     );
+  }
+
+  Future<void> _loadProfileData() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      // Query the 'profiles' collection
+      final doc = await FirebaseFirestore.instance
+          .collection('profiles')
+          .doc(user.uid)
+          .get();
+
+      if (!doc.exists) return;
+
+      final data = doc.data();
+      if (data != null) {
+        // Ensure the widget is still in the tree before updating state
+        if (!mounted) return;
+        
+        setState(() {
+          // Use a fallback chain for the name just like in HomeScreen
+          _name = data['username'] ?? data['nickname'] ?? data['name'] ?? 'No Name';
+          _surname = data['surname'];
+          _email = data['email'] ?? 'No Email';
+          _bio = data['bio'] ?? 'No bio provided.';
+          _followers = (data['followers'] as num?)?.toInt() ?? 0;
+          _following = (data['following'] as num?)?.toInt() ?? 0;
+          _profileImageUrl = data['profileImageUrl'] as String? ?? '';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading profile: $e');
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
   }
 }
 

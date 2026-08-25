@@ -22,6 +22,14 @@
           }
         },
         {
+          "client_id": "936722587532-vef0a41v15k3br4bosa0jfn06sjupr9f.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.dash",
+            "certificate_hash": "4e59be24d17ba5db69857dcfe0e828d8ebe25665"
+          }
+        },
+        {
           "client_id": "936722587532-8e48d4e195n1ai7d7ohl18fneiib1ek0.apps.googleusercontent.com",
           "client_type": 3
         }

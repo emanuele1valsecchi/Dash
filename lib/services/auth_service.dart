@@ -38,6 +38,7 @@ class AuthService {
     final googleSignIn = GoogleSignIn.instance;
 
     final googleUser = await googleSignIn.authenticate();
+
     debugPrint('>>> googleUser: ${googleUser.email}');
 
     final googleAuth = googleUser.authentication;
