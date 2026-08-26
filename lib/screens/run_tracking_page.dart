@@ -21,6 +21,8 @@ import '../services/run_session_controller.dart';
 import '../services/wear_bridge.dart';
 import '../services/water_fountain_service.dart';
 import '../utils/geometry_utils.dart';
+import '../utils/unit_formatter.dart';
+import '../widgets/units_scope.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
 import '../widgets/map/enhanced_map_gestures.dart';
@@ -719,13 +721,17 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => _RunSummaryDialog(
+      builder: (dialogContext) => _RunSummaryDialog(
+        units: Units.of(dialogContext),
         time: _formatElapsed(),
-        distance: _formatDistanceKm(),
-        avgPace: _formatPaceValue(_controller.avgPaceMinPerKm),
-        maxPace: _formatPaceValue(_controller.bestPaceMinPerKm),
-        calories: '${_controller.caloriesBurned.round()} kcal',
-        elevation: '${_controller.elevationDifferenceMeters.round()} m',
+        distance: _formatDistance(Units.of(dialogContext)),
+        avgPace: _formatRateValue(
+            Units.of(dialogContext), _controller.avgPaceMinPerKm),
+        maxPace: _formatRateValue(
+            Units.of(dialogContext), _controller.bestPaceMinPerKm),
+        calories: Units.of(dialogContext).energy(_controller.caloriesBurned),
+        elevation: Units.of(dialogContext)
+            .elevation(_controller.elevationDifferenceMeters),
         avgHeartRate: _formatBpm(_controller.avgHeartRateBpm),
         maxHeartRate: _formatBpm(_controller.maxHeartRateBpm),
         onSave: (name) => _controller.save(name: name),
@@ -848,18 +854,19 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     return '$hh:$mm:$ss:$dd';
   }
 
-  String _formatDistanceKm() => '${(_controller.distanceMeters / 1000).toStringAsFixed(2)} km';
+  /// Always the major unit (km/mi), never switching to metres for a short
+  /// run — a live readout that changed unit mid-run would be jarring.
+  String _formatDistance(UnitFormatter units) =>
+      units.distanceMajor(_controller.distanceMeters);
 
   /// Null means no watch reported a reading — not a reading of zero, which is
   /// why this can't just print the number.
   String _formatBpm(int? bpm) => bpm == null ? '--' : '$bpm bpm';
 
-  String _formatPaceValue(double? pace) {
-    if (pace == null || !pace.isFinite || pace <= 0) return '--:--';
-    final minutes = pace.floor();
-    final seconds = ((pace - minutes) * 60).round();
-    return '$minutes:${seconds.toString().padLeft(2, '0')}';
-  }
+  /// The bare rate figure — pace or speed, per the user's preference. The
+  /// unit is rendered separately by each caller, in its own caption.
+  String _formatRateValue(UnitFormatter units, double? paceMinPerKm) =>
+      units.rateValueFromPace(paceMinPerKm);
 
   // ── Build ─────────────────────────────────────────────────────────────────
 
@@ -1041,6 +1048,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   // ── Stats (default) view ─────────────────────────────────────────────────
 
   Widget _buildStatsView() {
+    final units = Units.of(context);
     return Column(
       children: [
         _buildCloseBar(),
@@ -1068,15 +1076,16 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                       child: _StatBlock(
                         icon: Icons.straighten_rounded,
                         label: 'Distance',
-                        value: _formatDistanceKm(),
+                        value: _formatDistance(units),
                       ),
                     ),
                     const SizedBox(width: 14),
                     Expanded(
                       child: _StatBlock(
                         icon: Icons.speed_rounded,
-                        label: 'Pace (min/km)',
-                        value: _formatPaceValue(_controller.currentPaceMinPerKm),
+                        label: '${units.rateLabel} (${units.rateUnitLabel})',
+                        value:
+                            _formatRateValue(units, _controller.currentPaceMinPerKm),
                       ),
                     ),
                   ],
@@ -1190,6 +1199,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   // ── Expanded map view ─────────────────────────────────────────────────────
 
   Widget _buildExpandedMapView() {
+    final units = Units.of(context);
     return Stack(
       children: [
         _buildMap(),
@@ -1199,8 +1209,9 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           right: 12,
           child: _ExpandedStatsBar(
             time: _formatElapsed(),
-            distance: _formatDistanceKm(),
-            pace: _formatPaceValue(_controller.currentPaceMinPerKm),
+            distance: _formatDistance(units),
+            pace: _formatRateValue(units, _controller.currentPaceMinPerKm),
+            rateUnitLabel: units.rateUnitLabel,
             loopsCompleted: _controller.loopsCompleted,
             onCollapse: _toggleMapExpanded,
           ),
@@ -1524,21 +1535,25 @@ class _RouteGuidanceCard extends StatelessWidget {
       _ => (const Color(0xFFF0F2EB), const Color(0xFF4A8C52)),
     };
 
+    final units = Units.of(context);
+
     final String title;
     final String subtitle;
     if (offRoute) {
       title = 'Off route';
-      subtitle = '${guidance.offRouteMeters.round()} m away — follow the arrow back';
+      subtitle = '${units.shortDistance(guidance.offRouteMeters)} away '
+          '— follow the arrow back';
     } else if (arrived) {
       title = 'Route complete';
       subtitle = 'You have reached the end of the planned route';
     } else if (canPoint) {
-      title = _turnLabel();
-      subtitle = _formatRemaining(guidance.distanceRemainingMeters);
+      title = _turnLabel(units);
+      subtitle = _formatRemaining(units, guidance.distanceRemainingMeters);
     } else {
       title = 'Getting your bearing';
       subtitle =
-          '${_formatRemaining(guidance.distanceRemainingMeters)} — start moving';
+          '${_formatRemaining(units, guidance.distanceRemainingMeters)} '
+          '— start moving';
     }
 
     return Container(
@@ -1611,7 +1626,7 @@ class _RouteGuidanceCard extends StatelessWidget {
   /// Headline text — the next change of direction if there is one within
   /// range, otherwise an explicit "carry on", which is more reassuring
   /// mid-run than a bare distance.
-  String _turnLabel() {
+  String _turnLabel(UnitFormatter units) {
     final distance = guidance.distanceToTurnMeters;
     final angle = guidance.turnAngleDegrees;
     if (distance == null || angle == null) return 'Continue straight';
@@ -1620,16 +1635,16 @@ class _RouteGuidanceCard extends StatelessWidget {
     final verb = angle.abs() >= _sharpTurnDegrees ? 'Turn' : 'Bear';
     if (distance < _imminentTurnMeters) return '$verb $side now';
 
-    // Rounded to 10 m: the underlying figure is a threshold crossing on a
-    // sampled polyline, so "in 80 m" is honest where "in 83 m" implies a
-    // precision this doesn't have.
-    final rounded = (distance / 10).round() * 10;
-    return '$verb $side in $rounded m';
+    // Rounded to 10 of whatever unit is being shown: the underlying figure is
+    // a threshold crossing on a sampled polyline, so "in 80 m" is honest
+    // where "in 83 m" implies a precision this doesn't have. Rounding after
+    // the conversion (rather than converting a rounded metric figure) keeps
+    // the imperial reading a round number too.
+    return '$verb $side in ${units.shortDistance(distance, roundTo: 10)}';
   }
 
-  String _formatRemaining(double meters) => meters >= 1000
-      ? '${(meters / 1000).toStringAsFixed(2)} km to go'
-      : '${meters.round()} m to go';
+  String _formatRemaining(UnitFormatter units, double meters) =>
+      '${units.distance(meters)} to go';
 }
 
 // ── Loop indicator ─────────────────────────────────────────────────────────
@@ -1684,6 +1699,12 @@ class _ExpandedStatsBar extends StatelessWidget {
   final String time;
   final String distance;
   final String pace;
+
+  /// Passed in rather than read here so the caption can never disagree with
+  /// the already-formatted [pace] beside it — `'/mi'` under a figure computed
+  /// in km/h would be worse than no caption at all.
+  final String rateUnitLabel;
+
   final int loopsCompleted;
   final VoidCallback onCollapse;
 
@@ -1691,6 +1712,7 @@ class _ExpandedStatsBar extends StatelessWidget {
     required this.time,
     required this.distance,
     required this.pace,
+    required this.rateUnitLabel,
     required this.loopsCompleted,
     required this.onCollapse,
   });
@@ -1727,7 +1749,7 @@ class _ExpandedStatsBar extends StatelessWidget {
                   Row(
                     children: [
                       Text(
-                        '$distance  ·  $pace /km',
+                        '$distance  ·  $pace $rateUnitLabel',
                         style: const TextStyle(
                           fontSize: 16,
                           color: Color(0xFF425143),
@@ -1765,6 +1787,11 @@ class _ExpandedStatsBar extends StatelessWidget {
 /// still mounted and animating out — disposing the controller out from
 /// under it trips a framework assertion.
 class _RunSummaryDialog extends StatefulWidget {
+  /// The formatter the caller already used for [distance]/[avgPace]/etc.,
+  /// carried through so this dialog's own unit captions are guaranteed to
+  /// describe those exact strings.
+  final UnitFormatter units;
+
   final String time;
   final String distance;
   final String avgPace;
@@ -1783,6 +1810,7 @@ class _RunSummaryDialog extends StatefulWidget {
   final ValueChanged<String> onSaved;
 
   const _RunSummaryDialog({
+    required this.units,
     required this.time,
     required this.distance,
     required this.avgPace,
@@ -1893,9 +1921,13 @@ class _RunSummaryDialogState extends State<_RunSummaryDialog> {
                     _SummaryStat(icon: Icons.timer_outlined, label: 'Time', value: widget.time),
                     _SummaryStat(icon: Icons.straighten_rounded, label: 'Distance', value: widget.distance),
                     _SummaryStat(
-                        icon: Icons.speed_rounded, label: 'Avg pace', value: '${widget.avgPace} /km'),
+                        icon: Icons.speed_rounded,
+                        label: 'Avg ${widget.units.rateLabel.toLowerCase()}',
+                        value: '${widget.avgPace} ${widget.units.rateUnitLabel}'),
                     _SummaryStat(
-                        icon: Icons.bolt_rounded, label: 'Max pace', value: '${widget.maxPace} /km'),
+                        icon: Icons.bolt_rounded,
+                        label: 'Best ${widget.units.rateLabel.toLowerCase()}',
+                        value: '${widget.maxPace} ${widget.units.rateUnitLabel}'),
                     _SummaryStat(
                         icon: Icons.local_fire_department_outlined,
                         label: 'Calories',

@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 // Assicurati che questo import combaci con la cartella del tuo progetto
-import '../config/map_style.dart'; 
+import '../config/map_style.dart';
+import '../widgets/units_scope.dart';
 
 class SessionDetailScreen extends StatelessWidget {
   final Map<String, dynamic> sessionData;
@@ -15,18 +16,11 @@ class SessionDetailScreen extends StatelessWidget {
     required this.routePolyline,
   });
 
-  // Converte il formato decimale del passo nel classico formato M'SS" /km
-  String _formatPace(double paceDecimal) {
-    if (paceDecimal <= 0) return '--';
-    int minutes = paceDecimal.floor();
-    int seconds = ((paceDecimal - minutes) * 60).round();
-    return '$minutes\'${seconds.toString().padLeft(2, '0')}"';
-  }
-
   @override
   Widget build(BuildContext context) {
     // Rileviamo le dimensioni dello schermo per adattare i widget
     final size = MediaQuery.of(context).size;
+    final units = Units.of(context);
     
     // Estrazione dei dati dalla sessione
     final name = sessionData['name'] ?? 'Untitled run';
@@ -40,7 +34,6 @@ class SessionDetailScreen extends StatelessWidget {
                  (sessionData['maxPaceMinPerKm'] as num?)?.toDouble() ?? 0.0;
     final loops = (sessionData['loopsCompleted'] as num?)?.toInt() ?? 0;
     
-    final distKm = (distanceMeters / 1000).toStringAsFixed(2);
     final timeMin = (durationMs / 60000).round();
 
     // 1. Calcoliamo i confini esatti della corsa
@@ -177,10 +170,10 @@ class SessionDetailScreen extends StatelessWidget {
                       crossAxisSpacing: 12,
                       childAspectRatio: 2.15,
                       children: [
-                        _buildStatCard(Icons.straighten_rounded, 'Distance', '$distKm km'),
+                        _buildStatCard(Icons.straighten_rounded, 'Distance', units.distanceMajor(distanceMeters)),
                         _buildStatCard(Icons.timer_outlined, 'Duration', '$timeMin min'),
-                        _buildStatCard(Icons.speed_rounded, 'Avg Pace', '${_formatPace(pace)} /km'),
-                        _buildStatCard(Icons.local_fire_department_rounded, 'Calories', '${calories.toStringAsFixed(0)} kcal'),
+                        _buildStatCard(Icons.speed_rounded, 'Avg ${units.rateLabel}', units.rateFromPace(pace)),
+                        _buildStatCard(Icons.local_fire_department_rounded, 'Calories', units.energy(calories)),
                         _buildStatCard(
                           Icons.bolt_rounded, 
                           'Points', 

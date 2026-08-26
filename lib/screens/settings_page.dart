@@ -4,6 +4,7 @@ import 'package:material_symbols_icons/symbols.dart';
 import 'login_screen.dart';
 import 'legal_screen.dart';
 import 'notification_settings_page.dart';
+import 'units_settings_page.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -113,10 +114,15 @@ class SettingsPage extends StatelessWidget {
           ),
           _buildSettingsTile(
             context,
-            icon: Symbols.map_rounded,
-            title: 'Map & Units',
+            icon: Symbols.straighten_rounded,
+            title: 'Units',
             onTap: () {
-              // TODO: Impostazioni km/miglia, stile mappa ecc.
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const UnitsSettingsPage(),
+                ),
+              );
             },
           ),
 

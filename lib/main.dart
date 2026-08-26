@@ -6,6 +6,8 @@ import 'package:google_sign_in/google_sign_in.dart';
 
 import 'screens/home_screen.dart';
 import 'screens/onboarding_screen.dart';
+import 'services/unit_preferences.dart';
+import 'widgets/units_scope.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -13,9 +15,13 @@ Future<void> main() async {
   await Firebase.initializeApp();
   await GoogleSignIn.instance.initialize();
 
-  await SystemChrome.setPreferredOrientations([
-    DeviceOrientation.portraitUp,
-  ]);
+  // Read the stored unit preferences before the first frame, so the app never
+  // paints metric and then corrects itself for a miles user. This is a single
+  // local `SharedPreferences` read, not a network call — the Firestore copy is
+  // reconciled later, from `HomeScreen.initState`.
+  await UnitPreferences.instance.warmUp();
+
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
@@ -38,9 +44,7 @@ class _SplashScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return const Scaffold(
       backgroundColor: Color(0xFFF3F5EE),
-      body: Center(
-        child: CircularProgressIndicator(color: Color(0xFF4A8C52)),
-      ),
+      body: Center(child: CircularProgressIndicator(color: Color(0xFF4A8C52))),
     );
   }
 }
@@ -50,26 +54,29 @@ class DashApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Dash',
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Color(0xFF37693D)
+    // Above `MaterialApp` so that changing a unit rebuilds every screen in the
+    // navigation stack, not just the one on top — see `UnitsScope`.
+    return UnitsScope(
+      preferences: UnitPreferences.instance,
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        title: 'Dash',
+        theme: ThemeData(
+          useMaterial3: true,
+          colorScheme: ColorScheme.fromSeed(seedColor: Color(0xFF37693D)),
         ),
-      ),
-      home: StreamBuilder<User?>(
-        stream: FirebaseAuth.instance.authStateChanges(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const _SplashScreen();
-          }
-          if (snapshot.hasData) {
-            return const HomeScreen();
-          }
-          return const OnboardingScreen();
-        },
+        home: StreamBuilder<User?>(
+          stream: FirebaseAuth.instance.authStateChanges(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const _SplashScreen();
+            }
+            if (snapshot.hasData) {
+              return const HomeScreen();
+            }
+            return const OnboardingScreen();
+          },
+        ),
       ),
     );
   }

@@ -11,6 +11,7 @@ import '../services/profile_service.dart';
 import '../services/route_repository.dart';
 import '../services/run_session_repository.dart';
 import '../utils/geometry_utils.dart';
+import '../widgets/units_scope.dart';
 
 const _months = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -192,6 +193,7 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
   }
 
   Widget _buildContent(BuildContext context, RunSession session) {
+    final units = Units.of(context);
     final pace = session.avgPaceMinPerKm;
     final avgSpeedKmh = pace > 0 ? 60 / pace : null;
     final hasMap = session.path.length >= 2;
@@ -236,7 +238,7 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
                 child: _StatPill(
                   icon: Icons.straighten_rounded,
                   label: 'Distance',
-                  value: '${(session.distanceMeters / 1000).toStringAsFixed(2)} km',
+                  value: units.distanceMajor(session.distanceMeters),
                 ),
               ),
               const SizedBox(width: 12),
@@ -255,9 +257,9 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
               Expanded(
                 child: _StatPill(
                   icon: Icons.speed_rounded,
-                  label: 'Avg speed',
+                  label: 'Avg ${units.rateLabel.toLowerCase()}',
                   value: avgSpeedKmh != null
-                      ? '${avgSpeedKmh.toStringAsFixed(1)} km/h'
+                      ? units.rateFromSpeedKmh(avgSpeedKmh)
                       : '—',
                 ),
               ),
@@ -266,7 +268,7 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
                 child: _StatPill(
                   icon: Icons.square_foot_outlined,
                   label: 'Area conquered',
-                  value: GeometryUtils.formatAreaKm2(session.totalAreaM2),
+                  value: units.area(session.totalAreaM2),
                 ),
               ),
             ],
