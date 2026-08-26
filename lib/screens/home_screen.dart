@@ -13,6 +13,9 @@ import '../models/home_badge_ui_model.dart';
 import '../services/badge_service.dart';
 import '../services/location_service.dart';
 import '../services/storage_service.dart';
+import '../services/unit_preferences.dart';
+import '../utils/unit_formatter.dart';
+import '../widgets/units_scope.dart';
 import '../services/water_fountain_service.dart';
 import 'explore_page.dart';
 import 'route_create_page.dart';
@@ -62,9 +65,15 @@ class _HomeScreenState extends State<HomeScreen> {
   int _currentLeaderboardPage = 0;
 
   // Gestione stato distanza e statistiche degli ultimi 30 giorni
-  double _monthlyKm = 0.0;
+  double _monthlyMeters = 0.0;
   bool _isLoadingKm = true;
-  List<MonthlyStatData> _monthlyStats = []; 
+
+  /// The raw, always-metric figures behind the monthly stat cards. Kept as
+  /// numbers rather than formatted strings so that changing a unit re-renders
+  /// them from `build` — formatting them at fetch time would have frozen
+  /// whatever units were active when the Firestore query ran, and refreshing
+  /// them would have meant re-querying.
+  _MonthlyStatsRaw? _monthlyRaw; 
 
   final StorageService _storageService = StorageService();
 
@@ -81,6 +90,11 @@ class _HomeScreenState extends State<HomeScreen> {
     _loadLeaderboardPreviews(); 
     LocationService.instance.start();
     WaterFountainService.instance.warmUp();
+    // First point the user is certainly signed in, so this is where the
+    // cloud copy of their unit preferences is reconciled with the local one
+    // (a no-op beyond a background push once they have set units on this
+    // device — see `UnitPreferences.syncFromCloud`).
+    UnitPreferences.instance.syncFromCloud();
 
     // App-wide, not owned by RunTrackingPage: the watch has to be able to
     // start a run while the phone is sitting on this screen in a pocket.
@@ -242,11 +256,6 @@ class _HomeScreenState extends State<HomeScreen> {
         avgDurationStr = d.inHours > 0 ? '${d.inHours}h ${d.inMinutes.remainder(60)}m' : '${d.inMinutes.remainder(60)} min';
       }
 
-      String avgMaxSpeedStr = avgMaxSpeedKmh > 0 ? '${avgMaxSpeedKmh.toStringAsFixed(1)} km/h' : '--';
-      String avgSpeedStr = avgSpeed30d > 0 ? '${avgSpeed30d.toStringAsFixed(1)} km/h' : '--';
-      String avgDistanceStr = avgDistanceMeters >= 1000 ? '${(avgDistanceMeters / 1000).toStringAsFixed(1)} km' : '${avgDistanceMeters.toStringAsFixed(0)} m';
-      String avgCaloriesStr = avgCalories > 0 ? '${avgCalories.toStringAsFixed(0)} kCal' : '--';
-
       double activitiesProgress = 0.0;
       if (previousCompletedActivities > 0) {
         activitiesProgress = (completedActivities / previousCompletedActivities).clamp(0.0, 1.0);
@@ -254,55 +263,25 @@ class _HomeScreenState extends State<HomeScreen> {
         activitiesProgress = 1.0; 
       }
 
-      final calculatedStats = [
-        MonthlyStatData(
-          title: 'Average\nsession time',
-          value: avgDurationStr,
-          icon: Icons.timer_outlined,
-          progress: bestDurationMs > 0 ? (avgDurationMs / bestDurationMs).clamp(0.0, 1.0) : 0.0,
-          bottomText: bestDurationMs > 0 ? 'Best overall: ${Duration(milliseconds: bestDurationMs).inMinutes} min' : 'No records yet',
-        ),
-        MonthlyStatData(
-          title: 'Average max\nspeed',
-          value: avgMaxSpeedStr,
-          icon: Icons.speed_rounded,
-          progress: bestSpeedKmh > 0 ? (avgMaxSpeedKmh / bestSpeedKmh).clamp(0.0, 1.0) : 0.0,
-          bottomText: bestSpeedKmh > 0 ? 'Best overall: ${bestSpeedKmh.toStringAsFixed(1)} km/h' : 'No records yet',
-        ),
-        MonthlyStatData(
-          title: 'Average\nspeed',
-          value: avgSpeedStr,
-          icon: Icons.shutter_speed_rounded,
-          progress: bestAvgSpeedKmh > 0 ? (avgSpeed30d / bestAvgSpeedKmh).clamp(0.0, 1.0) : 0.0,
-          bottomText: bestAvgSpeedKmh > 0 ? 'Best overall: ${bestAvgSpeedKmh.toStringAsFixed(1)} km/h' : 'No records yet',
-        ),
-        MonthlyStatData(
-          title: 'Average\ndistance',
-          value: avgDistanceStr,
-          icon: Icons.swap_horiz_rounded,
-          progress: bestDistance > 0 ? (avgDistanceMeters / bestDistance).clamp(0.0, 1.0) : 0.0,
-          bottomText: bestDistance > 0 ? 'Best overall: ${(bestDistance/1000).toStringAsFixed(1)} km' : 'No records yet',
-        ),
-        MonthlyStatData(
-          title: 'Completed\nactivities',
-          value: '$completedActivities',
-          icon: Icons.directions_run_rounded,
-          progress: activitiesProgress,
-          bottomText: 'Previous 30 days: $previousCompletedActivities',
-        ),
-        MonthlyStatData(
-          title: 'Average\ncalories',
-          value: avgCaloriesStr,
-          icon: Icons.local_fire_department_rounded,
-          progress: bestCalories > 0 ? (avgCalories / bestCalories).clamp(0.0, 1.0) : 0.0,
-          bottomText: bestCalories > 0 ? 'Best overall: ${bestCalories.toStringAsFixed(0)} kCal' : 'No records yet',
-        ),
-      ];
-
       if (mounted) {
         setState(() {
-          _monthlyKm = totalMeters / 1000;
-          _monthlyStats = calculatedStats;
+          _monthlyMeters = totalMeters;
+          _monthlyRaw = _MonthlyStatsRaw(
+            avgDurationMs: avgDurationMs,
+            bestDurationMs: bestDurationMs,
+            avgMaxSpeedKmh: avgMaxSpeedKmh,
+            bestSpeedKmh: bestSpeedKmh,
+            avgSpeedKmh: avgSpeed30d,
+            bestAvgSpeedKmh: bestAvgSpeedKmh,
+            avgDistanceMeters: avgDistanceMeters,
+            bestDistanceMeters: bestDistance,
+            completedActivities: completedActivities,
+            previousCompletedActivities: previousCompletedActivities,
+            activitiesProgress: activitiesProgress,
+            avgCalories: avgCalories,
+            bestCalories: bestCalories,
+            avgDurationStr: avgDurationStr,
+          );
           _isLoadingKm = false;
         });
       }
@@ -310,6 +289,86 @@ class _HomeScreenState extends State<HomeScreen> {
       debugPrint('Errore calcolo statistiche: $e');
       if (mounted) setState(() => _isLoadingKm = false);
     }
+  }
+
+  /// Formats the monthly stat cards from the raw figures, in the units
+  /// currently selected. Called from `build`, so a change of units re-renders
+  /// the cards without touching Firestore.
+  ///
+  /// The three rate cards follow the pace/speed preference — including their
+  /// titles, since "Average speed" over a pace figure would be simply wrong.
+  List<MonthlyStatData> _buildMonthlyStats(UnitFormatter units) {
+    final raw = _monthlyRaw;
+    if (raw == null) return const [];
+
+    final rateWord = units.rateLabel.toLowerCase();
+
+    return [
+      MonthlyStatData(
+        title: 'Average\nsession time',
+        value: raw.avgDurationStr,
+        icon: Icons.timer_outlined,
+        progress: raw.bestDurationMs > 0
+            ? (raw.avgDurationMs / raw.bestDurationMs).clamp(0.0, 1.0)
+            : 0.0,
+        bottomText: raw.bestDurationMs > 0
+            ? 'Best overall: ${Duration(milliseconds: raw.bestDurationMs).inMinutes} min'
+            : 'No records yet',
+      ),
+      MonthlyStatData(
+        title: 'Average best\n$rateWord',
+        value: units.rateFromSpeedKmh(raw.avgMaxSpeedKmh),
+        icon: Icons.speed_rounded,
+        progress: raw.bestSpeedKmh > 0
+            ? (raw.avgMaxSpeedKmh / raw.bestSpeedKmh).clamp(0.0, 1.0)
+            : 0.0,
+        bottomText: raw.bestSpeedKmh > 0
+            ? 'Best overall: ${units.rateFromSpeedKmh(raw.bestSpeedKmh)}'
+            : 'No records yet',
+      ),
+      MonthlyStatData(
+        title: 'Average\n$rateWord',
+        value: units.rateFromSpeedKmh(raw.avgSpeedKmh),
+        icon: Icons.shutter_speed_rounded,
+        progress: raw.bestAvgSpeedKmh > 0
+            ? (raw.avgSpeedKmh / raw.bestAvgSpeedKmh).clamp(0.0, 1.0)
+            : 0.0,
+        bottomText: raw.bestAvgSpeedKmh > 0
+            ? 'Best overall: ${units.rateFromSpeedKmh(raw.bestAvgSpeedKmh)}'
+            : 'No records yet',
+      ),
+      MonthlyStatData(
+        title: 'Average\ndistance',
+        value: raw.avgDistanceMeters > 0
+            ? units.distance(raw.avgDistanceMeters, decimals: 1)
+            : '--',
+        icon: Icons.swap_horiz_rounded,
+        progress: raw.bestDistanceMeters > 0
+            ? (raw.avgDistanceMeters / raw.bestDistanceMeters).clamp(0.0, 1.0)
+            : 0.0,
+        bottomText: raw.bestDistanceMeters > 0
+            ? 'Best overall: ${units.distance(raw.bestDistanceMeters, decimals: 1)}'
+            : 'No records yet',
+      ),
+      MonthlyStatData(
+        title: 'Completed\nactivities',
+        value: '${raw.completedActivities}',
+        icon: Icons.directions_run_rounded,
+        progress: raw.activitiesProgress,
+        bottomText: 'Previous 30 days: ${raw.previousCompletedActivities}',
+      ),
+      MonthlyStatData(
+        title: 'Average\ncalories',
+        value: raw.avgCalories > 0 ? units.energy(raw.avgCalories) : '--',
+        icon: Icons.local_fire_department_rounded,
+        progress: raw.bestCalories > 0
+            ? (raw.avgCalories / raw.bestCalories).clamp(0.0, 1.0)
+            : 0.0,
+        bottomText: raw.bestCalories > 0
+            ? 'Best overall: ${units.energy(raw.bestCalories)}'
+            : 'No records yet',
+      ),
+    ];
   }
 
   Future<void> _loadLeaderboardPreviews() async {
@@ -535,12 +594,15 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    final km = (summary.distanceMeters / 1000).toStringAsFixed(2);
+    // A snackbar is a one-shot string, so a snapshot of the units is right
+    // here — nothing would redraw it if they changed a second later anyway.
+    final distance = Units.current.distanceMajor(summary.distanceMeters);
     final minutes = summary.elapsed.inMinutes;
     final loopsText = summary.loopsCompleted > 0
         ? ', ${summary.loopsCompleted} loop${summary.loopsCompleted == 1 ? '' : 's'} closed'
         : '';
-    context.showSuccessSnackBar("Run saved — $km km in $minutes min$loopsText");
+    context.showSuccessSnackBar(
+        'Run saved — $distance in $minutes min$loopsText');
 
     if (mounted) {
       _loadMonthlyDistance();
@@ -677,9 +739,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 children: [
                                   Text(
-                                    _isLoadingKm 
-                                        ? '-- km' 
-                                        : '${_monthlyKm.toStringAsFixed(1)} km',
+                                    _isLoadingKm
+                                        ? '-- ${Units.of(context).distanceUnitLabel}'
+                                        : Units.of(context).distanceMajor(
+                                            _monthlyMeters,
+                                            decimals: 1),
                                     style: const TextStyle(
                                       fontSize: 28,
                                       fontWeight: FontWeight.w800,
@@ -828,7 +892,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                 },
                               ),
                               const SizedBox(height: 28),
-                              MonthlyStatsSection(stats: _monthlyStats),
+                              MonthlyStatsSection(
+                                  stats: _buildMonthlyStats(Units.of(context))),
                               const SizedBox(height: 8),
                             ],
                           ),
@@ -1079,4 +1144,44 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+}
+
+/// The always-metric figures behind the home screen's monthly stat cards.
+///
+/// Split out from the Firestore fetch so the cards can be *formatted* during
+/// `build` — that is what lets a change of units re-render them immediately
+/// without another query. [avgDurationStr] is the one pre-formatted member:
+/// a duration has no unit setting to respect.
+class _MonthlyStatsRaw {
+  const _MonthlyStatsRaw({
+    required this.avgDurationMs,
+    required this.bestDurationMs,
+    required this.avgMaxSpeedKmh,
+    required this.bestSpeedKmh,
+    required this.avgSpeedKmh,
+    required this.bestAvgSpeedKmh,
+    required this.avgDistanceMeters,
+    required this.bestDistanceMeters,
+    required this.completedActivities,
+    required this.previousCompletedActivities,
+    required this.activitiesProgress,
+    required this.avgCalories,
+    required this.bestCalories,
+    required this.avgDurationStr,
+  });
+
+  final double avgDurationMs;
+  final int bestDurationMs;
+  final double avgMaxSpeedKmh;
+  final double bestSpeedKmh;
+  final double avgSpeedKmh;
+  final double bestAvgSpeedKmh;
+  final double avgDistanceMeters;
+  final double bestDistanceMeters;
+  final int completedActivities;
+  final int previousCompletedActivities;
+  final double activitiesProgress;
+  final double avgCalories;
+  final double bestCalories;
+  final String avgDurationStr;
 }

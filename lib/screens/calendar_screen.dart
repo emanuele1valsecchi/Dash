@@ -8,6 +8,8 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'session_detail_screen.dart';
 import '../config/map_style.dart';
+import '../services/unit_preferences.dart';
+import '../widgets/units_scope.dart';
 import '../services/cached_tile_provider.dart';
 
 class CalendarScreen extends StatefulWidget {
@@ -124,7 +126,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         }
                       },
                       eventLoader: _getEventsForDay,
-                      startingDayOfWeek: StartingDayOfWeek.monday,
+                      // Follows the units setting, so the calendar's own
+                      // week matches the one weekly stats are grouped by.
+                      startingDayOfWeek:
+                          Units.of(context).weekStart == WeekStart.sunday
+                              ? StartingDayOfWeek.sunday
+                              : StartingDayOfWeek.monday,
                       headerStyle: HeaderStyle(
                         formatButtonVisible: false,
                         titleCentered: true,
@@ -305,9 +312,7 @@ class SessionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final distLabel = distanceKm < 1
-        ? '${(distanceKm * 1000).round()} m'
-        : '${distanceKm.toStringAsFixed(2)} km';
+    final distLabel = Units.of(context).distance(distanceKm * 1000);
     
     final timeLabel = timeMin < 60
         ? '${timeMin.round()} min'

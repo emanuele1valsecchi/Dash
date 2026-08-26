@@ -17,6 +17,7 @@ import '../services/place_search_service.dart';
 import '../services/route_repository.dart';
 import '../services/routing_service.dart';
 import '../utils/geometry_utils.dart';
+import '../widgets/units_scope.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
 import '../widgets/map/enhanced_map_gestures.dart';
@@ -2641,19 +2642,17 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   // ── Stats section ─────────────────────────────────────────────────────────
 
   Widget _buildStatsSection() {
+    final units = Units.of(context);
     final hasPins = _waypoints.length >= 2;
-    final distLabel = hasPins
-        ? (_totalDistanceKm < 1
-              ? '${(_totalDistanceKm * 1000).round()} m'
-              : '${_totalDistanceKm.toStringAsFixed(2)} km')
-        : '—';
+    final distLabel =
+        hasPins ? units.distance(_totalDistanceKm * 1000) : '—';
     final timeLabel = hasPins
         ? (_estimatedTimeMin < 60
               ? '${_estimatedTimeMin.round()} min'
               : '${(_estimatedTimeMin / 60).floor()}h '
                     '${(_estimatedTimeMin % 60).round()}min')
         : '—';
-    final calLabel = hasPins ? '${_estimatedCalories.round()} kcal' : '—';
+    final calLabel = hasPins ? units.energy(_estimatedCalories) : '—';
 
     return Column(
       children: [
@@ -2724,10 +2723,9 @@ class _LoopAreaBanner extends StatelessWidget {
 
   const _LoopAreaBanner({required this.areaM2, required this.loopCount});
 
-  String get _areaLabel => GeometryUtils.formatAreaKm2(areaM2);
-
   @override
   Widget build(BuildContext context) {
+    final areaLabel = Units.of(context).area(areaM2);
     final label = loopCount > 1
         ? '$loopCount circuits closed!'
         : 'Circuit closed!';
@@ -2766,7 +2764,7 @@ class _LoopAreaBanner extends StatelessWidget {
           ),
           const SizedBox(width: 6),
           Text(
-            '$areaLabelPrefix: $_areaLabel',
+            '$areaLabelPrefix: $areaLabel',
             style: const TextStyle(
               fontWeight: FontWeight.w700,
               fontSize: 13,

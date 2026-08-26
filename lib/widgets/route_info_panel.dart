@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../utils/unit_formatter.dart';
+import 'units_scope.dart';
+
 class RouteInfoPanel extends StatelessWidget {
   final LatLng? lastPoint;
   final double totalDistanceMeters;
@@ -24,10 +27,9 @@ class RouteInfoPanel extends StatelessWidget {
     required this.onClear,
   });
 
-  String get _distanceLabel {
+  String _distanceLabel(UnitFormatter units) {
     if (waypointCount < 2) return 'Add another point';
-    if (totalDistanceMeters < 1000) return '${totalDistanceMeters.round()} m';
-    return '${(totalDistanceMeters / 1000).toStringAsFixed(2)} km';
+    return units.distance(totalDistanceMeters);
   }
 
   String get _coordsLabel {
@@ -36,14 +38,9 @@ class RouteInfoPanel extends StatelessWidget {
         '${lastPoint!.longitude.toStringAsFixed(6)}';
   }
 
-  String _formatArea(double m2) {
-    if (m2 >= 1000000) return '${(m2 / 1000000).toStringAsFixed(2)} km²';
-    if (m2 >= 10000) return '${(m2 / 10000).toStringAsFixed(2)} ha';
-    return '${m2.round()} m²';
-  }
-
   @override
   Widget build(BuildContext context) {
+    final units = Units.of(context);
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 32),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -115,7 +112,7 @@ class RouteInfoPanel extends StatelessWidget {
             _InfoRow(
               icon: Icons.straighten,
               label: 'Distance',
-              value: _distanceLabel,
+              value: _distanceLabel(units),
             ),
             const SizedBox(height: 6),
             _InfoRow(
@@ -128,7 +125,7 @@ class RouteInfoPanel extends StatelessWidget {
               _InfoRow(
                 icon: Icons.crop_free,
                 label: 'Area',
-                value: _formatArea(loopAreaM2!),
+                value: units.area(loopAreaM2!),
                 highlight: true,
               ),
             ],

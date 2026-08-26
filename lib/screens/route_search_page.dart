@@ -17,6 +17,8 @@ import '../services/place_search_service.dart';
 import '../services/route_repository.dart';
 import '../services/routing_service.dart';
 import '../utils/geometry_utils.dart';
+import '../utils/unit_formatter.dart';
+import '../widgets/units_scope.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
 import '../widgets/map/enhanced_map_gestures.dart';
@@ -349,13 +351,23 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   // ── Constraint resolution ─────────────────────────────────────────────────
 
   ({bool isConflict, bool isEmpty, double? targetKm}) _deriveTarget() {
+    // The distance and calorie fields are typed in whatever units the user
+    // has chosen, but everything downstream of here — `_paceMinPerKm`,
+    // `_calPerKm`, every generator's target, `_matchTolerance` — is metric.
+    // Converting at this single boundary is what keeps the search logic
+    // itself unit-agnostic.
+    final units = Units.current;
+
     final double? fromTime = double.tryParse(_timeCtrl.text.trim()) != null
         ? double.parse(_timeCtrl.text.trim()) / _paceMinPerKm
         : null;
-    final double? fromDist = double.tryParse(_distCtrl.text.trim());
-    final double? fromCal = double.tryParse(_calCtrl.text.trim()) != null
-        ? double.parse(_calCtrl.text.trim()) / _calPerKm
-        : null;
+    final double? typedDist = double.tryParse(_distCtrl.text.trim());
+    final double? fromDist =
+        typedDist == null ? null : units.majorToMeters(typedDist) / 1000.0;
+    final double? typedCal = double.tryParse(_calCtrl.text.trim());
+    final double? fromCal = typedCal == null
+        ? null
+        : units.displayToKcal(typedCal) / _calPerKm;
 
     final targets =
         [fromTime, fromDist, fromCal].whereType<double>().toList();
@@ -1610,7 +1622,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   /// favourited run's whole path — [waypoints] is just the polyline again
   /// rather than a separate, smaller point list.
   Future<void> _saveRoute(_FoundRoute route) async {
-    final name = '${route.distanceKm.toStringAsFixed(1)} km '
+    final name = '${Units.current.distanceMajor(route.distanceKm * 1000, decimals: 1)} '
         '${_isClosedCircuit ? 'loop' : 'route'}';
     try {
       await RouteRepository.instance.publishRoute(
@@ -2300,8 +2312,9 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
           _hasStopsEntered
               ? 'Optional — repeat your stop-shaped loop this many times.'
               : 'Optional — repeat the loop this many times. The target '
-                  'above is the total across all laps (e.g. 6 km over 3 '
-                  'laps looks for a ~2 km loop).',
+                  'above is the total across all laps (e.g. 6 '
+                  '${Units.of(context).distanceUnitLabel} over 3 laps looks '
+                  'for a ~2 ${Units.of(context).distanceUnitLabel} loop).',
           style: const TextStyle(fontSize: 11, color: Colors.grey),
         ),
         const SizedBox(height: 10),
@@ -2318,7 +2331,24 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
     );
   }
 
+  /// The two estimation constants, restated in the user's units.
+  ///
+  /// Always expressed *per distance* even when the user has chosen to see
+  /// speeds elsewhere — these describe how the target is derived, and
+  /// "70 kcal per km" has no speed-shaped equivalent to pair a "12 km/h"
+  /// with.
+  String _defaultsHint(UnitFormatter units) {
+    // One major unit of the user's distance, in km — the factor both
+    // per-km constants scale by.
+    final perMajor = units.majorToMeters(1) / 1000.0;
+    final pace = units.pace(_paceMinPerKm);
+    final energy = units.kcalToDisplay(_calPerKm * perMajor).round();
+    final d = units.distanceUnitLabel;
+    return 'Defaults: $pace min/$d · $energy ${units.energyUnitLabel}/$d';
+  }
+
   Widget _buildParametersSection() {
+    final units = Units.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2341,9 +2371,9 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
           ],
         ),
         const SizedBox(height: 2),
-        const Text(
-          'Defaults: 9 min/km · 70 kcal/km',
-          style: TextStyle(fontSize: 11, color: Colors.grey),
+        Text(
+          _defaultsHint(units),
+          style: const TextStyle(fontSize: 11, color: Colors.grey),
         ),
         const SizedBox(height: 10),
         Row(
@@ -2359,14 +2389,14 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
                 child: _ParamField(
                     controller: _distCtrl,
                     hint: 'Distance',
-                    unit: 'km',
+                    unit: units.distanceUnitLabel,
                     enabled: !_isResultsMode)),
             const SizedBox(width: 8),
             Expanded(
                 child: _ParamField(
                     controller: _calCtrl,
                     hint: 'Calories',
-                    unit: 'kcal',
+                    unit: units.energyUnitLabel,
                     enabled: !_isResultsMode)),
           ],
         ),
@@ -2879,6 +2909,7 @@ class _RouteDetailsSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final units = Units.of(context);
     return Container(
       decoration: const BoxDecoration(
         color: Colors.white,
@@ -2918,7 +2949,7 @@ class _RouteDetailsSheet extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               'Each lap: '
-              '${(route.distanceKm / route.laps).toStringAsFixed(2)} km',
+              '${units.distanceMajor(route.distanceKm * 1000 / route.laps)}',
               style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ],
@@ -2928,7 +2959,7 @@ class _RouteDetailsSheet extends StatelessWidget {
               _StatCard(
                 icon: Icons.straighten_rounded,
                 label: 'Distance',
-                value: '${route.distanceKm.toStringAsFixed(2)} km',
+                value: units.distanceMajor(route.distanceKm * 1000),
               ),
               const SizedBox(width: 10),
               _StatCard(
@@ -2940,7 +2971,7 @@ class _RouteDetailsSheet extends StatelessWidget {
               _StatCard(
                 icon: Icons.local_fire_department_outlined,
                 label: 'Calories',
-                value: '${route.estimatedCalories.round()} kcal',
+                value: units.energy(route.estimatedCalories),
               ),
             ],
           ),

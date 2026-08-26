@@ -122,8 +122,9 @@ Keep this list current — update it whenever a feature moves between these buck
   region with no network connectivity (or one that's genuinely rate-limited for a sustained
   stretch) to fall back on will still end up with straight-line hops. All area displays
   app-wide (loop-closure banners, claimed-area details, run results)
-  show km² consistently, with decimal precision scaling by magnitude
-  (`GeometryUtils.formatAreaKm2`) rather than switching between m²/ha/km² by size.
+  show one consistent unit, with decimal precision scaling by magnitude
+  (`UnitFormatter.area` — was `GeometryUtils.formatAreaKm2` before units became
+  user-selectable) rather than switching between m²/ha/km² by size.
 - **Pin drag-to-edit** on the route-creation map: long-pressing any waypoint pin (pin-dropped
   or drawn — see above) turns it yellow and lets it be dragged to a new spot; releasing
   re-routes only the segment(s) touching that pin (`RouteCreatePage._movePin`), reusing the
@@ -1018,7 +1019,7 @@ Keep this list current — update it whenever a feature moves between these buck
     what produced both bugs above; fetching the real session directly is both simpler and
     correct. Shows the runner's username, a preview of the run's whole path (only when
     `path.length >= 2`), and distance/time/avg speed/area-conquered stat pills
-    (`GeometryUtils.formatAreaKm2` for the area, which now reads `RunSession.totalAreaM2` —
+    (`UnitFormatter.area` for the area, which now reads `RunSession.totalAreaM2` —
     the session's total claimed area across every loop it closed, not one loop's area). The
     map preview (`_RunPathPreviewMap`) starts locked/small (`InteractiveFlag.none`, 200px)
     and, via a round toggle button in its corner (same `Material`/`InkWell` circular-white
@@ -1073,6 +1074,63 @@ Keep this list current — update it whenever a feature moves between these buck
   risk the run's continuous tracking stream recording breadcrumbs before that starting
   point exists — it only routes permission-checking through `LocationService` (so it's
   usually pre-granted) and keeps its own dedicated stream for the actual live recording.
+- **User-selectable units, applied app-wide** — Settings -> Map & Units
+  ([lib/screens/map_units_page.dart](lib/screens/map_units_page.dart)) offers seven two-way choices: distance
+  (km/mi), area (km2/mi2), pace-or-speed, elevation (m/ft), energy (kcal/kJ), clock
+  (24h/12h) and week start (Mon/Sun), each a `RadioGroup` section, plus a live
+  sample-run preview card. The page shell (name, title, `RadioGroup` idiom, its
+  "Map Theme — coming soon" tile) came from the settings work on `main` and was kept;
+  only its original standalone `useMiles` `SharedPreferences` bool — which nothing read —
+  was replaced by the `UnitPreferences` wiring below. Three pieces:
+  - **[lib/services/unit_preferences.dart](lib/services/unit_preferences.dart)** (`UnitPreferences.instance`, an app-lifetime
+    singleton `ChangeNotifier`, same shape as `LocationService.instance`) owns the choices.
+    **`SharedPreferences` is the source of truth, not Firestore**: every measurement the app
+    renders goes through this, so a read has to be synchronous and has to keep working
+    offline mid-run — a Firestore read per launch would also violate this project's
+    avoid-unnecessary-reads rule. `warmUp()` is awaited in `main()` before `runApp` so the
+    first frame is already correct rather than flashing metric. Firestore
+    (`profiles/{uid}.unitPreferences`, a map, merged the same way `pushPreferences` is —
+    **no `firestore.rules` change needed**, the existing `profiles` update rule already
+    permits it) is a background one-way mirror purely so the choice follows the user to a
+    new device. `syncFromCloud()` (called once from `HomeScreen.initState`) only *adopts*
+    the cloud copy on a device where the user has never picked anything themselves
+    (`isConfigured`); otherwise it pushes local up, so a stale cloud copy can never undo a
+    deliberate local choice. Enum values persist by `name`, never `index`, so reordering an
+    enum can't reinterpret saved choices. **The default is metric on every device** and is
+    deliberately *not* guessed from the platform locale: a first version did guess
+    (US/GB/etc. -> miles) and a first launch landing on imperial for someone who never
+    asked for it was reported as far more jarring than metric is for a miles user, who can
+    flip one switch. First launch does not mark itself configured, so `syncFromCloud` can
+    still adopt a cloud copy.
+  - **[lib/utils/unit_formatter.dart](lib/utils/unit_formatter.dart)** (`UnitFormatter`) is a pure value object holding
+    just the seven enums — no context, no singleton reach-through — so the whole conversion
+    layer is testable without a device (`test/unit_formatter_test.dart`, 20 tests), the same
+    way `GeometryUtils` is. **The app stays metric end to end**: every stored value,
+    Firestore field and geometry calculation is still metres/m2/min-per-km/kcal, and
+    conversion happens only at display time — which is why nothing server-side (XP, areas,
+    territory) knows this setting exists. It also carries the *inverse* conversions
+    (`majorToMeters`, `displayToKcal`) used on the way *in*, at the one boundary where the
+    user types a measurement: `RouteSearchPage._deriveTarget`, which converts a typed
+    distance/calorie target back to metric so the entire search/candidate/tolerance logic
+    below it stays unit-agnostic.
+  - **[lib/widgets/units_scope.dart](lib/widgets/units_scope.dart)** (`UnitsScope`, an `InheritedNotifier`, mounted above
+    `MaterialApp` in `main.dart`; `Units.of(context)` reactive, `Units.current` for
+    callbacks/non-build code). **It has to be an inherited widget, not a `ListenableBuilder`
+    around `MaterialApp`** — rebuilding `MaterialApp` does *not* rebuild routes already
+    pushed on top of it (`_ModalScopeState` caches each route's page widget), so a user
+    flipping km->mi in settings would return to a stale home screen. Inherited-widget
+    dependency notification marks dependent *elements* dirty directly, straight through the
+    route boundary.
+  Two knock-on changes worth knowing: `GeometryUtils.formatAreaKm2` was **removed** (every
+  caller now uses `UnitFormatter.area`, which keeps its exact always-major-unit,
+  precision-scales-by-magnitude behaviour — never switching to ha/acres by size, for the
+  same comparability reason); and `HomeScreen`'s monthly stat cards now store **raw metric
+  numbers** (`_MonthlyStatsRaw`) and are formatted during `build` rather than at fetch time,
+  since pre-formatting them froze whatever units were active when the Firestore query ran
+  and refreshing them would have meant re-querying. `route_info_panel.dart`'s own private
+  m2/ha/km2 area ladder is gone too, which incidentally fixes it disagreeing with every
+  other area display in the app. One cosmetic change: `session_detail_screen.dart`'s pace
+  now renders `5:30` like the rest of the app rather than its own `5'30"`.
 
 **Designed in Firestore rules but NOT yet built in the Flutter app** (i.e. the security
 rules anticipate these collections — `runningSessions`, `claimedAreas`, `userStats`,

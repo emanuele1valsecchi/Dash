@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
+
+import '../widgets/units_scope.dart';
 import 'leaderboard_screen.dart';
 //import 'home_screen.dart';
 import 'explore_page.dart';
@@ -198,7 +200,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Widget _buildNotificationTile(NotificationItem item) {
-    final dateStr = DateFormat("d MMMM yyyy - HH:mm").format(item.createdAt);
+    // The date half stays locale-formatted; only the clock half follows the
+    // units setting, which `DateFormat`'s own `jm` pattern could not do —
+    // it reads the device locale, not the user's choice.
+    final dateStr = '${DateFormat("d MMMM yyyy").format(item.createdAt)}'
+        ' - ${Units.of(context).time(item.createdAt)}';
 
     return InkWell(
       onTap: () {

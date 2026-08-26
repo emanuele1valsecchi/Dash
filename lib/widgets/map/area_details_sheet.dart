@@ -5,7 +5,7 @@ import 'package:flutter_map/flutter_map.dart';
 import '../../screens/run_session_detail_page.dart';
 import '../../services/claimed_area_repository.dart';
 import '../../services/profile_service.dart';
-import '../../utils/geometry_utils.dart';
+import '../units_scope.dart';
 import 'claimed_areas_layer.dart';
 
 /// Opens [AreaDetailsSheet] for the area with the given id, if it's still in
@@ -160,7 +160,7 @@ class _AreaDetailsSheetState extends State<AreaDetailsSheet> {
               _Stat(
                 icon: Icons.square_foot_outlined,
                 label: 'Total area',
-                value: GeometryUtils.formatAreaKm2(area.totalAreaM2),
+                value: Units.of(context).area(area.totalAreaM2),
               ),
               const SizedBox(height: 20),
               Text(
@@ -275,9 +275,13 @@ class _ContributionRow extends StatelessWidget {
                 ),
                 const SizedBox(width: 12),
                 SizedBox(
-                  width: 62,
+                  // Wide enough for the longest rate string this can render
+                  // ("10.4 km/h"), so switching pace↔speed never wraps.
+                  width: 72,
                   child: Text(
-                    avgSpeedKmh != null ? '${avgSpeedKmh.toStringAsFixed(1)} km/h' : '—',
+                    avgSpeedKmh != null
+                        ? Units.of(context).rateFromSpeedKmh(avgSpeedKmh)
+                        : '—',
                     textAlign: TextAlign.right,
                     style: const TextStyle(fontSize: 13, color: Color(0xFF5E655C)),
                   ),
