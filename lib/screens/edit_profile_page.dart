@@ -73,9 +73,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
                   children: [
                     ProfilePictureAvatar(
                       aspectRatio: 0.2,
-                      // imageFile removed: the avatar now always shows
-                      // the current remote URL, updated only after a
-                      // successful upload. See _pickAndUploadImage().
                       imageFile: null,
                       imageUrl: _existingImageUrl,
                       initialNameSurname: getFirstLetters(

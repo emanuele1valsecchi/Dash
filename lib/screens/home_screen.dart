@@ -386,12 +386,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       for (var id in selectedUserIds) {
         final profileDoc = await db.collection('profiles').doc(id).get();
-        final storedField = profileDoc.data()?['profileImageUrl'] as String? ?? '';
-
-        // Resolve a fresh, valid download URL instead of trusting a
-        // possibly-stale one. Falls back to '' on any failure, which
-        // _MapPin renders as a plain person icon.
-        final resolvedUrl = await _storageService.getDownloadUrlSafe(storedField) ?? '';
+        final profileImageUrl = profileDoc.data()?['profileImageUrl'] as String? ?? '';
 
         final pts = pointsMap[id] ?? 0;
         double normalized = pts / maxPointsInSelection;
@@ -399,7 +394,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
         pins.add(PreviewPin(
           userId: id,
-          profileImageUrl: resolvedUrl,
+          profileImageUrl: profileImageUrl,
           normalizedPosition: normalized.clamp(0.0, 1.0),
           isCurrentUser: id == user.uid,
         ));

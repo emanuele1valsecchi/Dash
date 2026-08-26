@@ -1,3 +1,4 @@
+import 'package:dash/extensions/responsive_border_radius.dart';
 import 'package:dash/widgets/dash_gesture_card_container.dart';
 import 'package:flutter/material.dart';
 import '../../models/home_models.dart';
@@ -24,14 +25,18 @@ class LeaderboardPreviewCard extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                const Icon(Icons.location_on_rounded, size: 14, color: Color(0xFF8A9389)),
-                const SizedBox(width: 4),
+                Icon(
+                  Icons.location_on_rounded, 
+                  size: 14, 
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+                SizedBox(width: 4),
                 Text(
                   data.city.isNotEmpty ? data.city : 'Unknown territory',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: Color(0xFF8A9389),
+                    color: Theme.of(context).colorScheme.outline,
                   ),
                 ),
               ],
@@ -52,16 +57,16 @@ class LeaderboardPreviewCard extends StatelessWidget {
                         height: 8,
                         width: maxWidth,
                         decoration: BoxDecoration(
-                          color: const Color(0xFFD6E5EB),
-                          borderRadius: BorderRadius.circular(4),
+                          color: Theme.of(context).colorScheme.tertiaryContainer,
+                          borderRadius: context.radiusXl,
                         ),
                       ),
                       Container(
                         height: 8,
                         width: (trackWidth * progressPercent) + 21,
                         decoration: BoxDecoration(
-                          color: const Color(0xFF3B5E62),
-                          borderRadius: BorderRadius.circular(4),
+                          color: Theme.of(context).colorScheme.tertiary,
+                          borderRadius: context.radiusXl,
                         ),
                       ),
                       ...data.pins.map((pin) {
