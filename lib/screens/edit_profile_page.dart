@@ -86,7 +86,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                         child: SizedBox(
                           height: 16,
                           width: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
+                          child: CircularProgressIndicator(),
                         ),
                       ),
                     _changeProfilePictureButton(context),

@@ -38,10 +38,10 @@ class _SplashScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: Color(0xFFF3F5EE),
+    return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: Center(
-        child: CircularProgressIndicator(color: Color(0xFF4A8C52)),
+        child: CircularProgressIndicator(),
       ),
     );
   }
@@ -55,7 +55,7 @@ class DashApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Dash',
-      theme: _buildAppTheme(),
+      theme: _buildAppTheme(context),
       home: StreamBuilder<User?>(
         stream: FirebaseAuth.instance.authStateChanges(),
         builder: (context, snapshot) {
@@ -71,7 +71,7 @@ class DashApp extends StatelessWidget {
     );
   }
 
-  ThemeData _buildAppTheme(){
+  ThemeData _buildAppTheme(BuildContext context){
     const ResponsiveSpacing responsiveSpacing = ResponsiveSpacing();
     const ResponsiveBorderRadius responsiveBorderRadius = ResponsiveBorderRadius();
     
@@ -103,6 +103,11 @@ class DashApp extends StatelessWidget {
               top: Radius.circular(responsiveBorderRadius.xl),
             ),
           ),
+        ),
+
+        progressIndicatorTheme: ProgressIndicatorThemeData(
+          color: Theme.of(context).colorScheme.tertiary,           
+          circularTrackColor: Theme.of(context).colorScheme.surfaceContainer,
         ),
       );
   }

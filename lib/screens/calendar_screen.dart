@@ -1,3 +1,5 @@
+import 'package:dash/extensions/responsive_spacing.dart';
+import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -93,37 +95,21 @@ class _CalendarScreenState extends State<CalendarScreen> {
     final selectedDayActivities = _selectedDay != null ? _getEventsForDay(_selectedDay!) : [];
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF3F5EE),
-      // L'AppBar normale viene rimossa da qui e inserita come SliverAppBar nel NestedScrollView
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      appBar: DashNavigationTopBar(
+        title: "Calendar"
+      ),
       body: _isLoading 
-        ? const Center(child: CircularProgressIndicator(color: Color(0xFF3B5E62)))
+        ? Center(
+          child: 
+            CircularProgressIndicator()
+          )
         : NestedScrollView(
             headerSliverBuilder: (context, innerBoxIsScrolled) {
               return [
-                // L'AppBar che resta fissa (pinned: true) mentre il resto scorre sotto
-                SliverAppBar(
-                  backgroundColor: const Color(0xFFF3F5EE),
-                  surfaceTintColor: Colors.transparent, // Previene i cambi di colore in Material 3
-                  elevation: 0,
-                  pinned: true,
-                  centerTitle: true,
-                  leading: IconButton(
-                    icon: const Icon(Icons.arrow_back, color: Color(0xFF495348)),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                  title: const Text(
-                    'Calendar',
-                    style: TextStyle(
-                      color: Color(0xFF4A554A),
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                // Il Calendario che scompare scorrendo verso l'alto
                 SliverToBoxAdapter(
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                    padding: EdgeInsets.symmetric(horizontal: ResponsiveSpacing().md),
                     child: TableCalendar(
                       firstDay: DateTime.utc(2020, 1, 1),
                       lastDay: DateTime.utc(2030, 12, 31),
@@ -139,41 +125,58 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       },
                       eventLoader: _getEventsForDay,
                       startingDayOfWeek: StartingDayOfWeek.monday,
-                      headerStyle: const HeaderStyle(
+                      headerStyle: HeaderStyle(
                         formatButtonVisible: false,
                         titleCentered: true,
-                        leftChevronIcon: Icon(Icons.chevron_left, color: Color(0xFF495348)),
-                        rightChevronIcon: Icon(Icons.chevron_right, color: Color(0xFF495348)),
-                        titleTextStyle: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w500,
-                          color: Color(0xFF2A3028),
+                        leftChevronIcon: 
+                          Icon(
+                            Icons.chevron_left, 
+                            color: Theme.of(context).colorScheme.secondary
+                          ),
+                        rightChevronIcon: 
+                          Icon(
+                            Icons.chevron_right, 
+                            color: Theme.of(context).colorScheme.secondary
+                          ),
+                        titleTextStyle: Theme.of(context).textTheme.titleLarge!.copyWith(
+                          color: Theme.of(context).colorScheme.secondary,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
-                      daysOfWeekStyle: const DaysOfWeekStyle(
-                        weekdayStyle: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF495348)),
-                        weekendStyle: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF495348)),
+                      daysOfWeekStyle: DaysOfWeekStyle(
+                        weekdayStyle: Theme.of(context).textTheme.bodyLarge!.copyWith(
+                          color: Theme.of(context).colorScheme.secondary,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        weekendStyle: Theme.of(context).textTheme.bodyLarge!.copyWith(
+                          color: Theme.of(context).colorScheme.secondary,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       calendarStyle: CalendarStyle(
                         outsideDaysVisible: true,
-                        outsideTextStyle: const TextStyle(color: Color(0xFFD3D5CE)),
-                        defaultTextStyle: const TextStyle(color: Color(0xFF2A3028), fontWeight: FontWeight.w500),
-                        weekendTextStyle: const TextStyle(color: Color(0xFF2A3028), fontWeight: FontWeight.w500),
-                        selectedDecoration: const BoxDecoration(
-                          color: Color(0xFF3B5E62),
+                        outsideTextStyle: Theme.of(context).textTheme.bodyMedium!.copyWith(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                        defaultTextStyle: Theme.of(context).textTheme.bodyMedium!,
+                        weekendTextStyle: Theme.of(context).textTheme.bodyMedium!,
+                        selectedDecoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.tertiary,
                           shape: BoxShape.circle,
                         ),
                         todayDecoration: BoxDecoration(
-                          color: const Color(0xFF3B5E62).withValues(alpha: 0.3),
+                          color: Theme.of(context).colorScheme.outlineVariant,
                           shape: BoxShape.circle,
                         ),
-                        todayTextStyle: const TextStyle(color: Color(0xFF2A3028), fontWeight: FontWeight.bold),
-                        markerDecoration: const BoxDecoration(
-                          color: Color(0xFF3B5E62),
+                        todayTextStyle: Theme.of(context).textTheme.bodyMedium!.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                        markerDecoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.tertiary,
                           shape: BoxShape.circle,
                         ),
                         markersMaxCount: 1,
-                        markerMargin: const EdgeInsets.only(top: 6.0),
+                        markerMargin: EdgeInsets.only(top: ResponsiveSpacing().sm),
                       ),
                     ),
                   ),
@@ -184,24 +187,19 @@ class _CalendarScreenState extends State<CalendarScreen> {
             // Il body è la parte bianca inferiore che sale a coprire lo schermo
             body: Container(
               width: double.infinity,
-              decoration: const BoxDecoration(
-                color: Color(0xFFFAFBF7),
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(30),
-                  topRight: Radius.circular(30),
-                ),
+              decoration: BoxDecoration(
+                color: Theme.of(context).scaffoldBackgroundColor,
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(24, 24, 24, 16),
+                  Padding(
+                    padding: context.paddingMd,
                     child: Text(
                       'Your activities',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF2A3028),
+                      style: Theme.of(context).textTheme.titleLarge!.copyWith(
+                        color: Theme.of(context).colorScheme.secondary,
+                        fontWeight: FontWeight.bold
                       ),
                     ),
                   ),
@@ -211,17 +209,23 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.directions_run_rounded, size: 48, color: Colors.grey[300]),
+                                Icon(
+                                  Icons.directions_run_rounded, 
+                                  size: 48, 
+                                  color: Theme.of(context).colorScheme.outlineVariant
+                                ),
                                 const SizedBox(height: 12),
                                 Text(
                                   'No activities on this day',
-                                  style: TextStyle(color: Colors.grey[500], fontSize: 16),
+                                  style: Theme.of(context).textTheme.bodyLarge!.copyWith(
+                                    color: Theme.of(context).colorScheme.outlineVariant
+                                  )
                                 ),
                               ],
                             ),
                           )
                         : ListView.builder(
-                            padding: const EdgeInsets.symmetric(horizontal: 20),
+                            padding: EdgeInsets.symmetric(horizontal: ResponsiveSpacing().md),
                             itemCount: selectedDayActivities.length,
                             itemBuilder: (context, index) {
                               final session = selectedDayActivities[index];
@@ -234,12 +238,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
                               final routePolyline = _extractPolyline(session);
 
                               return Padding(
-                                padding: const EdgeInsets.only(bottom: 16.0),
+                                padding: EdgeInsets.only(bottom: ResponsiveSpacing().md),
                                 child: GestureDetector(
-                                  // Questo forza la hitbox a coprire l'intero perimetro della card
                                   behavior: HitTestBehavior.opaque, 
                                   onTap: () {
-                                    // Sostituiamo MaterialPageRoute con PageRouteBuilder per l'animazione custom
                                     Navigator.push(
                                       context,
                                       PageRouteBuilder(
@@ -248,7 +250,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                           routePolyline: routePolyline,
                                         ),
                                         transitionsBuilder: (context, animation, secondaryAnimation, child) {
-                                          // Impostiamo l'inizio dell'animazione (dal basso verso l'alto)
                                           const begin = Offset(0.0, 1.0);
                                           const end = Offset.zero;
                                           const curve = Curves.easeInOutQuart;
