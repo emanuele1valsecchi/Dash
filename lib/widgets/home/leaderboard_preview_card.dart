@@ -1,3 +1,5 @@
+import 'package:dash/extensions/responsive_border_radius.dart';
+import 'package:dash/widgets/dash_gesture_card_container.dart';
 import 'package:flutter/material.dart';
 import '../../models/home_models.dart';
 
@@ -16,29 +18,25 @@ class LeaderboardPreviewCard extends StatelessWidget {
     final currentUserPin = data.pins.where((p) => p.isCurrentUser).firstOrNull;
     final progressPercent = currentUserPin?.normalizedPosition ?? 0.0;
 
-    return GestureDetector(
+    return DashGestureCardContainer(
       onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-        decoration: BoxDecoration(
-          color: const Color.fromARGB(232, 235, 238, 233),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: const Color(0xFFE6E8E0), width: 1.5),
-        ),
-        child: Column(
+      child: Column(
           children: [
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                const Icon(Icons.location_on_rounded, size: 14, color: Color(0xFF8A9389)),
-                const SizedBox(width: 4),
+                Icon(
+                  Icons.location_on_rounded, 
+                  size: 14, 
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+                SizedBox(width: 4),
                 Text(
                   data.city.isNotEmpty ? data.city : 'Unknown territory',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: Color(0xFF8A9389),
+                    color: Theme.of(context).colorScheme.outline,
                   ),
                 ),
               ],
@@ -59,16 +57,16 @@ class LeaderboardPreviewCard extends StatelessWidget {
                         height: 8,
                         width: maxWidth,
                         decoration: BoxDecoration(
-                          color: const Color(0xFFD6E5EB),
-                          borderRadius: BorderRadius.circular(4),
+                          color: Theme.of(context).colorScheme.tertiaryContainer,
+                          borderRadius: context.radiusXl,
                         ),
                       ),
                       Container(
                         height: 8,
                         width: (trackWidth * progressPercent) + 21,
                         decoration: BoxDecoration(
-                          color: const Color(0xFF3B5E62),
-                          borderRadius: BorderRadius.circular(4),
+                          color: Theme.of(context).colorScheme.tertiary,
+                          borderRadius: context.radiusXl,
                         ),
                       ),
                       ...data.pins.map((pin) {
@@ -99,8 +97,7 @@ class LeaderboardPreviewCard extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildStatColumn(String label, String value) {

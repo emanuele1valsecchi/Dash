@@ -1,4 +1,4 @@
-import 'package:dash/utils/dash_snackbar.dart';
+import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:dash/widgets/dash_text_form_field.dart';
 import 'package:dash/widgets/profile/profile_picture_avatar.dart';
@@ -73,9 +73,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
                   children: [
                     ProfilePictureAvatar(
                       aspectRatio: 0.2,
-                      // imageFile removed: the avatar now always shows
-                      // the current remote URL, updated only after a
-                      // successful upload. See _pickAndUploadImage().
                       imageFile: null,
                       imageUrl: _existingImageUrl,
                       initialNameSurname: getFirstLetters(

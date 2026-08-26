@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:dash/utils/dash_snackbar.dart';
+import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';

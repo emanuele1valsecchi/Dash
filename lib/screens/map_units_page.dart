@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
 import '../services/unit_preferences.dart';
-import '../utils/dash_snackbar.dart';
+import '../extensions/dash_snackbar.dart';
 import '../utils/unit_formatter.dart';
 import '../widgets/units_scope.dart';
 

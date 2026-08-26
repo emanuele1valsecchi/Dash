@@ -1,8 +1,12 @@
+import 'package:dash/extensions/responsive_border_radius.dart';
+import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+
+import 'package:firebase_app_check/firebase_app_check.dart';
 
 import 'screens/home_screen.dart';
 import 'screens/onboarding_screen.dart';
@@ -13,6 +17,11 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Firebase.initializeApp();
+
+  await FirebaseAppCheck.instance.activate(
+    providerAndroid: const AndroidDebugProvider(),
+  );
+
   await GoogleSignIn.instance.initialize();
 
   // Read the stored unit preferences before the first frame, so the app never
@@ -61,10 +70,7 @@ class DashApp extends StatelessWidget {
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
         title: 'Dash',
-        theme: ThemeData(
-          useMaterial3: true,
-          colorScheme: ColorScheme.fromSeed(seedColor: Color(0xFF37693D)),
-        ),
+        theme: _buildAppTheme(),
         home: StreamBuilder<User?>(
           stream: FirebaseAuth.instance.authStateChanges(),
           builder: (context, snapshot) {
@@ -79,5 +85,41 @@ class DashApp extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  ThemeData _buildAppTheme(){
+    const ResponsiveSpacing responsiveSpacing = ResponsiveSpacing();
+    const ResponsiveBorderRadius responsiveBorderRadius = ResponsiveBorderRadius();
+    
+    return ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Color(0xFF37693D),
+        ),
+        extensions: const [
+          responsiveSpacing,
+          responsiveBorderRadius,
+        ],
+        
+        cardTheme: CardThemeData(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(responsiveBorderRadius.md), 
+          ),
+        ),
+        
+        dialogTheme: DialogThemeData(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(responsiveBorderRadius.lg),
+          ),
+        ),
+        
+        bottomSheetTheme: BottomSheetThemeData(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(
+              top: Radius.circular(responsiveBorderRadius.xl),
+            ),
+          ),
+        ),
+      );
   }
 }
