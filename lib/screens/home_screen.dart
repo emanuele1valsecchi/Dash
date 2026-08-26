@@ -4,7 +4,7 @@ import 'dart:ui';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/screens/calendar_screen.dart';
 import 'package:dash/screens/profile_page.dart';
-import 'package:dash/utils/dash_snackbar.dart';
+import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';

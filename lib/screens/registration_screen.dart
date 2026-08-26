@@ -1,4 +1,4 @@
-import 'package:dash/utils/dash_snackbar.dart';
+import 'package:dash/extensions/dash_snackbar.dart';
 
 import 'welcome_page.dart';
 import 'package:flutter/material.dart';

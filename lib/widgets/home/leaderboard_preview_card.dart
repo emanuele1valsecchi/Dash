@@ -1,3 +1,4 @@
+import 'package:dash/widgets/dash_gesture_card_container.dart';
 import 'package:flutter/material.dart';
 import '../../models/home_models.dart';
 
@@ -16,17 +17,9 @@ class LeaderboardPreviewCard extends StatelessWidget {
     final currentUserPin = data.pins.where((p) => p.isCurrentUser).firstOrNull;
     final progressPercent = currentUserPin?.normalizedPosition ?? 0.0;
 
-    return GestureDetector(
+    return DashGestureCardContainer(
       onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-        decoration: BoxDecoration(
-          color: const Color.fromARGB(232, 235, 238, 233),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: const Color(0xFFE6E8E0), width: 1.5),
-        ),
-        child: Column(
+      child: Column(
           children: [
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
@@ -99,8 +92,7 @@ class LeaderboardPreviewCard extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildStatColumn(String label, String value) {

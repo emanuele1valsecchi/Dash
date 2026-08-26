@@ -1,4 +1,4 @@
-import 'package:dash/utils/dash_snackbar.dart';
+import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:dash/widgets/dash_text_form_field.dart';
 import 'package:dash/widgets/profile/profile_picture_avatar.dart';
