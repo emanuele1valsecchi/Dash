@@ -127,6 +127,17 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     itemCount: _leaderboards.length,
                     onReorder: _onReorder,
+
+                    proxyDecorator: (Widget child, int index, Animation<double> animation) {
+                      return Material(
+                        elevation: 10, 
+                        color: Colors.transparent, 
+                        shadowColor: Colors.black45,
+                        borderRadius: BorderRadius.circular(16), 
+                        child: child,
+                      );
+                    },
+
                     itemBuilder: (context, index) {
                       final config = _leaderboards[index];
                       // --- NEW: Check if this is the Global Leaderboard ---
