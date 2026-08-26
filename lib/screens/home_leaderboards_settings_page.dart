@@ -126,7 +126,7 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
                   child: ReorderableListView.builder(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     itemCount: _leaderboards.length,
-                    onReorder: _onReorder,
+                    onReorderItem: _onReorder,
 
                     proxyDecorator: (Widget child, int index, Animation<double> animation) {
                       return Material(
@@ -174,7 +174,7 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
                               Switch(
                                 // Force true if it's Global
                                 value: isGlobal ? true : config.isVisible,
-                                activeColor: const Color(0xFF4A8C52),
+                                activeThumbColor: const Color(0xFF4A8C52),
                                 // --- NEW: Disable the switch if it's Global ---
                                 onChanged: isGlobal ? null : (value) {
                                   setState(() => config.isVisible = value);
