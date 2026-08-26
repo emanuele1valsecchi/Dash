@@ -6,6 +6,7 @@ import 'package:material_symbols_icons/symbols.dart';
 import 'login_page.dart';
 import 'legal_page.dart';
 import 'notification_settings_page.dart';
+import 'home_leaderboards_settings_page.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -124,6 +125,19 @@ class SettingsPage extends StatelessWidget {
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const MapUnitsPage()),
+              );
+            },
+          ),
+          _buildSettingsTile(
+            context,
+            icon: Symbols.dashboard_customize_rounded,
+            title: 'Home Leaderboards',
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const HomeLeaderboardsSettingsPage(),
+                ),
               );
             },
           ),
