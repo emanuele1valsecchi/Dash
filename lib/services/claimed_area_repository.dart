@@ -160,36 +160,20 @@ class ClaimedAreaRepository {
 
   final _db = FirebaseFirestore.instance;
 
-  final Map<String, ClaimedArea> _cache = {};
-  DateTime? _newestSeen;
-
-  /// Returns every currently-claimed area from every user.
-  Future<List<ClaimedArea>> fetchAllAreas() async {
-    Query<Map<String, dynamic>> query = _db.collection('claimedAreas');
-    final newestSeen = _newestSeen;
-    if (newestSeen != null) {
-      query = query.where(
-        'updatedAt',
-        isGreaterThan: Timestamp.fromDate(newestSeen),
-      );
-    }
-
-    final snap = await query.get();
-    for (final doc in snap.docs) {
-      final data = doc.data();
-      if (data['updatedAt'] != null) {
-        final updatedAt = (data['updatedAt'] as Timestamp).toDate();
-        if (_newestSeen == null || updatedAt.isAfter(_newestSeen!)) {
-          _newestSeen = updatedAt;
-        }
+  /// Returns a live stream of every currently-claimed area from every user.
+  Stream<List<ClaimedArea>> areasStream() {
+    return _db.collection('claimedAreas').snapshots().map((snap) {
+      final areas = <ClaimedArea>[];
+      
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        // Ignore logically deleted areas just like the original logic
+        if (data['deleted'] == true) continue;
+        
+        areas.add(ClaimedArea.fromDoc(doc));
       }
-
-      if (data['deleted'] == true) {
-        _cache.remove(doc.id);
-        continue;
-      }
-      _cache[doc.id] = ClaimedArea.fromDoc(doc);
-    }
-    return List.unmodifiable(_cache.values);
+      
+      return areas;
+    });
   }
 }

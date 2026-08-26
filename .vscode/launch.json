@@ -9,6 +9,7 @@
             "name": "dash",
             "request": "launch",
             "type": "dart",
+            "program": "lib/main.dart",
             "toolArgs": ["--dart-define-from-file=config/secrets.local.json"]
         },
         {

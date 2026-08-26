@@ -71,6 +71,7 @@ class RouteSearchPage extends StatefulWidget {
 }
 
 class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderStateMixin {
+  StreamSubscription<List<ClaimedArea>>? _areasSub;
   // ── Map ───────────────────────────────────────────────────────────────────
   final MapController _mapController = MapController();
   LatLng? _currentPosition;
@@ -209,17 +210,19 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   void initState() {
     super.initState();
     _initLocation();
-    _loadClaimedAreas();
+    _startAreasStream();
   }
 
-  Future<void> _loadClaimedAreas() async {
-    final areas = await ClaimedAreaRepository.instance.fetchAllAreas();
-    if (!mounted) return;
-    setState(() => _allAreas = areas);
+  void _startAreasStream() {
+    _areasSub = ClaimedAreaRepository.instance.areasStream().listen((areas) {
+      if (!mounted) return;
+      setState(() => _allAreas = areas);
+    });
   }
 
   @override
   void dispose() {
+    _areasSub?.cancel();
     _positionSub?.cancel();
     _mapController.dispose();
     _sheetController.dispose();

@@ -66,6 +66,8 @@ class RouteCreatePage extends StatefulWidget {
 
 class _RouteCreatePageState extends State<RouteCreatePage>
     with TickerProviderStateMixin {
+  StreamSubscription<List<ClaimedArea>>? _areasSub;
+  
   // ── Map ───────────────────────────────────────────────────────────────────
   final MapController _mapController = MapController();
   LatLng? _currentPosition;
@@ -275,16 +277,17 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   void initState() {
     super.initState();
     _initLocation();
-    _loadClaimedAreas();
+    _startAreasStream();
     _trackNameFocusNode.addListener(_onTrackNameFocusChanged);
     _searchCtrl.addListener(_onSearchChanged);
     _searchFocusNode.addListener(_onSearchFocusChanged);
   }
 
-  Future<void> _loadClaimedAreas() async {
-    final areas = await ClaimedAreaRepository.instance.fetchAllAreas();
-    if (!mounted) return;
-    setState(() => _allAreas = areas);
+  void _startAreasStream() {
+    _areasSub = ClaimedAreaRepository.instance.areasStream().listen((areas) {
+      if (!mounted) return;
+      setState(() => _allAreas = areas);
+    });
   }
 
   void _onTrackNameFocusChanged() {
@@ -293,6 +296,7 @@ class _RouteCreatePageState extends State<RouteCreatePage>
 
   @override
   void dispose() {
+    _areasSub?.cancel();
     _positionSub?.cancel();
     _mapController.dispose();
     _sheetController.dispose();

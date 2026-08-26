@@ -65,6 +65,8 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       _pageController.nextPage(duration: const Duration(milliseconds: 300), curve: Curves.ease);
       
     } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+
       if (e.code == 'email-already-in-use') {
         context.showErrorSnackBar("This email is already registered");
       } else {
@@ -237,10 +239,10 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                       );
                     }
                   } else {
-                    context.showErrorSnackBar("Email not verified yet. Check your inbox or spam folder!");
+                    if (mounted) context.showErrorSnackBar("Email not verified yet. Check your inbox or spam folder!");
                   }
                 } catch (e) {
-                  context.showErrorSnackBar("Error while verifying the email");
+                  if (mounted) context.showErrorSnackBar("Error while verifying the email");
                 } finally {
                   if (mounted) setState(() => _isLoading = false);
                 }

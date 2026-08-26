@@ -74,31 +74,32 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final StorageService _storageService = StorageService();
 
-  late Future<List<HomeBadgeUiModel>> _badgesFuture;
-
   String _greetingName = '';
+
+  StreamSubscription<DocumentSnapshot>? _profileSub;
+  StreamSubscription<QuerySnapshot>? _sessionsSub;
+  StreamSubscription<DocumentSnapshot>? _statsSub;
+  StreamSubscription<QuerySnapshot>? _badgeProgressSub;
+  StreamSubscription<QuerySnapshot>? _globalSessionsSub;
+
+  List<HomeBadgeUiModel> _badges = [];
+  QuerySnapshot<Map<String, dynamic>>? _latestSessionsSnap;
+  DocumentSnapshot<Map<String, dynamic>>? _latestStatsSnap;
 
   @override
   void initState() {
     super.initState();
-    _badgesFuture = _loadBadges();
-    _loadNickname();
-    _loadMonthlyDistance();
-    _loadLeaderboardPreviews(); 
     LocationService.instance.start();
     WaterFountainService.instance.warmUp();
-    // First point the user is certainly signed in, so this is where the
-    // cloud copy of their unit preferences is reconciled with the local one
-    // (a no-op beyond a background push once they have set units on this
-    // device — see `UnitPreferences.syncFromCloud`).
     UnitPreferences.instance.syncFromCloud();
-
-    // App-wide, not owned by RunTrackingPage: the watch has to be able to
-    // start a run while the phone is sitting on this screen in a pocket.
     WearBridge.instance.start();
     _watchCommands = WearBridge.instance.commands.listen(_onWatchCommand);
-    _watchImports =
-        WearBridge.instance.importMessages.listen(_onWatchImportMessage);
+    _watchImports = WearBridge.instance.importMessages.listen(_onWatchImportMessage);
+
+    _startProfileStream();
+    _startMonthlyStatsStreams();
+    _startBadgesStream();
+    _startLeaderboardStream();
   }
 
   /// Commands the watch cannot action on its own. Only `start` is handled here;
@@ -143,58 +144,71 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _watchCommands?.cancel();
     _watchImports?.cancel();
+    _profileSub?.cancel();
+    _sessionsSub?.cancel();
+    _statsSub?.cancel();
+    _badgeProgressSub?.cancel();
+    _globalSessionsSub?.cancel();
     _pageController.dispose();
+
     super.dispose();
   }
 
-  Future<void> _loadNickname() async {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
+  void _startProfileStream() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
 
-      final doc = await FirebaseFirestore.instance
-          .collection('profiles')
-          .doc(user.uid)
-          .get();
-      if (!doc.exists) return;
-
-      final data = doc.data();
-      final nickname = data?['username'] ?? data?['nickname'] ?? data?['name'];
+    _profileSub = FirebaseFirestore.instance
+        .collection('profiles')
+        .doc(user.uid)
+        .snapshots()
+        .listen((doc) {
+      if (!mounted || !doc.exists) return;
+      final data = doc.data()!;
+      final nickname = data['username'] ?? data['nickname'] ?? data['name'];
       if (nickname is String && nickname.trim().isNotEmpty) {
-        if (!mounted) return;
-        setState(() {
-          _greetingName = nickname.trim();
-        });
+        setState(() => _greetingName = nickname.trim());
       }
-    } catch (_) {}
+    });
   }
 
-  Future<void> _loadMonthlyDistance() async {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
+  void _startMonthlyStatsStreams() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
 
-      final db = FirebaseFirestore.instance;
+    final sixtyDaysAgo = DateTime.now().subtract(const Duration(days: 60));
 
+    _sessionsSub = FirebaseFirestore.instance
+      .collection('runningSessions')
+      .where('userId', isEqualTo: user.uid)
+      .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(sixtyDaysAgo))
+      .snapshots()
+      .listen((snap) {
+        _latestSessionsSnap = snap;
+        _calculateMonthlyStats();
+      });
+
+    _statsSub = FirebaseFirestore.instance
+        .collection('userStats')
+        .doc(user.uid)
+        .snapshots()
+        .listen((snap) {
+      _latestStatsSnap = snap;
+      _calculateMonthlyStats(); 
+    });
+  }
+
+  void _calculateMonthlyStats() {
+    if (_latestSessionsSnap == null || _latestStatsSnap == null || !mounted) return;
+    
+    try{
       final now = DateTime.now();
       final thirtyDaysAgo = now.subtract(const Duration(days: 30));
-      final sixtyDaysAgo = now.subtract(const Duration(days: 60));
-
-      final results = await Future.wait([
-        db.collection('runningSessions')
-          .where('userId', isEqualTo: user.uid)
-          .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(sixtyDaysAgo))
-          .get(),
-        db.collection('userStats').doc(user.uid).get(),
-      ]);
-
-      final querySnapshot = results[0] as QuerySnapshot<Map<String, dynamic>>;
-      final statsDoc = results[1] as DocumentSnapshot<Map<String, dynamic>>;
 
       final currentMonthDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
       final previousMonthDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
 
-      for (var doc in querySnapshot.docs) {
+      for (var doc in _latestSessionsSnap!.docs) {
         final data = doc.data();
         final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
         if (createdAt == null) continue;
@@ -206,7 +220,7 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
 
-      final globalStats = statsDoc.data() ?? {};
+      final globalStats = _latestStatsSnap!.data() ?? {};
       final bestOverall = globalStats['bestOverall'] ?? {};
       
       final bestDistance = (bestOverall['maxDistanceMeters'] as num?)?.toDouble() ?? 0.0;
@@ -283,7 +297,7 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     } catch (e) {
-      debugPrint('Errore calcolo statistiche: $e');
+      debugPrint('Erro in statistic loading: $e');
       if (mounted) setState(() => _isLoadingKm = false);
     }
   }
@@ -368,171 +382,178 @@ class _HomeScreenState extends State<HomeScreen> {
     ];
   }
 
-  Future<void> _loadLeaderboardPreviews() async {
-  try {
+  void _startLeaderboardStream() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
+    
     final db = FirebaseFirestore.instance;
 
-    final followsSnap = await db.collection('follows').where('followerId', isEqualTo: user.uid).get();
-    final List<String> followingIds = followsSnap.docs.map((d) => d.data()['followingId'] as String).toList();
+    // Listen to the entire runningSessions collection in real-time
+    _globalSessionsSub = db.collection('runningSessions').snapshots().listen((sessionsSnap) async {
+      if (!mounted) return;
 
-    final sessionsSnap = await db.collection('runningSessions').get();
+      try {
+        // 1. Fetch your following list (we use .get() here to keep it simple, 
+        // but you could stream this too if you wanted instant friend updates)
+        final followsSnap = await db.collection('follows').where('followerId', isEqualTo: user.uid).get();
+        final List<String> followingIds = followsSnap.docs.map((d) => d.data()['followingId'] as String).toList();
 
-    Map<String, Map<String, int>> cityUserPoints = {};
-    Map<String, int> globalUserPoints = {};
-    Map<String, DateTime> currentUserCities = {};
+        Map<String, Map<String, int>> cityUserPoints = {};
+        Map<String, int> globalUserPoints = {};
+        Map<String, DateTime> currentUserCities = {};
 
-    for (var doc in sessionsSnap.docs) {
-      final data = doc.data();
-      final userId = data['userId'] as String?;
-      final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
-      final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
+        // 2. Tally up all the points from the streamed data
+        for (var doc in sessionsSnap.docs) {
+          final data = doc.data();
+          final userId = data['userId'] as String?;
+          final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
+          final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
 
-      final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
-      final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
-      final city = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
+          final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
+          final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
+          final city = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
 
-      if (userId != null && createdAt != null) {
-        globalUserPoints[userId] = (globalUserPoints[userId] ?? 0) + points;
+          if (userId != null && createdAt != null) {
+            globalUserPoints[userId] = (globalUserPoints[userId] ?? 0) + points;
 
-        if (city != 'Unknown') {
-          cityUserPoints.putIfAbsent(city, () => {});
-          cityUserPoints[city]![userId] = (cityUserPoints[city]![userId] ?? 0) + points;
+            if (city != 'Unknown') {
+              cityUserPoints.putIfAbsent(city, () => {});
+              cityUserPoints[city]![userId] = (cityUserPoints[city]![userId] ?? 0) + points;
 
-          if (userId == user.uid) {
-            if (!currentUserCities.containsKey(city) || createdAt.isAfter(currentUserCities[city]!)) {
-              currentUserCities[city] = createdAt;
+              if (userId == user.uid) {
+                if (!currentUserCities.containsKey(city) || createdAt.isAfter(currentUserCities[city]!)) {
+                  currentUserCities[city] = createdAt;
+                }
+              }
             }
           }
         }
-      }
-    }
 
-    var sortedCities = currentUserCities.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
-    var allUserCities = sortedCities.map((e) => e.key).toList();
+        // 3. Sort user cities
+        var sortedCities = currentUserCities.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+        var allUserCities = sortedCities.map((e) => e.key).toList();
 
-    List<LeaderboardPreviewData> previews = [];
+        List<LeaderboardPreviewData> previews = [];
 
-    Future<LeaderboardPreviewData> buildCardData(Map<String, int> pointsMap, String title) async {
-      if (!pointsMap.containsKey(user.uid)) pointsMap[user.uid] = 0;
-      var sortedMap = pointsMap.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
-      final currentUserPoints = pointsMap[user.uid]!;
-      final currentRank = sortedMap.indexWhere((e) => e.key == user.uid) + 1;
+        // 4. Helper function to build the card data (identical to your original logic)
+        Future<LeaderboardPreviewData> buildCardData(Map<String, int> pointsMap, String title) async {
+          if (!pointsMap.containsKey(user.uid)) pointsMap[user.uid] = 0;
+          var sortedMap = pointsMap.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+          final currentUserPoints = pointsMap[user.uid]!;
+          final currentRank = sortedMap.indexWhere((e) => e.key == user.uid) + 1;
 
-      Set<String> selectedUserIds = {user.uid};
-      for (var id in followingIds) {
-        if (pointsMap.containsKey(id) && selectedUserIds.length < 10) selectedUserIds.add(id);
-      }
-
-      int upIndex = currentRank - 2;
-      int downIndex = currentRank;
-      while (selectedUserIds.length < 10 && (upIndex >= 0 || downIndex < sortedMap.length)) {
-        if (upIndex >= 0) { selectedUserIds.add(sortedMap[upIndex].key); upIndex--; }
-        if (selectedUserIds.length < 10 && downIndex < sortedMap.length) {
-          selectedUserIds.add(sortedMap[downIndex].key); downIndex++;
-        }
-      }
-
-      List<PreviewPin> pins = [];
-      int maxPointsInSelection = 1;
-      for (var id in selectedUserIds) {
-        if ((pointsMap[id] ?? 0) > maxPointsInSelection) maxPointsInSelection = pointsMap[id]!;
-      }
-
-      for (var id in selectedUserIds) {
-        final profileDoc = await db.collection('profiles').doc(id).get();
-        final profileImageUrl = profileDoc.data()?['profileImageUrl'] as String? ?? '';
-
-        final pts = pointsMap[id] ?? 0;
-        double normalized = pts / maxPointsInSelection;
-        if (id != user.uid) normalized += (id.hashCode % 10) / 1000.0;
-
-        pins.add(PreviewPin(
-          userId: id,
-          profileImageUrl: profileImageUrl,
-          normalizedPosition: normalized.clamp(0.0, 1.0),
-          isCurrentUser: id == user.uid,
-        ));
-      }
-
-      return LeaderboardPreviewData(
-        position: currentRank,
-        points: currentUserPoints,
-        variation: null,
-        city: title,
-        pins: pins,
-      );
-    }
-
-    for (var city in allUserCities) {
-      previews.add(await buildCardData(cityUserPoints[city]!, city));
-    }
-
-    previews.add(await buildCardData(globalUserPoints, 'Global Leaderboard'));
-
-    if (mounted) {
-      setState(() {
-        _leaderboards = previews;
-      });
-    }
-  } catch (e) {
-    debugPrint("Errore Widget Leaderboard: $e");
-  }
-}
-
-  Future<List<HomeBadgeUiModel>> _loadBadges() async {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return [];
-
-      final badges = await BadgeService().getHomeBadges(FirebaseAuth.instance.currentUser?.uid ?? '');
-      final result = <HomeBadgeUiModel>[];
-      for (final badge in badges) {
-        String imageUrl = '';
-        double progress = 0.0;
-        bool unlocked = false;
-
-        try {
-          imageUrl = await _storageService.getDownloadUrl(badge.imagePath);
-        } catch (e) {
-          debugPrint('STORAGE BADGE ERROR ${badge.imagePath}: $e');
-        }
-
-        try {
-          final progressDoc = await FirebaseFirestore.instance
-              .collection('profiles')
-              .doc(user.uid)
-              .collection('badge_progress')
-              .doc(badge.id)
-              .get();
-          if (progressDoc.exists) {
-            final data = progressDoc.data();
-            final rawProgress = (data?['progress'] as num?)?.toDouble() ?? 0.0;
-            progress = (rawProgress / 100).clamp(0.0, 1.0); 
-            unlocked = data?['unlocked'] == true || progress >= 1.0;
+          Set<String> selectedUserIds = {user.uid};
+          for (var id in followingIds) {
+            if (pointsMap.containsKey(id) && selectedUserIds.length < 10) selectedUserIds.add(id);
           }
-        } catch (e) {
-          debugPrint('BADGE PROGRESS ERROR ${badge.id}: $e');
+
+          int upIndex = currentRank - 2;
+          int downIndex = currentRank;
+          while (selectedUserIds.length < 10 && (upIndex >= 0 || downIndex < sortedMap.length)) {
+            if (upIndex >= 0) { selectedUserIds.add(sortedMap[upIndex].key); upIndex--; }
+            if (selectedUserIds.length < 10 && downIndex < sortedMap.length) {
+              selectedUserIds.add(sortedMap[downIndex].key); downIndex++;
+            }
+          }
+
+          List<PreviewPin> pins = [];
+          int maxPointsInSelection = 1;
+          for (var id in selectedUserIds) {
+            if ((pointsMap[id] ?? 0) > maxPointsInSelection) maxPointsInSelection = pointsMap[id]!;
+          }
+
+          for (var id in selectedUserIds) {
+            final profileDoc = await db.collection('profiles').doc(id).get();
+            final profileImageUrl = profileDoc.data()?['profileImageUrl'] as String? ?? '';
+
+            final pts = pointsMap[id] ?? 0;
+            double normalized = pts / maxPointsInSelection;
+            if (id != user.uid) normalized += (id.hashCode % 10) / 1000.0;
+
+            pins.add(PreviewPin(
+              userId: id,
+              profileImageUrl: profileImageUrl,
+              normalizedPosition: normalized.clamp(0.0, 1.0),
+              isCurrentUser: id == user.uid,
+            ));
+          }
+
+          return LeaderboardPreviewData(
+            position: currentRank,
+            points: currentUserPoints,
+            variation: null,
+            city: title,
+            pins: pins,
+          );
         }
 
-        result.add(
-          HomeBadgeUiModel(
+        // 5. Generate the preview cards
+        for (var city in allUserCities) {
+          previews.add(await buildCardData(cityUserPoints[city]!, city));
+        }
+
+        previews.add(await buildCardData(globalUserPoints, 'Global Leaderboard'));
+
+        // 6. Update the UI
+        if (mounted) {
+          setState(() {
+            _leaderboards = previews;
+          });
+        }
+      } catch (e) {
+        debugPrint("Errore Widget Leaderboard Stream: $e");
+      }
+    });
+  }
+  
+  void _startBadgesStream() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    // 1. Fetch the static global badge definitions once
+    final staticBadges = await BadgeService().getHomeBadges(user.uid);
+    
+    // 2. Stream the user's specific progress for those badges
+    _badgeProgressSub = FirebaseFirestore.instance
+      .collection('profiles')
+      .doc(user.uid)
+      .collection('badge_progress')
+      .snapshots()
+      .listen((snap) async {
+      
+        final updatedBadges = <HomeBadgeUiModel>[];
+        
+        for (final badge in staticBadges) {
+          String imageUrl = '';
+          try {
+            imageUrl = await _storageService.getDownloadUrl(badge.imagePath);
+          } catch (_) {}
+
+          // Find the matching progress document from the stream snapshot
+          final progressDoc = snap.docs.where((d) => d.id == badge.id).firstOrNull;
+          
+          double progress = 0.0;
+          bool unlocked = false;
+          
+          if (progressDoc != null) {
+            final data = progressDoc.data();
+            final rawProgress = (data['progress'] as num?)?.toDouble() ?? 0.0;
+            progress = (rawProgress / 100).clamp(0.0, 1.0);
+            unlocked = data['unlocked'] == true || progress >= 1.0;
+          }
+
+          updatedBadges.add(HomeBadgeUiModel(
             badgeId: badge.id,
             title: badge.title,
             description: badge.description,
             imageUrl: imageUrl,
             progress: progress,
             unlocked: unlocked,
-          ),
-        );
-      }
+          ));
+        }
 
-      return result;
-    } catch (e) {
-      debugPrint('FIRESTORE BADGES ERROR: $e');
-      rethrow;
-    }
+        if (mounted) setState(() => _badges = updatedBadges);
+      });
   }
 
   void _openLeaderboard(String city) {
@@ -600,14 +621,6 @@ class _HomeScreenState extends State<HomeScreen> {
         : '';
     context.showSuccessSnackBar(
         'Run saved — $distance in $minutes min$loopsText');
-
-    if (mounted) {
-      _loadMonthlyDistance();
-      _loadLeaderboardPreviews(); 
-      setState(() {
-        _badgesFuture = _loadBadges();
-      });
-    }
   }
 
   void _openBadgePopup(HomeBadgeUiModel badge) {
@@ -654,13 +667,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: RefreshIndicator(
                         color: const Color(0xFF425143),
                         backgroundColor: const Color(0xFFCAF0B8),
-                        onRefresh: () async {
-                          await _loadMonthlyDistance();
-                          await _loadLeaderboardPreviews();
-                          setState(() {
-                            _badgesFuture = _loadBadges();
-                          });
-                        },
+                        onRefresh: () async {},
                         child: SingleChildScrollView(
                           physics: const AlwaysScrollableScrollPhysics(),
                           padding: const EdgeInsets.fromLTRB(20, 16, 20, 85),
@@ -856,38 +863,18 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ),
                                 
                               const SizedBox(height: 28),
-                              FutureBuilder<List<HomeBadgeUiModel>>(
-                                future: _badgesFuture,
-                                builder: (context, snapshot) {
-                                  if (snapshot.connectionState ==
-                                      ConnectionState.waiting) {
-                                    return const Center(
-                                      child: Padding(
-                                        padding: EdgeInsets.all(24),
-                                        child: CircularProgressIndicator(),
-                                      ),
-                                    );
-                                  }
-
-                                  if (snapshot.hasError) {
-                                    return Text(
-                                      'Errore nel caricamento badge: ${snapshot.error}',
-                                      style: const TextStyle(color: Colors.red),
-                                    );
-                                  }
-
-                                  final badges = snapshot.data ?? [];
-
-                                  if (badges.isEmpty) {
-                                    return const Text('Nessun badge disponibile');
-                                  }
-
-                                  return BadgeProgressSection(
-                                    badges: badges,
-                                    onBadgeTap: _openBadgePopup,
-                                  );
-                                },
-                              ),
+                              if (_badges.isEmpty)
+                                const Center(
+                                  child: Padding(
+                                    padding: EdgeInsets.all(24),
+                                    child: CircularProgressIndicator(),
+                                  ),
+                                )
+                              else
+                                BadgeProgressSection(
+                                  badges: _badges,
+                                  onBadgeTap: _openBadgePopup,
+                                ),
                               const SizedBox(height: 28),
                               MonthlyStatsSection(
                                   stats: _buildMonthlyStats(Units.of(context))),

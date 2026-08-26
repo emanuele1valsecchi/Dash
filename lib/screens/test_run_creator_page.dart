@@ -67,6 +67,8 @@ class _RunSnapshot {
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 class _TestRunCreatorPageState extends State<TestRunCreatorPage> with TickerProviderStateMixin {
+  StreamSubscription<List<ClaimedArea>>? _areasSub;
+
   // ── Map ───────────────────────────────────────────────────────────────────
   final MapController _mapController = MapController();
   LatLng? _currentPosition;
@@ -176,17 +178,19 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> with TickerProv
   void initState() {
     super.initState();
     _initLocation();
-    _loadClaimedAreas();
+    _startAreasStream();
   }
 
-  Future<void> _loadClaimedAreas() async {
-    final areas = await ClaimedAreaRepository.instance.fetchAllAreas();
-    if (!mounted) return;
-    setState(() => _allAreas = areas);
+  void _startAreasStream() {
+    _areasSub = ClaimedAreaRepository.instance.areasStream().listen((areas) {
+      if (!mounted) return;
+      setState(() => _allAreas = areas);
+    });
   }
 
   @override
   void dispose() {
+    _areasSub?.cancel();
     _positionStream?.cancel();
     _mapController.dispose();
     _sheetController.dispose();

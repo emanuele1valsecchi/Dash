@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/screens/edit_profile_page.dart';
 import 'package:dash/widgets/profile/profile_picture_avatar.dart';
@@ -23,12 +25,18 @@ class _ProfilePageState extends State<ProfilePage> {
   int _followers = 0;
   int _following = 0;
   String _profileImageUrl = '';
+  StreamSubscription<DocumentSnapshot>? _profileSub;
 
   @override
   void initState() {
     super.initState();
+    _startProfileStream();
+  }
 
-    _loadProfileData();
+  @override
+  void dispose(){
+    _profileSub?.cancel();
+    super.dispose();
   }
 
   @override
@@ -136,17 +144,10 @@ class _ProfilePageState extends State<ProfilePage> {
         ProfileActionButton(
           type: ProfileActionButtonType.edit,
           onPressedOverride: () async {
-            final didUpdate = await Navigator.push(
+            Navigator.push(
               context,
               MaterialPageRoute(builder: (context) => const EditProfilePage()),
             );
-            
-            if (didUpdate == true) {
-              setState(() {
-                _isLoading = true;
-              });
-              await _loadProfileData();
-            }
           },
         ),
         Spacer(),
@@ -156,42 +157,36 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  Future<void> _loadProfileData() async {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
+  void _startProfileStream() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
 
-      // Query the 'profiles' collection
-      final doc = await FirebaseFirestore.instance
-          .collection('profiles')
-          .doc(user.uid)
-          .get();
+    _profileSub = FirebaseFirestore.instance
+      .collection('profiles')
+      .doc(user.uid)
+      .snapshots()
+      .listen(
+        (doc) {
+          if (!mounted || !doc.exists) return;
 
-      if (!doc.exists) return;
+          final data = doc.data()!;
 
-      final data = doc.data();
-      if (data != null) {
-        // Ensure the widget is still in the tree before updating state
-        if (!mounted) return;
-        
-        setState(() {
-          // Use a fallback chain for the name just like in HomeScreen
-          _name = data['name'] ?? 'No Name';
-          _surname = data['surname'];
-          _email = data['email'] ?? 'No Email';
-          _bio = data['bio'] ?? 'No bio provided.';
-          _followers = (data['followers'] as num?)?.toInt() ?? 0;
-          _following = (data['following'] as num?)?.toInt() ?? 0;
-          _profileImageUrl = data['profileImageUrl'] as String? ?? '';
-          _isLoading = false;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error loading profile: $e');
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
-    }
+          setState(() {
+            _name = data['name'] ?? 'No Name';
+            _surname = data['surname'] ?? '';
+            _email = data['email'] ?? 'No Email';
+            _bio = data['bio'] ?? '';
+            _followers = (data['followers'] as num?)?.toInt() ?? 0;
+            _following = (data['following'] as num?)?.toInt() ?? 0;
+            _profileImageUrl = data['profileImageUrl'] as String? ?? '';
+            _isLoading = false;
+          });
+        }, 
+        onError: (e) {
+          debugPrint('Error in profile stream: $e');
+          if (mounted) setState(() => _isLoading = false);
+        }
+      );
   }
 }
 

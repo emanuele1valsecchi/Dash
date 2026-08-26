@@ -267,7 +267,9 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   }
 
   Future<void> _loadClaimedAreas() async {
-    final areas = await ClaimedAreaRepository.instance.fetchAllAreas();
+    // .first grabs the current snapshot and immediately closes the listener, 
+    // saving battery while the user runs!
+    final areas = await ClaimedAreaRepository.instance.areasStream().first;
     if (!mounted) return;
     setState(() => _allAreas = areas);
   }

@@ -28,6 +28,9 @@ class ExplorePage extends StatefulWidget {
 }
 
 class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin {
+  StreamSubscription<List<ClaimedArea>>? _areasSub;
+  bool _hasFocusedOnStolenArea = false;
+
   final MapController _mapController = MapController();
   bool _isCameraAnimating = false;
 
@@ -70,13 +73,14 @@ class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin
   void initState() {
     super.initState();
     _initLocation();
-    _loadClaimedAreas();
+    _startAreasStream();
     _searchCtrl.addListener(_onSearchChanged);
     _searchFocusNode.addListener(_onSearchFocusChanged);
   }
 
   @override
   void dispose() {
+    _areasSub?.cancel();
     _positionSub?.cancel();
     _mapController.dispose();
     _searchDebounce?.cancel();
@@ -192,15 +196,20 @@ class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin
     }
   }
 
-  Future<void> _loadClaimedAreas() async {
-    final areas = await ClaimedAreaRepository.instance.fetchAllAreas();
-    if (!mounted) return;
-    setState(() => _allAreas = areas);
+  void _startAreasStream() {
+    _areasSub = ClaimedAreaRepository.instance.areasStream().listen((areas) {
+      if (!mounted) return;
+      
+      setState(() => _allAreas = areas);
 
-    // Se arriviamo da una notifica "areaStolen", cerchiamo l'area
-    if (widget.targetSessionId != null) {
-      _focusOnStolenArea(widget.targetSessionId!);
-    }
+      // If we arrived from a notification, pan to the stolen area.
+      // The boolean flag prevents the camera from snapping back here 
+      // every time someone claims an unrelated area on the map!
+      if (widget.targetSessionId != null && !_hasFocusedOnStolenArea) {
+        _focusOnStolenArea(widget.targetSessionId!);
+        _hasFocusedOnStolenArea = true; 
+      }
+    });
   }
 
   void _focusOnStolenArea(String targetSessionId) {
