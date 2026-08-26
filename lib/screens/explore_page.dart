@@ -15,7 +15,7 @@ import '../services/location_service.dart';
 import '../services/place_search_service.dart';
 import '../widgets/map/area_details_sheet.dart';
 import '../widgets/map/claimed_areas_layer.dart';
-import 'leaderboard_screen.dart';
+import 'leaderboard_page.dart';
 import '../widgets/map/enhanced_map_gestures.dart';
 
 class ExplorePage extends StatefulWidget {

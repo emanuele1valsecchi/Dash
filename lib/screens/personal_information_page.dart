@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:material_symbols_icons/symbols.dart';
-import 'login_screen.dart';
+import 'login_page.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
 class PersonalInformationPage extends StatefulWidget {

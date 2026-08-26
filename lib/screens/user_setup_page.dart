@@ -2,7 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../services/profile_service.dart';
-import '../screens/home_screen.dart';
+import 'home_page.dart';
 
 class UserSetupScreen extends StatefulWidget {
   const UserSetupScreen({super.key});

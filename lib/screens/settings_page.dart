@@ -3,8 +3,8 @@ import 'package:dash/screens/personal_information_page.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:material_symbols_icons/symbols.dart';
-import 'login_screen.dart';
-import 'legal_screen.dart';
+import 'login_page.dart';
+import 'legal_page.dart';
 import 'notification_settings_page.dart';
 
 class SettingsPage extends StatelessWidget {

@@ -6,7 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
-import 'session_detail_screen.dart';
+import 'session_detail_page.dart';
 import '../config/map_style.dart';
 import '../services/unit_preferences.dart';
 import '../widgets/units_scope.dart';

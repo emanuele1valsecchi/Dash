@@ -2,8 +2,8 @@ import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../services/profile_service.dart';
-import 'welcome_register_screen.dart';
-import '../screens/home_screen.dart';
+import 'welcome_register_page.dart';
+import 'home_page.dart';
 
 class EmailConfirmationScreen extends StatefulWidget {
   final String email;

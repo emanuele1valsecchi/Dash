@@ -5,7 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 
 import '../widgets/units_scope.dart';
-import 'leaderboard_screen.dart';
+import 'leaderboard_page.dart';
 //import 'home_screen.dart';
 import 'explore_page.dart';
 

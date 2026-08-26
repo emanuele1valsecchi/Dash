@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../widgets/profile_avatar_widget.dart';
-import 'home_screen.dart';
+import 'home_page.dart';
 
 class SetupProfileScreen extends StatefulWidget {
   const SetupProfileScreen({super.key});

@@ -7,8 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 
-import 'screens/home_screen.dart';
-import 'screens/onboarding_screen.dart';
+import 'screens/home_page.dart';
+import 'screens/onboarding_page.dart';
 import 'services/unit_preferences.dart';
 import 'widgets/units_scope.dart';
 

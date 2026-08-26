@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:dash/screens/calendar_screen.dart';
+import 'package:dash/screens/calendar_page.dart';
 import 'package:dash/screens/profile_page.dart';
 import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -30,8 +30,8 @@ import '../widgets/home/leaderboard_preview_card.dart';
 import '../widgets/home/start_run_overlay.dart';
 import '../widgets/home/monthly_stats_section.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'leaderboard_screen.dart';
-import 'notifications_screen.dart';
+import 'leaderboard_page.dart';
+import 'notifications_page.dart';
 
 
 class _NoOverscrollBehavior extends ScrollBehavior {

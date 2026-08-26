@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import '../services/auth_service.dart';
-import 'legal_screen.dart';
-import 'register_screen.dart';
+import 'legal_page.dart';
+import 'register_page.dart';
 import '../services/profile_service.dart';
-import 'welcome_register_screen.dart';
-import '../screens/home_screen.dart';
+import 'welcome_register_page.dart';
+import 'home_page.dart';
 import '../services/push_notification_service.dart';
 
 class LoginScreen extends StatefulWidget {

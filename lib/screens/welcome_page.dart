@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'setup_profile_screen.dart'; 
+import 'setup_profile_page.dart'; 
 
 class WelcomePage extends StatelessWidget {
   const WelcomePage({super.key});
