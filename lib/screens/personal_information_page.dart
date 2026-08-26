@@ -1,3 +1,4 @@
+import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -214,25 +215,9 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      appBar: AppBar(
-        elevation: 0,
-        backgroundColor: Colors.transparent,
-        leading: IconButton(
-          icon: Icon(
-            Icons.arrow_back,
-            color: Theme.of(context).colorScheme.secondary,
-          ),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: Text(
-          'Personal Information',
-          style: TextStyle(
-            color: Theme.of(context).colorScheme.secondary,
-            fontSize: 18,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ),
+      appBar: DashNavigationTopBar(
+        title: "Personal Information"
+      ), 
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : ListView(

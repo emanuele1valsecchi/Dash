@@ -1,4 +1,5 @@
 import 'package:dash/extensions/dash_snackbar.dart';
+import 'package:dash/widgets/dash_navigation_top_bar.dart';
 
 import 'welcome_page.dart';
 import 'package:flutter/material.dart';
@@ -82,21 +83,8 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FBF1), 
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Color(0xFF4A5D3F)),
-          onPressed: () {
-            if (_pageController.page == 1) {
-              _pageController.previousPage(duration: const Duration(milliseconds: 300), curve: Curves.ease);
-            } else {
-              Navigator.pop(context);
-            }
-          },
-        ),
-        title: const Text("Register", style: TextStyle(color: Color(0xFF4A5D3F), fontSize: 16)),
-        centerTitle: true,
+      appBar: DashNavigationTopBar(
+        title: "Register"
       ),
       body: SafeArea(
         child: PageView(

@@ -1,6 +1,8 @@
+import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:material_symbols_icons/symbols.dart';
 
 class LeaderboardEntry {
   final String userId;
@@ -130,44 +132,18 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
 
     return Scaffold(
       backgroundColor: const Color(0xFFF3F5EE),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        centerTitle: true,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Color(0xFF425143)),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              isGlobal ? 'Global Leaderboard' : 'Leaderboard',
-              style: const TextStyle(
-                color: Color(0xFF4A8C52),
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            if (!isGlobal)
-              Text(
-                widget.cityFilter,
-                style: const TextStyle(
-                  color: Color(0xFF8A9389),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-          ],
-        ),
-        // Mostra l'icona del mondo in alto a destra SOLO se NON siamo già nella Global Leaderboard
+      appBar: DashNavigationTopBar(
+        title: isGlobal ? "Global Leaderboard" : "${widget.cityFilter} Leaderboard",
         actions: [
-          if (!isGlobal)
+          if( !isGlobal )
             IconButton(
-              icon: const Icon(Icons.public_rounded, color: Color(0xFF425143)),
+              icon: Icon(
+                Symbols.public_rounded, 
+                color: Theme.of(context).colorScheme.outline
+              ),
               tooltip: 'Global Leaderboard',
               onPressed: () {
-                // Sostituisce la schermata attuale con la Global Leaderboard
+                // Substitute current page with the global leaderboard
                 Navigator.of(context).pushReplacement(
                   MaterialPageRoute(
                     builder: (_) => const LeaderboardScreen(cityFilter: 'Global Leaderboard'),

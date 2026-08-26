@@ -1,7 +1,9 @@
 import 'package:dash/extensions/dash_snackbar.dart';
+import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import '../widgets/profile_avatar_widget.dart';
 import 'home_page.dart';
 
@@ -117,16 +119,14 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FBF1),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Color(0xFF4A5D3F)),
-          onPressed: () => Navigator.pop(context),
-        ),
+      appBar: DashNavigationTopBar(
+        title: "Setup Profile",
         actions: [
           IconButton(
-            icon: const Icon(Icons.check, color: Color(0xFF4A5D3F)),
+            icon: Icon(
+              Symbols.check, 
+              color: Theme.of(context).colorScheme.secondary
+            ),
             onPressed: _isLoading ? null : _saveProfile,
           ),
         ],

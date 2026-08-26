@@ -11,32 +11,57 @@ class DashNavigationbar extends StatelessWidget {
     required this.onDestinationSelected
   });
 
-
-
   @override
   Widget build(BuildContext context) {
-    return NavigationBar(
-      onDestinationSelected: onDestinationSelected,
-      selectedIndex: selectedIndex,
-      destinations: const <Widget>[
-        NavigationDestination(
-          selectedIcon: Icon(Symbols.map_rounded), 
-          icon: Icon(Symbols.map_rounded), 
-          label: "Explore"
-        ),
-        
-        NavigationDestination(
-          selectedIcon: Icon(Symbols.home_filled_rounded),
-          icon: Icon(Symbols.home_rounded), 
-          label: "Home"
-        ),
+    return NavigationBarTheme(
+      data: NavigationBarThemeData(
+        iconTheme: WidgetStateProperty.resolveWith((Set<WidgetState> states) {
+          return (states.contains(WidgetState.selected))
+            ? IconThemeData(
+              fill: 1.0, 
+              weight: 700.0,
+              color: Theme.of(context).colorScheme.primary,
+            )
+            : IconThemeData(
+              fill: 0.0, 
+              weight: 400.0,
+              color: Theme.of(context).colorScheme.outline,
+            );
+        }),
 
-        NavigationDestination(
-          selectedIcon: Icon(Symbols.person_filled_rounded), 
-          icon: Icon(Symbols.person_rounded), 
-          label: "Profile"
-        ),
-      ]
+        labelTextStyle: WidgetStateProperty.resolveWith((Set<WidgetState> states) {
+          return (states.contains(WidgetState.selected))
+          ? TextStyle(
+            color: Theme.of(context).colorScheme.primary,
+            fontWeight: FontWeight.bold
+          )
+          : TextStyle(
+            color: Theme.of(context).colorScheme.outline,
+            fontWeight: FontWeight.normal
+          );
+        }),
+      ),
+
+      child: NavigationBar(
+        onDestinationSelected: onDestinationSelected,
+        selectedIndex: selectedIndex,
+        destinations: const <Widget>[
+          NavigationDestination(
+            icon: Icon(Symbols.map_rounded), 
+            label: "Explore",
+          ),
+
+          NavigationDestination(
+            icon: Icon(Symbols.home_rounded), 
+            label: "Home",
+          ),
+
+          NavigationDestination(
+            icon: Icon(Symbols.person_rounded), 
+            label: "Profile",
+          ),
+        ]
+      ),
     );
   }
 }

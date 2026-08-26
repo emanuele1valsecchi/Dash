@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:dash/extensions/dash_snackbar.dart';
+import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -63,22 +64,8 @@ class SessionDetailScreen extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: const Color(0xFFF3F5EE),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        centerTitle: true,
-        leading: IconButton(
-          icon: const Icon(Icons.close_rounded, color: Color(0xFF495348), size: 28),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: Text(
-          name,
-          style: const TextStyle(
-            color: Color(0xFF4A554A),
-            fontSize: 18,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+      appBar: DashNavigationTopBar(
+        title: name
       ),
       body: SafeArea(
         bottom: true,

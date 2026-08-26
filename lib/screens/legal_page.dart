@@ -1,3 +1,4 @@
+import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
 
 enum LegalType { terms, privacy }
@@ -13,22 +14,8 @@ class LegalScreen extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: const Color(0xFFF0F5EC),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFFF0F5EC),
-        elevation: 0,
-        title: Text(
-          isTerms ? 'Terms of Service' : 'Privacy Policy',
-          style: const TextStyle(
-            color: Color(0xFF2A2A2A),
-            fontWeight: FontWeight.w700,
-            fontSize: 18,
-          ),
-        ),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new,
-              color: Color(0xFF2A2A2A), size: 20),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
+      appBar: DashNavigationTopBar(
+        title: isTerms ? 'Terms of Service' : 'Privacy Policy'
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),

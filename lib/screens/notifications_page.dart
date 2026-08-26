@@ -1,4 +1,5 @@
 import 'package:dash/extensions/dash_snackbar.dart';
+import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -136,22 +137,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F6F0),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        centerTitle: true,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Color(0xFF495348)),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: const Text(
-          'Notification',
-          style: TextStyle(
-            color: Color(0xFF4A8C52),
-            fontSize: 15,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
+      appBar: DashNavigationTopBar(
+        title: "Notification"
       ),
       body: _currentUserId.isEmpty 
           ? const Center(child: Text("Non sei loggato."))
