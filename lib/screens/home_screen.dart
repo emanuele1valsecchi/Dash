@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/screens/calendar_screen.dart';
 import 'package:dash/screens/profile_page.dart';
+import 'package:dash/utils/dash_snackbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
@@ -124,9 +125,7 @@ class _HomeScreenState extends State<HomeScreen> {
   /// actually opened the app to do.
   void _onWatchImportMessage(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
-    );
+    context.showInformationSnackBar(message);
   }
 
   @override
@@ -537,9 +536,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (summary == null || !mounted) return;
 
     if (!summary.saved) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Run discarded')),
-      );
+      context.showWarningSnackBar("Run discarded");
       return;
     }
 
@@ -548,9 +545,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final loopsText = summary.loopsCompleted > 0
         ? ', ${summary.loopsCompleted} loop${summary.loopsCompleted == 1 ? '' : 's'} closed'
         : '';
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Run saved — $km km in $minutes min$loopsText')),
-    );
+    context.showSuccessSnackBar("Run saved — $km km in $minutes min$loopsText");
 
     if (mounted) {
       _loadMonthlyDistance();

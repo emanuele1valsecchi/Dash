@@ -1,3 +1,4 @@
+import 'package:dash/utils/dash_snackbar.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -81,9 +82,7 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
         _preferences[key] = !value;
       });
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Error during save.')),
-        );
+        context.showErrorSnackBar("Error during save");
       }
     }
   }

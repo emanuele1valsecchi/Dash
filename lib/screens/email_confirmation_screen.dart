@@ -1,3 +1,4 @@
+import 'package:dash/utils/dash_snackbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../services/profile_service.dart';
@@ -49,9 +50,7 @@ class _EmailConfirmationScreenState extends State<EmailConfirmationScreen> {
 
       if (user == null) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No user is currently logged in')),
-        );
+        context.showWarningSnackBar("No user is currently logged in");
         return;
       }
 
@@ -63,17 +62,11 @@ class _EmailConfirmationScreenState extends State<EmailConfirmationScreen> {
       if (refreshedUser != null && refreshedUser.emailVerified) {
         await _navigateAfterLogin(context);
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Email not verified yet. Check your inbox again.'),
-          ),
-        );
+        context.showInformationSnackBar("Email not verified yet. Check your inbox again.");
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Verification check failed: $e')),
-      );
+      context.showErrorSnackBar("Verification check failed");
     } finally {
       if (mounted) {
         setState(() => _isChecking = false);
@@ -89,23 +82,17 @@ class _EmailConfirmationScreenState extends State<EmailConfirmationScreen> {
 
       if (user == null) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No user is currently logged in')),
-        );
+        context.showWarningSnackBar("No user is currently logged in");
         return;
       }
 
       await user.sendEmailVerification();
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Verification email sent again')),
-      );
+      context.showSuccessSnackBar("Verification email sent again");
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not resend email: $e')),
-      );
+      context.showErrorSnackBar("Could not resend email, try again later");
     } finally {
       if (mounted) {
         setState(() => _isResending = false);

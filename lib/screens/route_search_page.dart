@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:dash/utils/dash_snackbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -487,14 +488,17 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
     FocusScope.of(context).unfocus();
 
     final start = await _resolveStart();
+    
+    if (!mounted) return;
+
     if (start == null) {
-      _snack('Could not resolve starting point');
+      context.showErrorSnackBar("Could not resolve starting point");
       return;
     }
 
     final target = _deriveTarget();
     if (target.isConflict) {
-      _snack('Constraints conflict — remove one value and try again');
+      context.showErrorSnackBar('Constraints conflict — remove one value and try again');
       return;
     }
 
@@ -509,7 +513,9 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
     // already fixed by them, so no target is needed at all in that case;
     // see `_generateClosedCircuitRoutes`).
     if (_isClosedCircuit && target.isEmpty && stops.isEmpty) {
-      _snack('Set a distance/time/calorie target, or add stops to shape the loop');
+      if (!mounted) return;
+
+      context.showWarningSnackBar("Set a distance/time/calorie target, or add stops to shape the loop");
       return;
     }
 
@@ -522,7 +528,8 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
       final lapsRaw = double.tryParse(_lapsCtrl.text.trim());
       final parsedLaps = lapsRaw?.round();
       if (parsedLaps == null || parsedLaps < 1) {
-        _snack('Enter a valid number of laps (1 or more)');
+        if (!mounted) return;
+        context.showWarningSnackBar("Enter a valid number of laps (1 or more)");
         return;
       }
       laps = parsedLaps;
@@ -546,8 +553,11 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
     } else {
       final end = await _resolveDestination();
       if (end == null) {
-        if (mounted) setState(() => _isSearching = false);
-        _snack('Could not resolve destination');
+        if (mounted){
+          setState(() => _isSearching = false);
+          context.showErrorSnackBar("Could not resolve destination. Try again later");
+        } 
+
         return;
       }
       // targetDistM is null when no constraints → show ORS alternatives freely
@@ -567,13 +577,15 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
       _collapseSheet();
       _fitMap(routes);
     } else {
-      _snack(_lastSearchRateLimited
-          ? 'The routing service is busy right now — wait a moment and try again.'
-          : _lastSearchOnlyDegenerateLoops
-              ? 'Could not find a real loop enclosing an area at that '
+      if (_lastSearchRateLimited){
+        context.showErrorSnackBar('The routing service is busy right now — wait a moment and try again.');
+      } else if (_lastSearchOnlyDegenerateLoops) {
+        context.showErrorSnackBar('Could not find a real loop enclosing an area at that '
                   'distance — try a different distance, add a stop, or '
-                  'move the start point.'
-              : 'No routes found matching your criteria.');
+                  'move the start point.');
+      } else {
+        context.showErrorSnackBar("No routes found matching your criteria.");
+      }
     }
   }
 
@@ -1612,15 +1624,11 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
         loopAreaM2:
             _isClosedCircuit ? GeometryUtils.polygonAreaM2(route.polyline) : 0,
       );
-      _snack('Route saved!');
-    } catch (e) {
-      _snack('Failed to save route: $e');
-    }
-  }
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      if (mounted) context.showSuccessSnackBar("Route saved!");
+    } catch (e) {
+      if (mounted) context.showErrorSnackBar("Failed to save route");
+    }
   }
 
   // ── Pin-picking banner ────────────────────────────────────────────────────

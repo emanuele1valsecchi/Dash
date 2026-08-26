@@ -1,3 +1,4 @@
+import 'package:dash/utils/dash_snackbar.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -122,9 +123,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     try {
       await batch.commit();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Ora segui anche tu questo utente!')),
-        );
+        context.showSuccessSnackBar("You follow this user to");
       }
     } catch (e) {
       debugPrint("Errore follow back: $e");

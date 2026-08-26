@@ -1,3 +1,4 @@
+import 'package:dash/utils/dash_snackbar.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -40,13 +41,8 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
     final username = _usernameController.text.trim();
 
     if (username.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Please enter a username to continue!"),
-          backgroundColor: Colors.redAccent,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      context.showWarningSnackBar("Please enter a username to continue");
+
       return;
     }
 
@@ -61,13 +57,7 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
       if (nicknameDoc.exists) {
         if (mounted) {
           setState(() => _isLoading = false);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("Username already taken! Please choose another one."),
-              backgroundColor: Colors.redAccent,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+          context.showErrorSnackBar("Username already taken! Please choose another one");
         }
         return;
       }
@@ -109,13 +99,7 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
 
       if (mounted) {
         setState(() => _isLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Profile saved successfully!"),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        context.showSuccessSnackBar("Profile saved successfully");
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (_) => const HomeScreen()),
@@ -124,13 +108,7 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Error occurred while saving profile: $e"),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        context.showErrorSnackBar("Error occurred while saving profile. Try again later");
       }
     }
   }
@@ -166,13 +144,7 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
                 size: 120,
                 onImageUploaded: (newUrl) {
                   setState(() => _profileImageUrl = newUrl);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text("Profile picture updated!"),
-                      backgroundColor: Color(0xFF4A5D3F),
-                      behavior: SnackBarBehavior.floating,
-                    ),
-                  );
+                  context.showSuccessSnackBar("Profile picture updated");
                 },
               ),
               const SizedBox(height: 8),

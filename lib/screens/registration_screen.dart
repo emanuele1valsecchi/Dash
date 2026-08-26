@@ -1,3 +1,5 @@
+import 'package:dash/utils/dash_snackbar.dart';
+
 import 'welcome_page.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -49,7 +51,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   Future<void> _createAccount() async {
     // Ultimo check di sicurezza
     if (!_isLengthValid || !_hasUppercase || !_hasNumber || !_hasSpecialChar) {
-      _showError("Completa tutti i requisiti della password.");
+      context.showErrorSnackBar("The password inserted is not valid, check all mail reqruirement");
       return;
     }
 
@@ -70,17 +72,13 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       
     } on FirebaseAuthException catch (e) {
       if (e.code == 'email-already-in-use') {
-        _showError("Questa email è già registrata.");
+        context.showErrorSnackBar("This email is already registered");
       } else {
-        _showError("Errore: ${e.message}");
+        context.showErrorSnackBar("Error: ${e.message}");
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
-  }
-
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: Colors.red));
   }
 
   // --- UI COSTRUZIONE SCHERMATE ---
@@ -150,7 +148,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                 if (_emailController.text.contains('@') && _emailController.text.isNotEmpty) {
                   _pageController.nextPage(duration: const Duration(milliseconds: 300), curve: Curves.ease);
                 } else {
-                  _showError("Inserisci un'email valida.");
+                  context.showErrorSnackBar("INsert a valid email");
                 }
               },
               child: const Icon(Icons.chevron_right, color: Color(0xFF4A5D3F)),
@@ -253,10 +251,10 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                       );
                     }
                   } else {
-                    _showError("Email not verified yet. Check your inbox or spam folder!");
+                    context.showErrorSnackBar("Email not verified yet. Check your inbox or spam folder!");
                   }
                 } catch (e) {
-                  _showError("Errore durante la verifica: $e");
+                  context.showErrorSnackBar("Error while verifying the email");
                 } finally {
                   if (mounted) setState(() => _isLoading = false);
                 }
