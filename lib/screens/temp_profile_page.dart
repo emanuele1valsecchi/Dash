@@ -4,6 +4,7 @@ import 'package:flutter_map/flutter_map.dart';
 import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
 import '../services/route_repository.dart';
+import '../widgets/units_scope.dart';
 
 class TempProfilePage extends StatefulWidget {
   const TempProfilePage({super.key});
@@ -94,7 +95,7 @@ class _TempProfilePageState extends State<TempProfilePage> {
                   : ListView.builder(
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       itemCount: _routes!.length,
-                      itemBuilder: (_, i) => _buildRouteCard(_routes![i]),
+                      itemBuilder: (context, i) => _buildRouteCard(context, _routes![i]),
                     ),
     );
   }
@@ -125,10 +126,8 @@ class _TempProfilePageState extends State<TempProfilePage> {
     );
   }
 
-  Widget _buildRouteCard(SavedRoute route) {
-    final distLabel = route.distanceKm < 1
-        ? '${(route.distanceKm * 1000).round()} m'
-        : '${route.distanceKm.toStringAsFixed(2)} km';
+  Widget _buildRouteCard(BuildContext context, SavedRoute route) {
+    final distLabel = Units.of(context).distance(route.distanceKm * 1000);
     final timeMin = route.estimatedTimeMin;
     final timeLabel = timeMin < 60
         ? '${timeMin.round()} min'

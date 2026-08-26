@@ -7,7 +7,8 @@ import 'package:latlong2/latlong.dart';
 
 import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
-import '../utils/geometry_utils.dart';
+import '../utils/unit_formatter.dart';
+import 'units_scope.dart';
 
 /// Shows the post-run results popup: stats already known client-side appear
 /// immediately, while XP/territory — written asynchronously by
@@ -105,7 +106,8 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
 
   // ── Formatting ────────────────────────────────────────────────────────
 
-  String get _distanceLabel => '${(widget.distanceMeters / 1000).toStringAsFixed(2)} km';
+  String _distanceLabel(UnitFormatter units) =>
+      units.distanceMajor(widget.distanceMeters);
 
   String get _timeLabel {
     String two(int v) => v.toString().padLeft(2, '0');
@@ -115,20 +117,24 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
     return h > 0 ? '${two(h)}:${two(m)}:${two(s)}' : '${two(m)}:${two(s)}';
   }
 
-  String get _avgSpeedLabel {
+  /// Shown as pace or speed depending on the user's preference — the same
+  /// underlying figure either way, so the caption has to follow the value
+  /// (see [UnitFormatter.rateLabel]).
+  String _rateLabel(UnitFormatter units) {
     final hours = widget.duration.inMilliseconds / 3600000;
-    if (hours <= 0) return '--';
-    return '${((widget.distanceMeters / 1000) / hours).toStringAsFixed(1)} km/h';
+    if (hours <= 0) return units.showsPace ? '--:--' : '--';
+    return units.rateFromSpeedKmh((widget.distanceMeters / 1000) / hours);
   }
 
-  String get _caloriesLabel => '${widget.caloriesBurned.round()} kcal';
+  String _caloriesLabel(UnitFormatter units) =>
+      units.energy(widget.caloriesBurned);
 
-  String get _elevationLabel => '${widget.elevationDifferenceMeters.round()} m';
-
-  String _areaLabel(double areaM2) => GeometryUtils.formatAreaKm2(areaM2);
+  String _elevationLabel(UnitFormatter units) =>
+      units.elevation(widget.elevationDifferenceMeters);
 
   @override
   Widget build(BuildContext context) {
+    final units = Units.of(context);
     return Dialog(
       backgroundColor: const Color(0xFFF5F6EF),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
@@ -159,16 +165,16 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
                 crossAxisSpacing: 10,
                 childAspectRatio: 2.4,
                 children: [
-                  _RunStat(icon: Icons.straighten_rounded, label: 'Distance', value: _distanceLabel),
+                  _RunStat(icon: Icons.straighten_rounded, label: 'Distance', value: _distanceLabel(units)),
                   _RunStat(icon: Icons.timer_outlined, label: 'Time', value: _timeLabel),
-                  _RunStat(icon: Icons.speed_rounded, label: 'Avg speed', value: _avgSpeedLabel),
-                  _RunStat(icon: Icons.local_fire_department_outlined, label: 'Calories', value: _caloriesLabel),
-                  _RunStat(icon: Icons.terrain_rounded, label: 'Elevation', value: _elevationLabel),
+                  _RunStat(icon: Icons.speed_rounded, label: 'Avg ${units.rateLabel.toLowerCase()}', value: _rateLabel(units)),
+                  _RunStat(icon: Icons.local_fire_department_outlined, label: 'Calories', value: _caloriesLabel(units)),
+                  _RunStat(icon: Icons.terrain_rounded, label: 'Elevation', value: _elevationLabel(units)),
                   _RunStat(
                     icon: Icons.crop_free_rounded,
                     label: 'Area',
                     value: _serverData != null
-                        ? _areaLabel((_serverData!['totalAreaM2'] as num?)?.toDouble() ?? 0)
+                        ? units.area((_serverData!['totalAreaM2'] as num?)?.toDouble() ?? 0)
                         : '…',
                   ),
                 ],
