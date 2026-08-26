@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -7,6 +8,7 @@ import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/home_models.dart';
 import '../models/home_badge_ui_model.dart';
 import '../services/badge_service.dart';
@@ -56,14 +58,15 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _showRunOverlay = false;
   HomeBadgeUiModel? _selectedBadge;
 
-  // Carosello Leaderboard
+  // Leaderboard Carousel
   List<LeaderboardPreviewData>? _leaderboards;
   final PageController _pageController = PageController();
   int _currentLeaderboardPage = 0;
 
-  // Gestione stato distanza e statistiche degli ultimi 30 giorni
+  // State management for distance and last 30 days statistics
   double _monthlyMeters = 0.0;
   bool _isLoadingKm = true;
+  List<LeaderboardPreviewData> _rawLeaderboards = [];
 
   /// The raw, always-metric figures behind the monthly stat cards. Kept as
   /// numbers rather than formatted strings so that changing a unit re-renders
@@ -297,7 +300,7 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     } catch (e) {
-      debugPrint('Erro in statistic loading: $e');
+      debugPrint('Error loading statistics: $e');
       if (mounted) setState(() => _isLoadingKm = false);
     }
   }
@@ -494,16 +497,59 @@ class _HomeScreenState extends State<HomeScreen> {
 
         previews.add(await buildCardData(globalUserPoints, 'Global Leaderboard'));
 
-        // 6. Update the UI
-        if (mounted) {
-          setState(() {
-            _leaderboards = previews;
-          });
-        }
+        // Salviamo i dati grezzi in memoria e applichiamo subito l'ordinamento
+        _rawLeaderboards = previews;
+        await _applyLeaderboardPreferences();
+        
       } catch (e) {
-        debugPrint("Errore Widget Leaderboard Stream: $e");
+        debugPrint("Error in Leaderboard Stream Widget: $e");
       }
     });
+  }
+
+  Future<void> _applyLeaderboardPreferences() async {
+    if (_rawLeaderboards.isEmpty) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    final String? savedData = prefs.getString('home_leaderboard_config');
+
+    // Lavoriamo su una copia dei dati grezzi
+    List<LeaderboardPreviewData> currentPreviews = List.from(_rawLeaderboards);
+
+    if (savedData != null) {
+      final List<dynamic> decoded = jsonDecode(savedData);
+      List<LeaderboardPreviewData> sortedAndFilteredPreviews = [];
+
+      // Read the preferred order saved by the user
+      for (var item in decoded) {
+        final String title = item['title'];
+        
+        // --- NEW: Force Global Leaderboard to always be visible ---
+        final bool isVisible = (title == 'Global Leaderboard') ? true : (item['isVisible'] ?? true);
+
+        if (isVisible) {
+          // Check if a card exists for that newly generated city in the raw data
+          final index = currentPreviews.indexWhere((p) => p.city == title);
+          if (index != -1) {
+            sortedAndFilteredPreviews.add(currentPreviews[index]);
+            currentPreviews.removeAt(index); // Remove to avoid duplication
+          }
+        } else {
+          // Remove hidden cities
+          currentPreviews.removeWhere((p) => p.city == title);
+        }
+      }
+
+      // Aggiungi eventuali "città nuove" scoperte che non erano ancora salvate nelle impostazioni
+      sortedAndFilteredPreviews.addAll(currentPreviews);
+      currentPreviews = sortedAndFilteredPreviews;
+    }
+
+    if (mounted) {
+      setState(() {
+        _leaderboards = currentPreviews;
+      });
+    }
   }
   
   void _startBadgesStream() async {
@@ -667,7 +713,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: RefreshIndicator(
                         color: const Color(0xFF425143),
                         backgroundColor: const Color(0xFFCAF0B8),
-                        onRefresh: () async {},
+                        onRefresh: () async {
+                          await _applyLeaderboardPreferences();
+                        },
                         child: SingleChildScrollView(
                           physics: const AlwaysScrollableScrollPhysics(),
                           padding: const EdgeInsets.fromLTRB(20, 16, 20, 85),
@@ -678,15 +726,15 @@ class _HomeScreenState extends State<HomeScreen> {
                                 children: [
                                   const Spacer(),
                                   
-                                  // --- NOTIFICATION ICON CON PALLINO ---
+                                  // --- NOTIFICATION ICON WITH DOT ---
                                   StreamBuilder<QuerySnapshot>(
                                     stream: FirebaseFirestore.instance
                                         .collection('notifications')
                                         .where('userId', isEqualTo: FirebaseAuth.instance.currentUser?.uid)
-                                        .where('isRead', isEqualTo: false) // Solo quelle non lette
+                                        .where('isRead', isEqualTo: false) // Only unread ones
                                         .snapshots(),
                                     builder: (context, snapshot) {
-                                      // Controlla se la query ha restituito dei documenti
+                                      // Check if the query returned any documents
                                       final bool hasUnread = snapshot.hasData && snapshot.data!.docs.isNotEmpty;
 
                                       return Stack(
@@ -700,7 +748,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                               size: 28,
                                             ),
                                           ),
-                                          if (hasUnread) // Mostra il pallino solo se ci sono notifiche non lette
+                                          if (hasUnread) // Show the dot only if there are unread notifications
                                             Positioned(
                                               right: 12, 
                                               top: 12,
@@ -708,7 +756,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                                 width: 10,
                                                 height: 10,
                                                 decoration: const BoxDecoration(
-                                                  color: Color.fromARGB(255, 5, 188, 8),// Colore del pallino
+                                                  color: Color.fromARGB(255, 5, 188, 8),// Dot color
                                                   shape: BoxShape.circle,
                                                 ),
                                               ),
@@ -814,7 +862,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                     const SizedBox(height: 12),
                                     
-                                    // INDICATORE FLUIDO INTELLIGENTE
+                                    // SMART FLUID INDICATOR
                                     Row(
                                       mainAxisAlignment: MainAxisAlignment.center,
                                       children: List.generate(
@@ -827,13 +875,13 @@ class _HomeScreenState extends State<HomeScreen> {
                                           double margin;
 
                                           if (dist == 0) {
-                                            width = 16; height = 6; margin = 4; // Attivo (Lungo)
+                                            width = 16; height = 6; margin = 4; // Active (Long)
                                           } else if (dist <= 2) { 
-                                            width = 6; height = 6; margin = 4; // Vicini (Normali)
+                                            width = 6; height = 6; margin = 4; // Near (Normal)
                                           } else if (dist == 3) {
-                                            width = 4; height = 4; margin = 3; // Lontani (Piccoli/Sfumano)
+                                            width = 4; height = 4; margin = 3; // Far (Small/Faded)
                                           } else {
-                                            width = 0; height = 0; margin = 0; // Troppo lontani (Invisibili)
+                                            width = 0; height = 0; margin = 0; // Too far (Invisible)
                                           }
 
                                           return AnimatedContainer(
