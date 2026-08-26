@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:dash/utils/dash_snackbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -444,17 +445,14 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> with TickerProv
       DrawnRouteFailureKind.serviceError =>
         'The routing service had a problem. Please try again.',
     };
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 6),
-        action: failure.isRetryable
-            ? SnackBarAction(
-                label: 'Retry',
-                onPressed: () => _retryStrokeConversion(rawPoints),
-              )
-            : null,
-      ),
+    context.showErrorSnackBar(
+      message,
+      action: failure.isRetryable
+        ? SnackBarAction(
+            label: 'Retry',
+            onPressed: () => _retryStrokeConversion(rawPoints),
+          )
+        : null,
     );
   }
 
@@ -844,13 +842,14 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> with TickerProv
         elevationDifferenceMeters: 0.0,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Test run published!')),
-      );
+      context.showSuccessSnackBar("Test run published");
+
       Navigator.of(context).pop(true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to publish: $e')));
+
+      context.showErrorSnackBar("Failed to publish");
+      
     } finally {
       if (mounted) setState(() => _isPublishing = false);
     }
