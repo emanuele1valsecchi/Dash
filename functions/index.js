@@ -7,6 +7,7 @@ const geo = require('./geo');
 const territory = require('./territory');
 const routing = require('./routing');
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { getAuth } = require('firebase-admin/auth');
 
 admin.initializeApp();
 const db = getFirestore();
@@ -1459,3 +1460,137 @@ async function resetBadgeDocuments(docs) {
     );
   }
 }
+
+// ==============================================================================
+// ACCOUNT DELETION
+// ============================================================================
+
+/**
+ * Deletes all user-owned data while preserving published routes.
+ * The Auth account is deleted only after Firestore cleanup succeeds.
+ */
+exports.deleteMyAccount = functions
+  .region("europe-west1")
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        "unauthenticated",
+        "You must be logged in to delete your account."
+      );
+    }
+
+    const uid = context.auth.uid;
+    const profileRef = db.collection("profiles").doc(uid);
+
+    console.log(`[deleteMyAccount] START uid=${uid}`);
+
+    try {
+      const profileSnap = await profileRef.get();
+      const profileData = profileSnap.exists ? profileSnap.data() : {};
+
+      // Delete user-owned documents from top-level collections.
+      const collectionsToDelete = [
+        "runningSessions",
+        "claimedAreas",
+        "notifications",
+        "favoriteRoutes",
+        "follows",
+        "userStats",
+      ];
+
+      for (const collectionName of collectionsToDelete) {
+        const snapshot = await db
+          .collection(collectionName)
+          .where("userId", "==", uid)
+          .get();
+
+        await deleteDocumentsInBatches(snapshot.docs);
+
+        // Some relationship documents may use followerId/followingId
+        // instead of userId.
+        if (collectionName === "follows") {
+          const followerSnapshot = await db
+            .collection("follows")
+            .where("followerId", "==", uid)
+            .get();
+
+          const followingSnapshot = await db
+            .collection("follows")
+            .where("followingId", "==", uid)
+            .get();
+
+          const relationshipDocs = new Map();
+          for (const doc of followerSnapshot.docs) {
+            relationshipDocs.set(doc.id, doc);
+          }
+          for (const doc of followingSnapshot.docs) {
+            relationshipDocs.set(doc.id, doc);
+          }
+
+          await deleteDocumentsInBatches(
+            Array.from(relationshipDocs.values())
+          );
+        }
+      }
+
+      // Remove the user from every city leaderboard.
+      const cityStatsSnap = await db.collection("cityStats").get();
+      const cityLeaderboardRefs = [];
+
+      for (const cityDoc of cityStatsSnap.docs) {
+        const cityUserRef = cityDoc.ref.collection("users").doc(uid);
+        const cityUserSnap = await cityUserRef.get();
+
+        if (cityUserSnap.exists) {
+          cityLeaderboardRefs.push(cityUserRef);
+        }
+      }
+
+      await deleteReferencesInBatches(cityLeaderboardRefs);
+
+      // Delete all profile subcollections, including badge_progress.
+      const profileSubcollections = ["badge_progress"];
+
+      for (const subcollectionName of profileSubcollections) {
+        const subcollectionSnap = await profileRef
+          .collection(subcollectionName)
+          .get();
+
+        await deleteDocumentsInBatches(subcollectionSnap.docs);
+      }
+
+      // Delete the profile document itself.
+      if (profileSnap.exists) {
+        await profileRef.delete();
+      }
+
+      // Delete profile image from Storage if a storage path is available.
+      const profileImagePath = profileData.profileImagePath;
+      if (typeof profileImagePath === "string" && profileImagePath.length > 0) {
+        try {
+          await admin.storage().bucket().file(profileImagePath).delete();
+        } catch (storageError) {
+          if (storageError.code !== 404) {
+            throw storageError;
+          }
+        }
+      }
+
+      // Published routes are intentionally preserved.
+      await getAuth().deleteUser(uid);
+
+      console.log(`[deleteMyAccount] SUCCESS uid=${uid}`);
+
+      return {
+        success: true,
+        message: "Account and user data deleted. Published routes were preserved.",
+      };
+    } catch (error) {
+      console.error(`[deleteMyAccount] FAILED uid=${uid}`, error);
+
+      throw new functions.https.HttpsError(
+        "internal",
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  });
