@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:dash/utils/dash_snackbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -427,12 +428,7 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     await prefs.setBool(_pinDragHintPrefsKey, true);
     if (!mounted) return;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Tip: hold and drag a pin to move it.'),
-        duration: Duration(seconds: 4),
-      ),
-    );
+    context.showInformationSnackBar("Tip: hold and drag a pin to move it");
   }
 
   /// Adds [point] as the next waypoint — routing from the current route tip
@@ -668,17 +664,14 @@ class _RouteCreatePageState extends State<RouteCreatePage>
       DrawnRouteFailureKind.serviceError =>
         'The routing service had a problem. Please try again.',
     };
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 6),
-        action: failure.isRetryable
-            ? SnackBarAction(
-                label: 'Retry',
-                onPressed: () => _retryStrokeConversion(rawPoints),
-              )
-            : null,
-      ),
+    context.showInformationSnackBar(
+      message,
+      action: failure.isRetryable
+        ? SnackBarAction(
+            label: 'Retry',
+            onPressed: () => _retryStrokeConversion(rawPoints),
+          )
+        : null
     );
   }
 
@@ -1759,9 +1752,7 @@ class _RouteCreatePageState extends State<RouteCreatePage>
       return true;
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to publish: $e')));
+        context.showErrorSnackBar("Failed to publish");
       }
       return false;
     } finally {
@@ -1779,10 +1770,7 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     if (!ok || !mounted) return;
 
     if (action == _SaveAction.saveOnly) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Route published!')));
-      Navigator.of(context).pop();
+      context.showSuccessSnackBar("Route published successfully");
     } else {
       // Save route and Run — hand the polyline back so the caller can push
       // straight into RunTrackingPage with it as a guide line.

@@ -1244,3 +1244,122 @@ exports.processLeaderboards = onSchedule({
         console.error("Error in leaderboards processing:", error);
     }
 });
+
+// ==============================================================================
+// ── DATA MANAGEMENT (ACCOUNT PROGRESS WIPE) ──
+// ==============================================================================
+
+/**
+ * Clears all user progress (runs, areas, stats, leaderboards, and badge progress except 'thats_me' if profile has an image)
+ * while preserving the auth account, core profile info (name, bio, images), and published routes.
+ */
+exports.clearUserProgress = functions
+  .region('europe-west1')
+  .https.onCall(async (data, context) => {
+    // 1. Ensure the user is authenticated
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        "unauthenticated",
+        "You must be logged in to clear your progress."
+      );
+    }
+
+    const uid = context.auth.uid;
+    
+    try {
+      const batchArray = [];
+      let currentBatch = db.batch();
+      let operationCounter = 0;
+
+      // --- HELPER: Safely commit the batch if we approach the 500 operations limit ---
+      const commitBatchIfNeeded = () => {
+        if (operationCounter >= 490) { // Keep a small buffer below 500
+          batchArray.push(currentBatch.commit());
+          currentBatch = db.batch();
+          operationCounter = 0;
+        }
+      };
+
+      // --- HELPER: Execute a query and stage all resulting documents for deletion ---
+      const deleteQueryBatch = async (query) => {
+        const snapshot = await query.get();
+        snapshot.docs.forEach((doc) => {
+          currentBatch.delete(doc.ref);
+          operationCounter++;
+          commitBatchIfNeeded();
+        });
+      };
+
+      // 2. Delete all running sessions created by the user
+      await deleteQueryBatch(db.collection("runningSessions").where("userId", "==", uid));
+
+      // 3. Delete all claimed areas owned by the user
+      await deleteQueryBatch(db.collection("claimedAreas").where("userId", "==", uid));
+
+      // 4. Delete all notifications targeted to the user
+      await deleteQueryBatch(db.collection("notifications").where("userId", "==", uid));
+
+      // 5. Remove user from all city leaderboards (cityStats -> {city} -> users -> {uid})
+      await deleteQueryBatch(db.collectionGroup("users").where("userId", "==", uid));
+
+      // 6. Reset only totalPoints and lastKnownGlobalRank on the profile document (preserving name, bio, images, etc.)
+      const profileRef = db.collection("profiles").doc(uid);
+      const profileSnap = await profileRef.get();
+      const profileData = profileSnap.exists ? profileSnap.data() : {};
+
+      currentBatch.update(profileRef, {
+        totalPoints: 0,
+        lastKnownGlobalRank: FieldValue.delete() // Remove global rank so they start fresh
+      });
+      operationCounter++;
+      commitBatchIfNeeded();
+
+      // Check if the user has a valid profile image to decide whether to keep 'thats_me' badge unlocked
+      const hasProfileImage = (profileData.profileImageUrl && profileData.profileImageUrl.trim() !== "") ||
+                              (profileData.profileImagePath && profileData.profileImagePath.trim() !== "");
+
+      // 7. Reset badge progress back to zero, preserving 'thats_me' if a profile image exists
+      const badgeProgressSnap = await profileRef.collection("badge_progress").get();
+      badgeProgressSnap.docs.forEach((doc) => {
+        const badgeId = doc.id;
+        
+        // If this is the 'thats_me' badge and the user has a profile image, keep it unlocked
+        if (badgeId === 'thats_me' && hasProfileImage) {
+          return; // Skip resetting this badge
+        }
+
+        currentBatch.update(doc.ref, {
+          progress: 0,
+          unlocked: false,
+          updatedAt: FieldValue.serverTimestamp()
+        });
+        operationCounter++;
+        commitBatchIfNeeded();
+      });
+
+      // 8. Wipe userStats entirely (the engine will recreate a fresh one on the next run)
+      const userStatsRef = db.collection("userStats").doc(uid);
+      currentBatch.delete(userStatsRef);
+      operationCounter++;
+      commitBatchIfNeeded();
+
+      // Note: The 'routes' collection is intentionally ignored to preserve user-created paths.
+
+      // 9. Commit any remaining operations in the final batch
+      if (operationCounter > 0) {
+        batchArray.push(currentBatch.commit());
+      }
+
+      // Await all parallel batch commits
+      await Promise.all(batchArray);
+
+      return { success: true, message: "Progress completely cleared." };
+
+    } catch (error) {
+      console.error("Error clearing progress for UID:", uid, error);
+      throw new functions.https.HttpsError(
+        "internal",
+        "An error occurred while clearing your progress."
+      );
+    }
+});

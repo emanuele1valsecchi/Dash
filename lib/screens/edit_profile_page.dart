@@ -1,3 +1,4 @@
+import 'package:dash/utils/dash_snackbar.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:dash/widgets/dash_text_form_field.dart';
 import 'package:dash/widgets/profile/profile_picture_avatar.dart';
@@ -127,24 +128,12 @@ class _EditProfilePageState extends State<EditProfilePage> {
         await batch.commit();
 
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text("Profile saved successfully!"),
-              backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+          context.showSuccessSnackBar("Profile saved successfully!");
           Navigator.pop(context, true);
         }
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text("Error occurred while saving profile: $e"),
-              backgroundColor: Theme.of(context).colorScheme.error,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+          context.showErrorSnackBar("Error occurred while saving profile");
         }
       }
     }
@@ -206,13 +195,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
       source: source,
       onError: (err) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(err),
-            backgroundColor: Theme.of(context).colorScheme.error,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        context.showErrorSnackBar("An error occurred while loading the image, please try again");
       },
     );
 
@@ -224,13 +207,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
       // to Firestore internally, so this setState only refreshes the
       // preview shown on this screen.
       setState(() => _existingImageUrl = uploadedUrl);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text("Profile picture updated!"),
-          backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      context.showSuccessSnackBar("Profile picture updated!");
     }
   }
 

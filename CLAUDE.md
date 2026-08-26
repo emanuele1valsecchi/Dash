@@ -1074,12 +1074,14 @@ Keep this list current — update it whenever a feature moves between these buck
   risk the run's continuous tracking stream recording breadcrumbs before that starting
   point exists — it only routes permission-checking through `LocationService` (so it's
   usually pre-granted) and keeps its own dedicated stream for the actual live recording.
-- **User-selectable units, applied app-wide** — Settings -> Units
-  ([lib/screens/units_settings_page.dart](lib/screens/units_settings_page.dart)) offers seven two-way choices: distance
+- **User-selectable units, applied app-wide** — Settings -> Map & Units
+  ([lib/screens/map_units_page.dart](lib/screens/map_units_page.dart)) offers seven two-way choices: distance
   (km/mi), area (km2/mi2), pace-or-speed, elevation (m/ft), energy (kcal/kJ), clock
-  (24h/12h) and week start (Mon/Sun), plus a Metric/Imperial preset that flips the first,
-  second and fourth together (clock and week start are deliberately excluded — neither
-  belongs to either system). Three pieces:
+  (24h/12h) and week start (Mon/Sun), each a `RadioGroup` section, plus a live
+  sample-run preview card. The page shell (name, title, `RadioGroup` idiom, its
+  "Map Theme — coming soon" tile) came from the settings work on `main` and was kept;
+  only its original standalone `useMiles` `SharedPreferences` bool — which nothing read —
+  was replaced by the `UnitPreferences` wiring below. Three pieces:
   - **[lib/services/unit_preferences.dart](lib/services/unit_preferences.dart)** (`UnitPreferences.instance`, an app-lifetime
     singleton `ChangeNotifier`, same shape as `LocationService.instance`) owns the choices.
     **`SharedPreferences` is the source of truth, not Firestore**: every measurement the app
@@ -1094,8 +1096,12 @@ Keep this list current — update it whenever a feature moves between these buck
     the cloud copy on a device where the user has never picked anything themselves
     (`isConfigured`); otherwise it pushes local up, so a stale cloud copy can never undo a
     deliberate local choice. Enum values persist by `name`, never `index`, so reordering an
-    enum can't reinterpret saved choices. First launch guesses from the platform locale
-    (US/LR/MM/GB -> miles, AU/NZ -> kJ, etc.) and does *not* mark itself configured.
+    enum can't reinterpret saved choices. **The default is metric on every device** and is
+    deliberately *not* guessed from the platform locale: a first version did guess
+    (US/GB/etc. -> miles) and a first launch landing on imperial for someone who never
+    asked for it was reported as far more jarring than metric is for a miles user, who can
+    flip one switch. First launch does not mark itself configured, so `syncFromCloud` can
+    still adopt a cloud copy.
   - **[lib/utils/unit_formatter.dart](lib/utils/unit_formatter.dart)** (`UnitFormatter`) is a pure value object holding
     just the seven enums — no context, no singleton reach-through — so the whole conversion
     layer is testable without a device (`test/unit_formatter_test.dart`, 20 tests), the same

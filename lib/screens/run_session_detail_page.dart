@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:dash/utils/dash_snackbar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -117,9 +118,7 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Something went wrong: $e')),
-        );
+        context.showErrorSnackBar("Something went wrong");
       }
     } finally {
       if (mounted) setState(() => _togglingFavorite = false);

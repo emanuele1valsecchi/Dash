@@ -1,10 +1,11 @@
+import 'package:dash/screens/map_units_page.dart';
+import 'package:dash/screens/personal_information_page.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:material_symbols_icons/symbols.dart';
 import 'login_screen.dart';
 import 'legal_screen.dart';
 import 'notification_settings_page.dart';
-import 'units_settings_page.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -78,7 +79,10 @@ class SettingsPage extends StatelessWidget {
             icon: Symbols.person_rounded,
             title: 'Personal Information',
             onTap: () {
-              // TODO: Naviga alla modifica info
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const PersonalInformationPage()),
+              );
             },
           ),
           _buildSettingsTile(
@@ -114,14 +118,12 @@ class SettingsPage extends StatelessWidget {
           ),
           _buildSettingsTile(
             context,
-            icon: Symbols.straighten_rounded,
-            title: 'Units',
+            icon: Symbols.map_rounded,
+            title: 'Map & Units',
             onTap: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(
-                  builder: (context) => const UnitsSettingsPage(),
-                ),
+                MaterialPageRoute(builder: (context) => const MapUnitsPage()),
               );
             },
           ),
