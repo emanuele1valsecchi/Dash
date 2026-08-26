@@ -53,8 +53,8 @@ class _ProfilePageState extends State<ProfilePage> {
         actions: [
           IconButton(
             icon: Icon(
-              Symbols.settings_rounded, 
-              color: Theme.of(context).colorScheme.secondary),
+              Symbols.settings_rounded,
+            ),
             onPressed: () {
               Navigator.push(
                 context,

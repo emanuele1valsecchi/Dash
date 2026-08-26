@@ -5,9 +5,11 @@ import 'dart:ui';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/screens/calendar_page.dart';
 import 'package:dash/extensions/dash_snackbar.dart';
+import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/home_models.dart';
 import '../models/home_badge_ui_model.dart';
@@ -696,7 +698,54 @@ class _HomeScreenState extends State<HomeScreen> {
         _greetingName.trim().isEmpty ? 'Hi!' : 'Hi $_greetingName!';
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF3F5EE),
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      appBar: DashNavigationTopBar(
+        title: "",
+        actions: [
+          StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance
+              .collection('notifications')
+              .where('userId', isEqualTo: FirebaseAuth.instance.currentUser?.uid)
+              .where('isRead', isEqualTo: false)
+              .snapshots(),
+
+            builder: (context, snapshot) {
+              final bool hasUnread = snapshot.hasData && snapshot.data!.docs.isNotEmpty;
+
+              return Stack(
+                alignment: Alignment.center,
+                children: [
+                  IconButton(
+                    onPressed: _openNotifications,
+                    icon: Icon(
+                      Symbols.notifications_none_rounded,
+                    ),
+                  ),
+                  if (hasUnread)
+                    Positioned(
+                      right: 12, 
+                      top: 12,
+                      child: Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.primary,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+          IconButton(
+            onPressed: _openHistory,
+            icon: const Icon(
+              Symbols.history_rounded,
+            ),
+          ),
+        ],
+      ),
       body: Stack(
         children: [
           SafeArea(
@@ -722,62 +771,6 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Row(
-                                children: [
-                                  const Spacer(),
-                                  
-                                  // --- NOTIFICATION ICON WITH DOT ---
-                                  StreamBuilder<QuerySnapshot>(
-                                    stream: FirebaseFirestore.instance
-                                        .collection('notifications')
-                                        .where('userId', isEqualTo: FirebaseAuth.instance.currentUser?.uid)
-                                        .where('isRead', isEqualTo: false) // Only unread ones
-                                        .snapshots(),
-                                    builder: (context, snapshot) {
-                                      // Check if the query returned any documents
-                                      final bool hasUnread = snapshot.hasData && snapshot.data!.docs.isNotEmpty;
-
-                                      return Stack(
-                                        alignment: Alignment.center,
-                                        children: [
-                                          IconButton(
-                                            onPressed: _openNotifications,
-                                            icon: const Icon(
-                                              Icons.notifications_none_rounded,
-                                              color: Color(0xFF495348),
-                                              size: 28,
-                                            ),
-                                          ),
-                                          if (hasUnread) // Show the dot only if there are unread notifications
-                                            Positioned(
-                                              right: 12, 
-                                              top: 12,
-                                              child: Container(
-                                                width: 10,
-                                                height: 10,
-                                                decoration: const BoxDecoration(
-                                                  color: Color.fromARGB(255, 5, 188, 8),// Dot color
-                                                  shape: BoxShape.circle,
-                                                ),
-                                              ),
-                                            ),
-                                        ],
-                                      );
-                                    },
-                                  ),
-                                  // ------------------------------------
-
-                                  IconButton(
-                                    onPressed: _openHistory,
-                                    icon: const Icon(
-                                      Icons.history_rounded,
-                                      color: Color(0xFF495348),
-                                      size: 28,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
                               Text(
                                 greetingText,
                                 style: const TextStyle(
