@@ -1,13 +1,11 @@
 import 'package:dash/extensions/responsive_border_radius.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
+import 'package:dash/root_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-
-
-import 'screens/home_page.dart';
 import 'screens/onboarding_page.dart';
 import 'services/unit_preferences.dart';
 import 'widgets/units_scope.dart';
@@ -75,7 +73,7 @@ class DashApp extends StatelessWidget {
               return const _SplashScreen();
             }
             if (snapshot.hasData) {
-              return const HomeScreen();
+              return const RootScreen();
             }
             return const OnboardingScreen();
           },

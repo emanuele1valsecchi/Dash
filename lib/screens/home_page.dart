@@ -3,7 +3,6 @@ import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/screens/calendar_page.dart';
-import 'package:dash/screens/profile_page.dart';
 import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -17,7 +16,6 @@ import '../services/unit_preferences.dart';
 import '../utils/unit_formatter.dart';
 import '../widgets/units_scope.dart';
 import '../services/water_fountain_service.dart';
-import 'explore_page.dart';
 import 'route_create_page.dart';
 import 'route_search_page.dart';
 import 'package:dash_watch_protocol/dash_watch_protocol.dart';
@@ -56,7 +54,6 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   bool _showRunOverlay = false;
-  int _currentIndex = 1;
   HomeBadgeUiModel? _selectedBadge;
 
   // Carosello Leaderboard
@@ -1104,44 +1101,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             )
           : null,
-      bottomNavigationBar: NavigationBar(
-        height: 82,
-        backgroundColor: const Color(0xFFECEFE6),
-        selectedIndex: _currentIndex,
-        indicatorColor: const Color(0xFFCFE8BD),
-        onDestinationSelected: (index) {
-          if (index == 0) {
-            Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const ExplorePage()),
-            );
-            return;
-          }
-          if (index == 2) {
-            Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const ProfilePage()),
-            );
-            return;
-          }
-          setState(() => _currentIndex = index);
-        },
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.map_outlined),
-            selectedIcon: Icon(Icons.map),
-            label: 'Areas',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home),
-            label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.person_outline_rounded),
-            selectedIcon: Icon(Icons.person),
-            label: 'Profile',
-          ),
-        ],
-      ),
     );
   }
 }

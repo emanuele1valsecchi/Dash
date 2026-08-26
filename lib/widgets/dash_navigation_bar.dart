@@ -1,26 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
-class DashNavigationbar extends StatefulWidget {
-  const DashNavigationbar({super.key});
+class DashNavigationbar extends StatelessWidget {
+  final int selectedIndex;
+  final ValueChanged<int> onDestinationSelected;
+  
+  const DashNavigationbar({
+    super.key,
+    required this.selectedIndex,
+    required this.onDestinationSelected
+  });
 
-  @override
-  State<DashNavigationbar> createState() => _DashNavigationbarState();
-}
 
-class _DashNavigationbarState extends State<DashNavigationbar> {
-
-  int _currentPageIndex = 0;
 
   @override
   Widget build(BuildContext context) {
     return NavigationBar(
-      onDestinationSelected: (int index) {
-        setState(() {
-          _currentPageIndex = index;
-        });
-      },
-      selectedIndex: _currentPageIndex,
+      onDestinationSelected: onDestinationSelected,
+      selectedIndex: selectedIndex,
       destinations: const <Widget>[
         NavigationDestination(
           selectedIcon: Icon(Symbols.map_rounded), 

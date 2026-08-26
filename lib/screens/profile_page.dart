@@ -1,6 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/screens/edit_profile_page.dart';
-import 'package:dash/widgets/dash_navigation_bar.dart';
 import 'package:dash/widgets/profile/profile_picture_avatar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -76,8 +75,6 @@ class _ProfilePageState extends State<ProfilePage> {
               ],
             ),
           ),
-      
-      bottomNavigationBar: DashNavigationbar(),
     );
   }
 

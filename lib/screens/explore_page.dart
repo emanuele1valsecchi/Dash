@@ -416,7 +416,6 @@ class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin
               ),
           ],
         ),
-        bottomNavigationBar: _buildBottomNav(),
       ),
     );
   }
@@ -780,38 +779,6 @@ class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildBottomNav() {
-    return NavigationBar(
-      height: 82,
-      backgroundColor: const Color(0xFFECEFE6),
-      selectedIndex: 0,
-      indicatorColor: const Color(0xFFCFE8BD),
-      onDestinationSelected: (index) {
-        if (index == 1) {
-          Navigator.of(context).pop();
-          return;
-        }
-      },
-      destinations: const [
-        NavigationDestination(
-          icon: Icon(Icons.map_outlined),
-          selectedIcon: Icon(Icons.map),
-          label: 'Areas',
-        ),
-        NavigationDestination(
-          icon: Icon(Icons.home_outlined),
-          selectedIcon: Icon(Icons.home),
-          label: 'Home',
-        ),
-        NavigationDestination(
-          icon: Icon(Icons.person_outline_rounded),
-          selectedIcon: Icon(Icons.person),
-          label: 'Profile',
-        ),
-      ],
     );
   }
 
