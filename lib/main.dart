@@ -8,11 +8,17 @@ import 'package:google_sign_in/google_sign_in.dart';
 
 import 'screens/home_screen.dart';
 import 'screens/onboarding_screen.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Firebase.initializeApp();
+
+  await FirebaseAppCheck.instance.activate(
+    providerAndroid: const AndroidDebugProvider(),
+  );
+
   await GoogleSignIn.instance.initialize();
 
   await SystemChrome.setPreferredOrientations([

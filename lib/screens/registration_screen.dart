@@ -18,7 +18,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
 
   bool _isLoading = false;
 
-  // Variabili per la checklist della password
   bool _isLengthValid = false;
   bool _hasUppercase = false;
   bool _hasNumber = false;
@@ -27,14 +26,13 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   @override
   void initState() {
     super.initState();
-    // Ascolta ogni volta che l'utente digita la password per aggiornare la checklist
     _passwordController.addListener(() {
       final text = _passwordController.text;
       setState(() {
         _isLengthValid = text.length >= 8;
         _hasUppercase = text.contains(RegExp(r'[A-Z]'));
         _hasNumber = text.contains(RegExp(r'[0-9]'));
-        _hasSpecialChar = text.contains(RegExp(r'[!@#\$&*~]')); // Puoi aggiungere altri simboli se vuoi
+        _hasSpecialChar = text.contains(RegExp(r'[!@#\$&*~]')); 
       });
     });
   }
@@ -47,9 +45,8 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     super.dispose();
   }
 
-  // --- LOGICA FIREBASE ---
+  // --- FIREBASE LOGIC ---
   Future<void> _createAccount() async {
-    // Ultimo check di sicurezza
     if (!_isLengthValid || !_hasUppercase || !_hasNumber || !_hasSpecialChar) {
       context.showErrorSnackBar("The password inserted is not valid, check all mail reqruirement");
       return;
@@ -58,16 +55,13 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     setState(() => _isLoading = true);
 
     try {
-      // 1. Crea l'utente su Firebase
       UserCredential userCredential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
 
-      // 2. Invia l'email di verifica standard di Firebase
       await userCredential.user?.sendEmailVerification();
 
-      // 3. Vai all'ultima schermata (Successo)
       _pageController.nextPage(duration: const Duration(milliseconds: 300), curve: Curves.ease);
       
     } on FirebaseAuthException catch (e) {
@@ -85,14 +79,13 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FBF1), // Il tuo sfondo
+      backgroundColor: const Color(0xFFF8FBF1), 
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: Color(0xFF4A5D3F)),
           onPressed: () {
-            // Se siamo alla schermata della password, torna all'email. Altrimenti chiudi.
             if (_pageController.page == 1) {
               _pageController.previousPage(duration: const Duration(milliseconds: 300), curve: Curves.ease);
             } else {
@@ -104,10 +97,9 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
         centerTitle: true,
       ),
       body: SafeArea(
-        // PageView ci permette di fare le tre schermate nello stesso widget
         child: PageView(
           controller: _pageController,
-          physics: const NeverScrollableScrollPhysics(), // Disabilita lo swipe manuale
+          physics: const NeverScrollableScrollPhysics(), 
           children: [
             _buildEmailStep(),
             _buildPasswordStep(),
@@ -118,7 +110,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     );
   }
 
-  // STEP 1: INSERISCI EMAIL
   Widget _buildEmailStep() {
     return Padding(
       padding: const EdgeInsets.all(30),
@@ -159,9 +150,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     );
   }
 
-  // STEP 2: INSERISCI PASSWORD (con Checklist)
   Widget _buildPasswordStep() {
-    // Se la password è valida al 100%, sblocchiamo il pulsante
     bool isAllValid = _isLengthValid && _hasUppercase && _hasNumber && _hasSpecialChar;
 
     return Padding(
@@ -208,7 +197,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     );
   }
 
-  // STEP 3: SCHERMATA FINALE (Controlla la posta)
   Widget _buildVerificationStep() {
     return Padding(
       padding: const EdgeInsets.all(30),
@@ -237,17 +225,15 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
               onPressed: () async {
                 setState(() => _isLoading = true);
                 try {
-                  // Forza Firebase a scaricare l'ultimo stato dell'utente
                   await FirebaseAuth.instance.currentUser?.reload();
                   final user = FirebaseAuth.instance.currentUser;
                   
                   if (user != null && user.emailVerified) {
-                    // L'utente (o il bot antispam per lui) ha verificato la mail!
                     if (mounted) {
                       Navigator.pushAndRemoveUntil(
                         context,
                         MaterialPageRoute(builder: (context) => const WelcomePage()),
-                        (route) => false, // Pialla la cronologia
+                        (route) => false, 
                       );
                     }
                   } else {
@@ -269,7 +255,6 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
     );
   }
 
-  // Widget per la singola riga della checklist
   Widget _buildChecklistItem(String text, bool isValid) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),

@@ -1246,17 +1246,16 @@ exports.processLeaderboards = onSchedule({
 });
 
 // ==============================================================================
-// ── DATA MANAGEMENT (ACCOUNT PROGRESS WIPE) ──
+// DATA MANAGEMENT (ACCOUNT PROGRESS WIPE)
 // ==============================================================================
 
 /**
- * Clears all user progress (runs, areas, stats, leaderboards, and badge progress except 'thats_me' if profile has an image)
- * while preserving the auth account, core profile info (name, bio, images), and published routes.
+ * Deletes all running progress while preserving the user's account,
+ * profile data, social relationships, and published routes.
  */
 exports.clearUserProgress = functions
-  .region('europe-west1')
+  .region("europe-west1")
   .https.onCall(async (data, context) => {
-    // 1. Ensure the user is authenticated
     if (!context.auth) {
       throw new functions.https.HttpsError(
         "unauthenticated",
@@ -1265,101 +1264,198 @@ exports.clearUserProgress = functions
     }
 
     const uid = context.auth.uid;
-    
+    const profileRef = db.collection("profiles").doc(uid);
+
+    console.log(`[clearUserProgress] START uid=${uid}`);
+
     try {
-      const batchArray = [];
-      let currentBatch = db.batch();
-      let operationCounter = 0;
+      console.log("[clearUserProgress] Step 1: loading profile");
 
-      // --- HELPER: Safely commit the batch if we approach the 500 operations limit ---
-      const commitBatchIfNeeded = () => {
-        if (operationCounter >= 490) { // Keep a small buffer below 500
-          batchArray.push(currentBatch.commit());
-          currentBatch = db.batch();
-          operationCounter = 0;
-        }
-      };
-
-      // --- HELPER: Execute a query and stage all resulting documents for deletion ---
-      const deleteQueryBatch = async (query) => {
-        const snapshot = await query.get();
-        snapshot.docs.forEach((doc) => {
-          currentBatch.delete(doc.ref);
-          operationCounter++;
-          commitBatchIfNeeded();
-        });
-      };
-
-      // 2. Delete all running sessions created by the user
-      await deleteQueryBatch(db.collection("runningSessions").where("userId", "==", uid));
-
-      // 3. Delete all claimed areas owned by the user
-      await deleteQueryBatch(db.collection("claimedAreas").where("userId", "==", uid));
-
-      // 4. Delete all notifications targeted to the user
-      await deleteQueryBatch(db.collection("notifications").where("userId", "==", uid));
-
-      // 5. Remove user from all city leaderboards (cityStats -> {city} -> users -> {uid})
-      await deleteQueryBatch(db.collectionGroup("users").where("userId", "==", uid));
-
-      // 6. Reset only totalPoints and lastKnownGlobalRank on the profile document (preserving name, bio, images, etc.)
-      const profileRef = db.collection("profiles").doc(uid);
       const profileSnap = await profileRef.get();
       const profileData = profileSnap.exists ? profileSnap.data() : {};
 
-      currentBatch.update(profileRef, {
-        totalPoints: 0,
-        lastKnownGlobalRank: FieldValue.delete() // Remove global rank so they start fresh
-      });
-      operationCounter++;
-      commitBatchIfNeeded();
+      console.log(
+        `[clearUserProgress] Step 1 OK: profileExists=${profileSnap.exists}`
+      );
 
-      // Check if the user has a valid profile image to decide whether to keep 'thats_me' badge unlocked
-      const hasProfileImage = (profileData.profileImageUrl && profileData.profileImageUrl.trim() !== "") ||
-                              (profileData.profileImagePath && profileData.profileImagePath.trim() !== "");
+      console.log("[clearUserProgress] Step 2: deleting runningSessions");
 
-      // 7. Reset badge progress back to zero, preserving 'thats_me' if a profile image exists
-      const badgeProgressSnap = await profileRef.collection("badge_progress").get();
-      badgeProgressSnap.docs.forEach((doc) => {
-        const badgeId = doc.id;
-        
-        // If this is the 'thats_me' badge and the user has a profile image, keep it unlocked
-        if (badgeId === 'thats_me' && hasProfileImage) {
-          return; // Skip resetting this badge
+      const sessionsSnap = await db
+        .collection("runningSessions")
+        .where("userId", "==", uid)
+        .get();
+
+      console.log(
+        `[clearUserProgress] Step 2 found=${sessionsSnap.size}`
+      );
+
+      await deleteDocumentsInBatches(sessionsSnap.docs);
+
+      console.log("[clearUserProgress] Step 2 OK");
+
+      console.log("[clearUserProgress] Step 3: deleting claimedAreas");
+
+      const areasSnap = await db
+        .collection("claimedAreas")
+        .where("userId", "==", uid)
+        .get();
+
+      console.log(
+        `[clearUserProgress] Step 3 found=${areasSnap.size}`
+      );
+
+      await deleteDocumentsInBatches(areasSnap.docs);
+
+      console.log("[clearUserProgress] Step 3 OK");
+
+      console.log("[clearUserProgress] Step 4: deleting notifications");
+
+      const notificationsSnap = await db
+        .collection("notifications")
+        .where("userId", "==", uid)
+        .get();
+
+      console.log(
+        `[clearUserProgress] Step 4 found=${notificationsSnap.size}`
+      );
+
+      await deleteDocumentsInBatches(notificationsSnap.docs);
+
+      console.log("[clearUserProgress] Step 4 OK");
+
+      console.log("[clearUserProgress] Step 5: deleting city leaderboard entries");
+
+      const cityStatsSnap = await db.collection("cityStats").get();
+      const cityLeaderboardRefs = [];
+
+      for (const cityDoc of cityStatsSnap.docs) {
+        const cityUserRef = cityDoc.ref.collection("users").doc(uid);
+        const cityUserSnap = await cityUserRef.get();
+
+        if (cityUserSnap.exists) {
+          cityLeaderboardRefs.push(cityUserRef);
         }
-
-        currentBatch.update(doc.ref, {
-          progress: 0,
-          unlocked: false,
-          updatedAt: FieldValue.serverTimestamp()
-        });
-        operationCounter++;
-        commitBatchIfNeeded();
-      });
-
-      // 8. Wipe userStats entirely (the engine will recreate a fresh one on the next run)
-      const userStatsRef = db.collection("userStats").doc(uid);
-      currentBatch.delete(userStatsRef);
-      operationCounter++;
-      commitBatchIfNeeded();
-
-      // Note: The 'routes' collection is intentionally ignored to preserve user-created paths.
-
-      // 9. Commit any remaining operations in the final batch
-      if (operationCounter > 0) {
-        batchArray.push(currentBatch.commit());
       }
 
-      // Await all parallel batch commits
-      await Promise.all(batchArray);
+      console.log(
+        `[clearUserProgress] Step 5 found=${cityLeaderboardRefs.length}`
+      );
 
-      return { success: true, message: "Progress completely cleared." };
+      await deleteReferencesInBatches(cityLeaderboardRefs);
 
+      console.log("[clearUserProgress] Step 5 OK");
+
+      console.log("[clearUserProgress] Step 6: resetting profile score");
+
+      await profileRef.set(
+        {
+          totalPoints: 0,
+          lastKnownGlobalRank: FieldValue.delete(),
+        },
+        { merge: true }
+      );
+
+      console.log("[clearUserProgress] Step 6 OK");
+
+      console.log("[clearUserProgress] Step 7: resetting badge progress");
+
+      const hasProfileImage =
+        (typeof profileData?.profileImageUrl === "string" &&
+          profileData.profileImageUrl.trim().length > 0) ||
+        (typeof profileData?.profileImagePath === "string" &&
+          profileData.profileImagePath.trim().length > 0);
+
+      const badgeProgressSnap = await profileRef
+        .collection("badge_progress")
+        .get();
+
+      const badgeDocsToReset = badgeProgressSnap.docs.filter((doc) => {
+        return !(doc.id === "thats_me" && hasProfileImage);
+      });
+
+      console.log(
+        `[clearUserProgress] Step 7 found=${badgeProgressSnap.size} reset=${badgeDocsToReset.length} hasProfileImage=${hasProfileImage}`
+      );
+
+      await resetBadgeDocuments(badgeDocsToReset);
+
+      console.log("[clearUserProgress] Step 7 OK");
+
+      console.log("[clearUserProgress] Step 8: deleting userStats");
+
+      await db.collection("userStats").doc(uid).delete();
+
+      console.log("[clearUserProgress] Step 8 OK");
+      console.log(`[clearUserProgress] SUCCESS uid=${uid}`);
+
+      return {
+        success: true,
+        message: "Progress completely cleared.",
+      };
     } catch (error) {
-      console.error("Error clearing progress for UID:", uid, error);
+      console.error(`[clearUserProgress] FAILED uid=${uid}`, error);
+
       throw new functions.https.HttpsError(
         "internal",
-        "An error occurred while clearing your progress."
+        error instanceof Error ? error.message : String(error)
       );
     }
-});
+  });
+
+/** Deletes documents in chunks below Firestore's 500-operation limit. */
+async function deleteDocumentsInBatches(docs) {
+  for (let i = 0; i < docs.length; i += 450) {
+    const chunk = docs.slice(i, i + 450);
+    const batch = db.batch();
+
+    for (const doc of chunk) {
+      batch.delete(doc.ref);
+    }
+
+    await batch.commit();
+
+    console.log(
+      `[clearUserProgress] Deleted ${chunk.length} documents`
+    );
+  }
+}
+
+/** Deletes document references in chunks below Firestore's 500-operation limit. */
+async function deleteReferencesInBatches(refs) {
+  for (let i = 0; i < refs.length; i += 450) {
+    const chunk = refs.slice(i, i + 450);
+    const batch = db.batch();
+
+    for (const ref of chunk) {
+      batch.delete(ref);
+    }
+
+    await batch.commit();
+
+    console.log(
+      `[clearUserProgress] Deleted ${chunk.length} references`
+    );
+  }
+}
+
+/** Resets badge documents in chunks below Firestore's 500-operation limit. */
+async function resetBadgeDocuments(docs) {
+  for (let i = 0; i < docs.length; i += 450) {
+    const chunk = docs.slice(i, i + 450);
+    const batch = db.batch();
+
+    for (const doc of chunk) {
+      batch.update(doc.ref, {
+        progress: 0,
+        unlocked: false,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    await batch.commit();
+
+    console.log(
+      `[clearUserProgress] Reset ${chunk.length} badge documents`
+    );
+  }
+}

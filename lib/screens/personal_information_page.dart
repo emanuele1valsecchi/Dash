@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:material_symbols_icons/symbols.dart';
-import 'login_screen.dart'; 
+import 'login_screen.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
 class PersonalInformationPage extends StatefulWidget {
@@ -16,21 +16,17 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
   final User? user = FirebaseAuth.instance.currentUser;
   bool _isLoading = false;
 
-  // --- ACTIONS ---
-
   Future<void> _sendPasswordReset() async {
     if (user?.email == null) return;
     try {
       await FirebaseAuth.instance.sendPasswordResetEmail(email: user!.email!);
-      if (mounted) _showSnackBar("Password reset email sent!");
+      if (mounted) _showSnackBar('Password reset email sent!');
     } catch (e) {
-      if (mounted) _showSnackBar("Error: $e", isError: true);
+      if (mounted) _showSnackBar('Error: $e', isError: true);
     }
   }
 
   Future<void> _updateEmailDialog() async {
-    // Note: Firebase's verifyBeforeUpdateEmail sends a link to the NEW email.
-    // The email only changes after the user clicks the link.
     final controller = TextEditingController();
     final confirm = await showDialog<bool>(
       context: context,
@@ -38,7 +34,7 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
         title: const Text('Update Email'),
         content: TextField(
           controller: controller,
-          decoration: const InputDecoration(hintText: "Enter new email address"),
+          decoration: const InputDecoration(hintText: 'Enter new email address'),
           keyboardType: TextInputType.emailAddress,
         ),
         actions: [
@@ -53,25 +49,23 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
         ],
       ),
     );
+    controller.dispose();
 
-    if (confirm == true && controller.text.isNotEmpty) {
+    if (confirm == true && controller.text.trim().isNotEmpty) {
       try {
         await user?.verifyBeforeUpdateEmail(controller.text.trim());
-        if (mounted) _showSnackBar("Verification link sent to new email!");
+        if (mounted) _showSnackBar('Verification link sent to new email!');
       } catch (e) {
-        if (mounted) _showSnackBar("Error: $e", isError: true);
+        if (mounted) _showSnackBar('Error: $e', isError: true);
       }
     }
   }
 
   Future<void> _exportData() async {
     if (user?.email == null) return;
-
     setState(() => _isLoading = true);
 
     try {
-      // Create a document in the 'mail' collection.
-      // The Firebase 'Trigger Email' extension will automatically listen to this and send it.
       await FirebaseFirestore.instance.collection('mail').add({
         'to': user!.email,
         'message': {
@@ -85,14 +79,9 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
         },
         'createdAt': FieldValue.serverTimestamp(),
       });
-
-      if (mounted) {
-        _showSnackBar("Thanks for reaching out! Check your inbox.");
-      }
+      if (mounted) _showSnackBar('Thanks for reaching out! Check your inbox.');
     } catch (e) {
-      if (mounted) {
-        _showSnackBar("Error requesting data export: $e", isError: true);
-      }
+      if (mounted) _showSnackBar('Error requesting data export: $e', isError: true);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -102,24 +91,46 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
     final confirm = await _showConfirmationDialog(
       'Clear Progress',
       'This will permanently delete all your running sessions, unlocked areas, and reset your stats to zero. Are you absolutely sure?',
-      isDestructive: true, // Makes the confirm button red
+      isDestructive: true,
     );
 
-    if (confirm == true) {
-      setState(() => _isLoading = true);
-      try {
-        // Trigger the Cloud Function to safely wipe data on the backend
-        final callable = FirebaseFunctions.instance.httpsCallable('clearUserProgress');
-        await callable.call();
+    if (confirm != true) return;
+    if (user == null) {
+      if (mounted) _showSnackBar('You must be logged in.', isError: true);
+      return;
+    }
 
-        if (mounted) _showSnackBar("Progress cleared successfully! Fresh start.");
-      } on FirebaseFunctionsException catch (e) {
-        if (mounted) _showSnackBar("Server Error: ${e.message}", isError: true);
-      } catch (e) {
-        if (mounted) _showSnackBar("Error: $e", isError: true);
-      } finally {
-        if (mounted) setState(() => _isLoading = false);
+    setState(() => _isLoading = true);
+
+    try {
+      final functions = FirebaseFunctions.instanceFor(
+        region: 'europe-west1',
+      );
+      final callable = functions.httpsCallable('clearUserProgress');
+      final result = await callable.call(<String, dynamic>{});
+
+      if (mounted) {
+        final message = result.data is Map
+            ? (result.data['message'] ?? 'Progress cleared successfully!')
+            : 'Progress cleared successfully!';
+        _showSnackBar(message.toString());
       }
+    } on FirebaseFunctionsException catch (e) {
+      debugPrint(
+        'clearUserProgress failed: code=${e.code}, '
+        'message=${e.message}, details=${e.details}',
+      );
+      if (mounted) {
+        _showSnackBar(
+          'Server error: ${e.code} - ${e.message ?? 'Unknown error'}',
+          isError: true,
+        );
+      }
+    } catch (e) {
+      debugPrint('clearUserProgress unexpected error: $e');
+      if (mounted) _showSnackBar('Error: $e', isError: true);
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -130,37 +141,35 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
       isDestructive: true,
     );
 
-    if (confirm == true) {
-      setState(() => _isLoading = true);
-      try {
-        // 1. Call your Cloud Function to wipe Firestore data (runs, stats, areas)
-        // final callable = FirebaseFunctions.instance.httpsCallable('deleteUserAccount');
-        // await callable();
+    if (confirm != true) return;
+    if (user == null) return;
 
-        // 2. Delete the Auth User
-        await user?.delete();
+    setState(() => _isLoading = true);
 
-        if (mounted) {
-          // 3. Kick the user back to the login screen
-          Navigator.of(context).pushAndRemoveUntil(
-             MaterialPageRoute(builder: (context) => const LoginScreen()),
-             (route) => false,
-           );
-        }
-      } on FirebaseAuthException catch (e) {
-        // Deleting a user often requires recent authentication.
-        if (e.code == 'requires-recent-login') {
-          if (mounted) _showSnackBar("Please log out and log back in to delete your account.", isError: true);
-        } else {
-          if (mounted) _showSnackBar("Error: ${e.message}", isError: true);
-        }
-      } finally {
-        if (mounted) setState(() => _isLoading = false);
+    try {
+      await user!.delete();
+
+      if (mounted) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (context) => const LoginScreen()),
+          (route) => false,
+        );
       }
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'requires-recent-login') {
+        if (mounted) {
+          _showSnackBar(
+            'Please log out and log back in to delete your account.',
+            isError: true,
+          );
+        }
+      } else if (mounted) {
+        _showSnackBar('Error: ${e.message}', isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
-
-  // --- HELPERS ---
 
   void _showSnackBar(String message, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -172,7 +181,11 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
     );
   }
 
-  Future<bool?> _showConfirmationDialog(String title, String content, {bool isDestructive = false}) {
+  Future<bool?> _showConfirmationDialog(
+    String title,
+    String content, {
+    bool isDestructive = false,
+  }) {
     return showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -187,15 +200,15 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
             onPressed: () => Navigator.pop(context, true),
             child: Text(
               isDestructive ? 'Delete' : 'Confirm',
-              style: TextStyle(color: isDestructive ? Colors.red : const Color(0xFF4A8C52)),
+              style: TextStyle(
+                color: isDestructive ? Colors.red : const Color(0xFF4A8C52),
+              ),
             ),
           ),
         ],
       ),
     );
   }
-
-  // --- UI ---
 
   @override
   Widget build(BuildContext context) {
@@ -205,7 +218,10 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
         elevation: 0,
         backgroundColor: Colors.transparent,
         leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: Theme.of(context).colorScheme.secondary),
+          icon: Icon(
+            Icons.arrow_back,
+            color: Theme.of(context).colorScheme.secondary,
+          ),
           onPressed: () => Navigator.pop(context),
         ),
         title: Text(
@@ -228,8 +244,6 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
                 _buildListTile(Symbols.download_rounded, 'Export Data (GDPR)', _exportData),
                 _buildListTile(Symbols.restart_alt_rounded, 'Clear Progress', _clearProgress),
                 const Divider(height: 40),
-                
-                // Danger Zone
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                   child: ElevatedButton.icon(
@@ -249,7 +263,7 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 30),
                   child: Text(
-                    "Deleting your account is permanent. All your data will be wiped.",
+                    'Deleting your account is permanent. All your data will be wiped.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Colors.grey, fontSize: 12),
                   ),
