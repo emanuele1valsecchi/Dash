@@ -10,6 +10,7 @@ import 'package:dash/services/storage_service.dart';
 import 'package:dash/widgets/badge/dash_badge.dart';
 import 'package:dash/widgets/dash_gesture_card_container.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
+import 'package:dash/widgets/dash_section_container.dart';
 import 'package:dash/widgets/profile/bio_text_box.dart';
 import 'package:dash/widgets/profile/profile_picture_avatar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -39,6 +40,7 @@ class _ProfilePageState extends State<ProfilePage> {
 
   StreamSubscription<DocumentSnapshot>? _profileSub;
   StreamSubscription<QuerySnapshot>? _badgeSub;
+
   final StorageService _storageService = StorageService();
 
   @override
@@ -91,6 +93,10 @@ class _ProfilePageState extends State<ProfilePage> {
                 BioTextBox(bio: _bio),
                 _buildActionButtons(),
                 _buildBadgeSection(),
+                DashSectionContainer(
+                  title: "Activities", 
+                  child: Text("LE MIE ATTIVITà BELLISSIME")
+                ),
               ],
             ),
           ),
@@ -283,7 +289,7 @@ class _ProfilePageState extends State<ProfilePage> {
         if (mounted) setState(() => _badges = updatedBadges);
       });
   }
-
+  
   void _showBadge(BuildContext context){
     Navigator.push(
       context,
