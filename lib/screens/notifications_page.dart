@@ -9,6 +9,7 @@ import '../widgets/units_scope.dart';
 import 'leaderboard_page.dart';
 //import 'home_screen.dart';
 import 'explore_page.dart';
+import 'badge_page.dart';
 
 // ==========================================
 // MODELLI DATI
@@ -245,7 +246,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             break;
 
           case NotificationType.badgeUnlocked:
-            // Non navighiamo da nessuna parte per ora, la segniamo solo come letta
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const BadgePage(),
+              ),
+            );
             break;
         }
       },
