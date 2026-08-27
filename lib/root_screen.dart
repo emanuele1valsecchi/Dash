@@ -16,7 +16,7 @@ class _RootScreenState extends State<RootScreen> {
 
   final List<Widget> _pages = const [
     ExplorePage(),
-    HomeScreen(),
+    HomePage(),
     ProfilePage(),
   ];
 
