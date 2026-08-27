@@ -102,7 +102,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       final result = await _authService.signInWithGoogle();
       if (result != null && mounted) {
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
+          MaterialPageRoute(builder: (_) => const HomePage()),
         );
       }
     } on Exception catch (e) {

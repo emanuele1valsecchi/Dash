@@ -1,8 +1,16 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:dash/extensions/responsive_spacing.dart';
+import 'package:dash/models/home_badge_ui_model.dart';
+import 'package:dash/screens/badge_page.dart';
 import 'package:dash/screens/edit_profile_page.dart';
+import 'package:dash/services/badge_service.dart';
+import 'package:dash/services/storage_service.dart';
+import 'package:dash/widgets/badge/dash_badge.dart';
+import 'package:dash/widgets/dash_gesture_card_container.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
+import 'package:dash/widgets/profile/bio_text_box.dart';
 import 'package:dash/widgets/profile/profile_picture_avatar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -26,25 +34,29 @@ class _ProfilePageState extends State<ProfilePage> {
   int _followers = 0;
   int _following = 0;
   String _profileImageUrl = '';
+
+  List<HomeBadgeUiModel> _badges = [];
+
   StreamSubscription<DocumentSnapshot>? _profileSub;
+  StreamSubscription<QuerySnapshot>? _badgeSub;
+  final StorageService _storageService = StorageService();
 
   @override
   void initState() {
     super.initState();
     _startProfileStream();
+    _startBadgesStream();
   }
 
   @override
   void dispose(){
     _profileSub?.cancel();
+    _badgeSub?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final double screenHeight = MediaQuery.sizeOf(context).height;
-    final double sizedBoxDim =  screenHeight * 0.02;
-    final double elementsPadding = screenHeight * 0.02;
 
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
@@ -70,17 +82,15 @@ class _ProfilePageState extends State<ProfilePage> {
       body: _isLoading 
         ? const Center(child: CircularProgressIndicator())
         : SingleChildScrollView(
-            padding: EdgeInsets.symmetric(horizontal: elementsPadding),
+            padding: EdgeInsets.symmetric(horizontal: ResponsiveSpacing().md),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              spacing: ResponsiveSpacing().lg,
               children: [
-                SizedBox(height: sizedBoxDim),
                 _buildProfileHeader(),
-                SizedBox(height: sizedBoxDim),
                 BioTextBox(bio: _bio),
-                SizedBox(height: sizedBoxDim),
                 _buildActionButtons(),
-                SizedBox(height: sizedBoxDim),
+                _buildBadgeSection(),
               ],
             ),
           ),
@@ -158,6 +168,42 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
+  Widget _buildBadgeSection(){
+    if (_badges.isEmpty){
+      return Center(
+        child: Padding(
+          padding: context.paddingSm,
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    final displayBadges = _badges;
+
+    return DashGestureCardContainer(
+      title: "Badges",
+      onTap: () => _showBadge(context),
+      actions: [
+        Icon(
+          Symbols.arrow_forward_ios_rounded,
+          color: Theme.of(context).colorScheme.outline,
+          size: Theme.of(context).textTheme.bodySmall!.fontSize,
+        )
+      ],
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: displayBadges.map((badge) {
+          return DashBadge(
+            badge: badge, 
+            progress: badge.progress,
+            dimFactor: 0.16,
+            clickable: false,
+          );
+        }).toList()
+      )
+    );
+  }
+
   void _startProfileStream() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -189,55 +235,61 @@ class _ProfilePageState extends State<ProfilePage> {
         }
       );
   }
-}
 
-class BioTextBox extends StatefulWidget {
-  final String bio;
+  void _startBadgesStream() async {
+    final user =  FirebaseAuth.instance.currentUser;
 
-  const BioTextBox({super.key, required this.bio});
+    if (user == null) return;
 
-  @override
-  State<BioTextBox> createState() => _BioTextBoxState();
-}
+    final staticBadges = await BadgeService().getProfileBadges(user.uid);
 
-class _BioTextBoxState extends State<BioTextBox> {
-  final ScrollController _bioScrollController = ScrollController();
+    _badgeSub = FirebaseFirestore.instance
+      .collection('profiles')
+      .doc(user.uid)
+      .collection('badge_progress')
+      .snapshots()
+      .listen((snap) async {
+        final updatedBadges = <HomeBadgeUiModel>[];
 
-  _BioTextBoxState();
+        for (final badge in staticBadges) {
+          String imageUrl = '';
+          try {
+            imageUrl = await _storageService.getDownloadUrl(badge.imagePath);
+          } catch (_) {}
 
-  @override
-  void dispose() {
-    // 2. Clean it up when the widget is destroyed
-    _bioScrollController.dispose();
-    super.dispose();
+          // Find the matching progress document from the stream snapshot
+          final progressDoc = snap.docs.where((d) => d.id == badge.id).firstOrNull;
+          
+          double progress = 0.0;
+          bool unlocked = false;
+          
+          if (progressDoc != null) {
+            final data = progressDoc.data();
+            final rawProgress = (data['progress'] as num?)?.toDouble() ?? 0.0;
+            progress = (rawProgress / 100).clamp(0.0, 1.0);
+            unlocked = data['unlocked'] == true || progress >= 1.0;
+          }
+
+          updatedBadges.add(HomeBadgeUiModel(
+            badgeId: badge.id,
+            title: badge.title,
+            description: badge.description,
+            imageUrl: imageUrl,
+            progress: progress,
+            unlocked: unlocked,
+          ));
+        }
+
+        if (mounted) setState(() => _badges = updatedBadges);
+      });
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final double screenHeight = MediaQuery.sizeOf(context).height; 
-    final double screenWidth = MediaQuery.sizeOf(context).width; 
-
-    return ConstrainedBox(
-      constraints: BoxConstraints(
-        maxHeight: screenHeight * 0.16, // Maximum height before scrolling begins
+  void _showBadge(BuildContext context){
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (context) => BadgePage()
       ),
-      child: Scrollbar(
-        controller: _bioScrollController,
-        thumbVisibility: true,
-        thickness: screenWidth * 0.02,
-        radius: Radius.circular(screenHeight),
-        child: SingleChildScrollView(
-          controller: _bioScrollController,
-          child: Padding(
-            padding: EdgeInsets.only(right: screenWidth * 0.04),
-            child: Text(
-              widget.bio,
-              style: Theme.of(context).textTheme.bodyMedium!.copyWith(
-                color: Theme.of(context).colorScheme.outline
-              )), 
-            ),
-        ),
-      )
     );
   }
 }
@@ -275,6 +327,7 @@ class ProfileActionButton extends StatelessWidget{
       backgroundColor: Theme.of(context).colorScheme.primaryContainer,
       textStyle: Theme.of(context).textTheme.bodySmall
     );
+
     final Icon icon = Icon(
       type.iconData,
       size: Theme.of(context).iconTheme.size,

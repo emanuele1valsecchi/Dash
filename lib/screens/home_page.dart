@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/screens/calendar_page.dart';
 import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
@@ -31,7 +31,6 @@ import '../widgets/home/badge_progress_section.dart';
 import '../widgets/home/leaderboard_preview_card.dart';
 import '../widgets/home/start_run_overlay.dart';
 import '../widgets/home/monthly_stats_section.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'leaderboard_page.dart';
 import 'notifications_page.dart';
 
@@ -49,16 +48,15 @@ class _NoOverscrollBehavior extends ScrollBehavior {
   }
 }
 
-class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<HomePage> createState() => _HomePageState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomePageState extends State<HomePage> {
   bool _showRunOverlay = false;
-  HomeBadgeUiModel? _selectedBadge;
 
   // Leaderboard Carousel
   List<LeaderboardPreviewData>? _leaderboards;
@@ -91,6 +89,11 @@ class _HomeScreenState extends State<HomeScreen> {
   QuerySnapshot<Map<String, dynamic>>? _latestSessionsSnap;
   DocumentSnapshot<Map<String, dynamic>>? _latestStatsSnap;
 
+  /// Watch commands this screen listens for. The bridge itself is app-lifetime
+  /// and deliberately not disposed here — only this subscription is.
+  StreamSubscription<WatchCommand>? _watchCommands;
+  StreamSubscription<String>? _watchImports;
+
   @override
   void initState() {
     super.initState();
@@ -107,44 +110,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _startLeaderboardStream();
   }
 
-  /// Commands the watch cannot action on its own. Only `start` is handled here;
-  /// `finish` belongs to whichever run screen is live.
-  void _onWatchCommand(WatchCommand command) {
-    if (command != WatchCommand.start) return;
-    if (!mounted) return;
-
-    // Only act when the app is actually on screen. A backgrounded phone can
-    // receive the message and push the run screen, but cannot finish starting:
-    // Android refuses a foreground-service start from the background, so the
-    // run sits on "getting GPS position" until the user happens to open the
-    // app — at which point it springs to life and collides with the run the
-    // watch has been recording in the meantime. Ignoring it here is what lets
-    // the watch keep the run it already started.
-    if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
-      return;
-    }
-    // This screen stays mounted underneath the run screen, so without this
-    // guard a stray start from the watch would stack a second RunTrackingPage
-    // on top of a live run — and the new one would reset the controller.
-    final session = RunSessionController.instance;
-    if (session.hasStarted || session.isCountingDown) return;
-    _startRunNow();
-  }
-
-  /// Watch commands this screen listens for. The bridge itself is app-lifetime
-  /// and deliberately not disposed here — only this subscription is.
-  StreamSubscription<WatchCommand>? _watchCommands;
-  StreamSubscription<String>? _watchImports;
-
-  /// A run arriving from the watch happens with no interaction at all — it can
-  /// land minutes after the user opened the app. A snackbar is the least
-  /// intrusive way to say so; anything modal would interrupt whatever they
-  /// actually opened the app to do.
-  void _onWatchImportMessage(String message) {
-    if (!mounted) return;
-    context.showInformationSnackBar(message);
-  }
-
   @override
   void dispose() {
     _watchCommands?.cancel();
@@ -157,6 +122,285 @@ class _HomeScreenState extends State<HomeScreen> {
     _pageController.dispose();
 
     super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      appBar: DashNavigationTopBar(
+        title: "",
+        actions: [
+          _buildNotificationIconButton(),
+          IconButton(
+            onPressed: _openHistory,
+            icon: const Icon(
+              Symbols.history_rounded,
+            ),
+          ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          SafeArea(
+            child: ScrollConfiguration(
+              behavior: const _NoOverscrollBehavior(),
+              child: NotificationListener<OverscrollIndicatorNotification>(
+                onNotification: (notification) {
+                  notification.disallowIndicator();
+                  return true;
+                },
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: RefreshIndicator(
+                        color: Theme.of(context).colorScheme.onPrimaryContainer,
+                        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                        onRefresh: () async {
+                          await _applyLeaderboardPreferences();
+                        },
+                        child: SingleChildScrollView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: const EdgeInsets.fromLTRB(20, 16, 20, 84),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _buildGreetingText(),
+                              const SizedBox(height: 12),
+                              _buildAchievementText(),
+                              const SizedBox(height: 24),
+                              _buildLeaderBoard(),
+                              const SizedBox(height: 28),
+                              _buildBadgesSection(),
+                              const SizedBox(height: 28),
+
+                              MonthlyStatsSection(
+                                stats: _buildMonthlyStats(Units.of(context))
+                              ),
+                              
+                              const SizedBox(height: 8),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          StartRunOverlay(
+            isOpen: _showRunOverlay,
+            onClose: () => setState(() => _showRunOverlay = false),
+            onSearchRoute: _searchRoute,
+            onCreateRoute: _createRoute,
+            onStartRun: _startRunNow,
+          ),
+        ],
+      ),
+      floatingActionButton: !_showRunOverlay
+          ? FloatingActionButton(
+              onPressed: () => setState(() => _showRunOverlay = true),
+              backgroundColor: const Color(0xFFCAF0B8),
+              elevation: 2,
+              child: const Icon(
+                Icons.directions_run_rounded,
+                color: Color(0xFF425143),
+                size: 30,
+              ),
+            )
+          : null,
+    );
+  }
+
+  Widget _buildNotificationIconButton(){
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+        .collection('notifications')
+        .where('userId', isEqualTo: FirebaseAuth.instance.currentUser?.uid)
+        .where('isRead', isEqualTo: false)
+        .snapshots(),
+      
+      builder: (context, snapshot) {
+        final bool hasUnread = snapshot.hasData && snapshot.data!.docs.isNotEmpty;
+
+        return IconButton(
+          onPressed: _openNotifications, 
+          icon: Badge(
+            alignment: AlignmentGeometry.topRight,
+            isLabelVisible: hasUnread,
+            backgroundColor: Theme.of(context).colorScheme.tertiary,
+            child: Icon(
+              Symbols.notifications_rounded,
+              fill: (hasUnread) ? 1 : 0,
+              color: (hasUnread) ? Theme.of(context).colorScheme.tertiary : null,
+            ),
+          )
+        );
+      }
+    );
+  }
+
+  Widget _buildGreetingText(){
+    final greetingText =
+        _greetingName.trim().isEmpty ? 'Hi!' : 'Hi $_greetingName!';
+
+    return Text(
+      greetingText,
+      style: const TextStyle(
+        fontSize: 28,
+        fontWeight: FontWeight.w500,
+        color: Color(0xFF2A3028),
+      ),
+    );
+  }
+
+  Widget _buildAchievementText(){
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+      Text(
+        _isLoadingKm
+            ? '-- ${Units.of(context).distanceUnitLabel}'
+            : Units.of(context).distanceMajor(
+                _monthlyMeters,
+                decimals: 1),
+        style: const TextStyle(
+          fontSize: 28,
+          fontWeight: FontWeight.w800,
+          color: Color(0xFF1F3020),
+        ),
+      ),
+      const SizedBox(width: 10),
+      const Padding(
+        padding: EdgeInsets.only(bottom: 4),
+        child: Text(
+          'ran in the last 30 days',
+          style: TextStyle(
+            fontSize: 16,
+            color: Color(0xFF5E655C),
+          ),
+        ),
+      ),
+      ],
+    );
+  }
+
+  Widget _buildLeaderBoard(){
+    return Column(
+      children: [
+        const Row(
+          children: [
+            Icon(
+              Icons.bar_chart_rounded,
+              color: Color(0xFF4A554A),
+              size: 24,
+            ),
+            SizedBox(width: 8),
+            Text(
+              'Leaderboards',
+              style: TextStyle(
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF394137),
+              ),
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 14),
+
+        if (_leaderboards != null && _leaderboards!.isNotEmpty)
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                height: 255, 
+                child: PageView.builder(
+                  controller: _pageController,
+                  onPageChanged: (index) {
+                    setState(() => _currentLeaderboardPage = index);
+                  },
+                  itemCount: _leaderboards!.length,
+                  itemBuilder: (context, index) {
+                    final data = _leaderboards![index];
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2), 
+                      child: LeaderboardPreviewCard(
+                        data: data,
+                        onTap: () => _openLeaderboard(data.city),
+                      ),
+                    );
+                  }
+                ),
+              ),
+
+              const SizedBox(height: 12),
+              
+              // SMART FLUID INDICATOR
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(
+                  _leaderboards!.length,
+                  (index) {
+                    final dist = (index - _currentLeaderboardPage).abs();
+                    
+                    double width;
+                    double height;
+                    double margin;
+
+                    if (dist == 0) {
+                      width = 16; height = 6; margin = 4; // Active (Long)
+                    } else if (dist <= 2) { 
+                      width = 6; height = 6; margin = 4; // Near (Normal)
+                    } else if (dist == 3) {
+                      width = 4; height = 4; margin = 3; // Far (Small/Faded)
+                    } else {
+                      width = 0; height = 0; margin = 0; // Too far (Invisible)
+                    }
+
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeOutCubic,
+                      margin: EdgeInsets.symmetric(horizontal: margin),
+                      height: height,
+                      width: width,
+                      decoration: BoxDecoration(
+                        color: _currentLeaderboardPage == index
+                            ? const Color(0xFF4A8C52) 
+                            : const Color(0xFFD3D6CE), 
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    );
+                  },
+                ),
+              )
+            ],
+          )
+        else
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 24),
+            child: Center(
+              child: CircularProgressIndicator(),
+            ),
+          ),
+      ]
+    );
+  }
+
+  Widget _buildBadgesSection(){
+    if (_badges.isEmpty){
+      return Center(
+        child: Padding(
+          padding: context.paddingSm,
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    return BadgeProgressSection(
+      badges: _badges,
+    );
   }
 
   void _startProfileStream() {
@@ -556,12 +800,11 @@ class _HomeScreenState extends State<HomeScreen> {
   
   void _startBadgesStream() async {
     final user = FirebaseAuth.instance.currentUser;
+
     if (user == null) return;
 
-    // 1. Fetch the static global badge definitions once
     final staticBadges = await BadgeService().getHomeBadges(user.uid);
     
-    // 2. Stream the user's specific progress for those badges
     _badgeProgressSub = FirebaseFirestore.instance
       .collection('profiles')
       .doc(user.uid)
@@ -671,465 +914,37 @@ class _HomeScreenState extends State<HomeScreen> {
         'Run saved — $distance in $minutes min$loopsText');
   }
 
-  void _openBadgePopup(HomeBadgeUiModel badge) {
-    setState(() {
-      _selectedBadge = badge;
-    });
-  }
+  /// Commands the watch cannot action on its own. Only `start` is handled here;
+  /// `finish` belongs to whichever run screen is live.
+  void _onWatchCommand(WatchCommand command) {
+    if (command != WatchCommand.start) return;
+    if (!mounted) return;
 
-  void _closeBadgePopup() {
-    setState(() {
-      _selectedBadge = null;
-    });
-  }
-
-  String _buildProgressLabel(HomeBadgeUiModel badge) {
-    if (badge.unlocked) {
-      return 'Unlocked';
+    // Only act when the app is actually on screen. A backgrounded phone can
+    // receive the message and push the run screen, but cannot finish starting:
+    // Android refuses a foreground-service start from the background, so the
+    // run sits on "getting GPS position" until the user happens to open the
+    // app — at which point it springs to life and collides with the run the
+    // watch has been recording in the meantime. Ignoring it here is what lets
+    // the watch keep the run it already started.
+    if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
     }
-
-    final percent = (badge.progress * 100).clamp(0.0, 100.0);
-    return '${percent.toStringAsFixed(0)}% Completed';
+    // This screen stays mounted underneath the run screen, so without this
+    // guard a stray start from the watch would stack a second RunTrackingPage
+    // on top of a live run — and the new one would reset the controller.
+    final session = RunSessionController.instance;
+    if (session.hasStarted || session.isCountingDown) return;
+    _startRunNow();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final greetingText =
-        _greetingName.trim().isEmpty ? 'Hi!' : 'Hi $_greetingName!';
-
-    return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      appBar: DashNavigationTopBar(
-        title: "",
-        actions: [
-          StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance
-              .collection('notifications')
-              .where('userId', isEqualTo: FirebaseAuth.instance.currentUser?.uid)
-              .where('isRead', isEqualTo: false)
-              .snapshots(),
-
-            builder: (context, snapshot) {
-              final bool hasUnread = snapshot.hasData && snapshot.data!.docs.isNotEmpty;
-
-              return Stack(
-                alignment: Alignment.center,
-                children: [
-                  IconButton(
-                    onPressed: _openNotifications,
-                    icon: Icon(
-                      Symbols.notifications_none_rounded,
-                    ),
-                  ),
-                  if (hasUnread)
-                    Positioned(
-                      right: 12, 
-                      top: 12,
-                      child: Container(
-                        width: 10,
-                        height: 10,
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.primary,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                    ),
-                ],
-              );
-            },
-          ),
-          IconButton(
-            onPressed: _openHistory,
-            icon: const Icon(
-              Symbols.history_rounded,
-            ),
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          SafeArea(
-            child: ScrollConfiguration(
-              behavior: const _NoOverscrollBehavior(),
-              child: NotificationListener<OverscrollIndicatorNotification>(
-                onNotification: (notification) {
-                  notification.disallowIndicator();
-                  return true;
-                },
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: RefreshIndicator(
-                        color: const Color(0xFF425143),
-                        backgroundColor: const Color(0xFFCAF0B8),
-                        onRefresh: () async {
-                          await _applyLeaderboardPreferences();
-                        },
-                        child: SingleChildScrollView(
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          padding: const EdgeInsets.fromLTRB(20, 16, 20, 85),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                greetingText,
-                                style: const TextStyle(
-                                  fontSize: 28,
-                                  fontWeight: FontWeight.w500,
-                                  color: Color(0xFF2A3028),
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                  Text(
-                                    _isLoadingKm
-                                        ? '-- ${Units.of(context).distanceUnitLabel}'
-                                        : Units.of(context).distanceMajor(
-                                            _monthlyMeters,
-                                            decimals: 1),
-                                    style: const TextStyle(
-                                      fontSize: 28,
-                                      fontWeight: FontWeight.w800,
-                                      color: Color(0xFF1F3020),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  const Padding(
-                                    padding: EdgeInsets.only(bottom: 4),
-                                    child: Text(
-                                      'ran in the last 30 days',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        color: Color(0xFF5E655C),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 24),
-                              const Row(
-                                children: [
-                                  Icon(
-                                    Icons.bar_chart_rounded,
-                                    color: Color(0xFF4A554A),
-                                    size: 24,
-                                  ),
-                                  SizedBox(width: 8),
-                                  Text(
-                                    'Leaderboards',
-                                    style: TextStyle(
-                                      fontSize: 17,
-                                      fontWeight: FontWeight.w700,
-                                      color: Color(0xFF394137),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 14),
-                              
-                              if (_leaderboards != null && _leaderboards!.isNotEmpty)
-                                Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    SizedBox(
-                                      height: 255, 
-                                      child: PageView.builder(
-                                        controller: _pageController,
-                                        onPageChanged: (index) {
-                                          setState(() => _currentLeaderboardPage = index);
-                                        },
-                                        itemCount: _leaderboards!.length,
-                                        itemBuilder: (context, index) {
-                                          final data = _leaderboards![index];
-                                          return Padding(
-                                            padding: const EdgeInsets.symmetric(horizontal: 2), 
-                                            child: LeaderboardPreviewCard(
-                                              data: data,
-                                              onTap: () => _openLeaderboard(data.city),
-                                            ),
-                                          );
-                                        }
-                                      ),
-                                    ),
-                                    const SizedBox(height: 12),
-                                    
-                                    // SMART FLUID INDICATOR
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: List.generate(
-                                        _leaderboards!.length,
-                                        (index) {
-                                          final dist = (index - _currentLeaderboardPage).abs();
-                                          
-                                          double width;
-                                          double height;
-                                          double margin;
-
-                                          if (dist == 0) {
-                                            width = 16; height = 6; margin = 4; // Active (Long)
-                                          } else if (dist <= 2) { 
-                                            width = 6; height = 6; margin = 4; // Near (Normal)
-                                          } else if (dist == 3) {
-                                            width = 4; height = 4; margin = 3; // Far (Small/Faded)
-                                          } else {
-                                            width = 0; height = 0; margin = 0; // Too far (Invisible)
-                                          }
-
-                                          return AnimatedContainer(
-                                            duration: const Duration(milliseconds: 300),
-                                            curve: Curves.easeOutCubic,
-                                            margin: EdgeInsets.symmetric(horizontal: margin),
-                                            height: height,
-                                            width: width,
-                                            decoration: BoxDecoration(
-                                              color: _currentLeaderboardPage == index
-                                                  ? const Color(0xFF4A8C52) 
-                                                  : const Color(0xFFD3D6CE), 
-                                              borderRadius: BorderRadius.circular(3),
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                    )
-                                  ],
-                                )
-                              else
-                                const Padding(
-                                  padding: EdgeInsets.symmetric(vertical: 24),
-                                  child: Center(
-                                    child: CircularProgressIndicator(color: Color(0xFF4A8C52)),
-                                  ),
-                                ),
-                                
-                              const SizedBox(height: 28),
-                              if (_badges.isEmpty)
-                                const Center(
-                                  child: Padding(
-                                    padding: EdgeInsets.all(24),
-                                    child: CircularProgressIndicator(),
-                                  ),
-                                )
-                              else
-                                BadgeProgressSection(
-                                  badges: _badges,
-                                  onBadgeTap: _openBadgePopup,
-                                ),
-                              const SizedBox(height: 28),
-                              MonthlyStatsSection(
-                                  stats: _buildMonthlyStats(Units.of(context))),
-                              const SizedBox(height: 8),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          StartRunOverlay(
-            isOpen: _showRunOverlay,
-            onClose: () => setState(() => _showRunOverlay = false),
-            onSearchRoute: _searchRoute,
-            onCreateRoute: _createRoute,
-            onStartRun: _startRunNow,
-          ),
-          if (_selectedBadge != null) ...[
-            Positioned.fill(
-              child: GestureDetector(
-                onTap: _closeBadgePopup,
-                child: Container(
-                  color: Colors.black.withValues(alpha: 0.22),
-                ),
-              ),
-            ),
-            Positioned.fill(
-              child: IgnorePointer(
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 6, sigmaY: 6),
-                  child: Container(
-                    color: Colors.black.withValues(alpha: 0.10),
-                  ),
-                ),
-              ),
-            ),
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Material(
-                  color: Colors.transparent,
-                  child: Container(
-                    width: 320,
-                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF5F6EF),
-                      borderRadius: BorderRadius.circular(26),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0x22000000),
-                          blurRadius: 18,
-                          offset: Offset(0, 10),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          children: [
-                            const SizedBox(width: 24),
-                            const Spacer(),
-                            GestureDetector(
-                              onTap: _closeBadgePopup,
-                              child: const Icon(
-                                Icons.close,
-                                color: Color(0xFF6B7367),
-                                size: 24,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Container(
-                          width: 128,
-                          height: 128,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: const Color(0xFF6F8C63),
-                              width: 7,
-                            ),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.all(6),
-                            child: ClipOval(
-                              child: _selectedBadge!.imageUrl.isNotEmpty
-                                  ? Builder(
-                                      builder: (context) {
-                                        final progress = _selectedBadge!.progress.clamp(0.0, 1.0);
-                                        final isUnlocked = _selectedBadge!.unlocked || progress >= 1.0;
-                                        final isActive = progress > 0.0;
-
-                                        return ColorFiltered(
-                                          colorFilter: isUnlocked || isActive
-                                              ? const ColorFilter.mode(
-                                                  Colors.transparent,
-                                                  BlendMode.multiply,
-                                                )
-                                              : const ColorFilter.matrix(<double>[
-                                                  0.2126, 0.7152, 0.0722, 0, 0,
-                                                  0.2126, 0.7152, 0.0722, 0, 0,
-                                                  0.2126, 0.7152, 0.0722, 0, 0,
-                                                  0, 0, 0, 1, 0,
-                                                ]),
-                                          child: CachedNetworkImage(
-                                            imageUrl: _selectedBadge!.imageUrl,
-                                            fit: BoxFit.cover,
-                                            placeholder: (context, url) => Container(
-                                              color: const Color(0xFFE5E9DF),
-                                              alignment: Alignment.center,
-                                              child: const SizedBox(
-                                                width: 24,
-                                                height: 24,
-                                                child: CircularProgressIndicator(
-                                                  strokeWidth: 2,
-                                                  color: Color(0xFF6F8C63),
-                                                ),
-                                              ),
-                                            ),
-                                            errorWidget: (context, url, error) => Container(
-                                              color: const Color(0xFFE5E9DF),
-                                              alignment: Alignment.center,
-                                              child: const Icon(
-                                                Icons.image_not_supported_outlined,
-                                                color: Color(0xFF7A8377),
-                                                size: 34,
-                                              ),
-                                            ),
-                                          ),
-                                        );
-                                      },
-                                    )
-                                  : Container(
-                                      color: const Color(0xFFE5E9DF),
-                                      alignment: Alignment.center,
-                                      child: const Icon(
-                                        Icons.image_outlined,
-                                        color: Color(0xFF7A8377),
-                                        size: 34,
-                                      ),
-                                    ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          _selectedBadge!.title,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w500,
-                            color: Color(0xFF5A6256),
-                          ),
-                        ),
-                        const SizedBox(height: 14),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 10,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFEFF2EA),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: const Color(0xFFE2E6DC),
-                            ),
-                          ),
-                          child: Text(
-                            _buildProgressLabel(_selectedBadge!),
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              color: Color(0xFF6D7468),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 22),
-                        Text(
-                          _selectedBadge!.description,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 15,
-                            height: 1.65,
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xFF687161),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
-      floatingActionButton: !_showRunOverlay
-          ? FloatingActionButton(
-              onPressed: () => setState(() => _showRunOverlay = true),
-              backgroundColor: const Color(0xFFCAF0B8),
-              elevation: 2,
-              child: const Icon(
-                Icons.directions_run_rounded,
-                color: Color(0xFF425143),
-                size: 30,
-              ),
-            )
-          : null,
-    );
+  /// A run arriving from the watch happens with no interaction at all — it can
+  /// land minutes after the user opened the app. A snackbar is the least
+  /// intrusive way to say so; anything modal would interrupt whatever they
+  /// actually opened the app to do.
+  void _onWatchImportMessage(String message) {
+    if (!mounted) return;
+    context.showInformationSnackBar(message);
   }
 }
 

@@ -4,15 +4,13 @@ import '../models/badge_model.dart'; // Make sure this path is correct
 class BadgeService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  Future<List<BadgeModel>> getHomeBadges(String userId) async {
-    // 1. Fetch all badges to get their base metadata
+  Future<List<BadgeModel>> getAllBadges(String userId) async {
     final badgesSnapshot = await _firestore.collection('badges').get();
     
     final baseBadges = badgesSnapshot.docs
         .map((doc) => BadgeModel.fromMap(doc.id, doc.data()))
         .toList();
 
-    // 2. Fetch the specific user's progress
     final progressSnapshot = await _firestore
         .collection('profiles')
         .doc(userId)
@@ -23,7 +21,6 @@ class BadgeService {
       for (var doc in progressSnapshot.docs) doc.id: doc.data()
     };
 
-    // 3. Merge data securely creating a new immutable list
     final List<BadgeModel> userBadges = baseBadges.map((badge) {
       final pData = progressMap[badge.id];
       
@@ -33,15 +30,14 @@ class BadgeService {
           unlocked: pData['unlocked'] ?? false,
         );
       }
-      return badge; // Return the base badge if user has no progress doc yet
+      return badge;
     }).toList();
 
-    // 4. Apply the custom sorting logic
     userBadges.sort((a, b) {
       int getPriority(BadgeModel badge) {
-        if (badge.unlocked) return 3; // Lowest priority (push to the end)
-        if (badge.progress > 0) return 1; // Highest priority (in progress)
-        return 2; // Medium priority (not started, 0%)
+        if (badge.unlocked) return 3; 
+        if (badge.progress > 0) return 1;
+        return 2;
       }
 
       int priorityA = getPriority(a);
@@ -58,7 +54,16 @@ class BadgeService {
       return a.order.compareTo(b.order); 
     });
 
-    // 5. Return only the top 5 badges for the Home Screen
-    return userBadges.take(5).toList();
+    return userBadges;
+  }
+
+  Future<List<BadgeModel>> getHomeBadges(String userId) async {
+    final allBadges = await getAllBadges(userId);
+    return allBadges.take(5).toList();
+  }
+
+  Future<List<BadgeModel>> getProfileBadges(String userId) async {
+    final allBadges = await getAllBadges(userId);
+    return allBadges.take(3).toList();
   }
 }

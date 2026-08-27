@@ -86,7 +86,7 @@ class _UserSetupScreenState extends State<UserSetupScreen> {
 
       if (mounted) {
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
+          MaterialPageRoute(builder: (_) => const HomePage()),
         );
       }
 

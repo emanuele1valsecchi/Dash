@@ -104,7 +104,7 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
         context.showSuccessSnackBar("Profile saved successfully");
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
+          MaterialPageRoute(builder: (_) => const HomePage()),
         );
       }
     } catch (e) {

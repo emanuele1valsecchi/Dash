@@ -31,7 +31,7 @@ class _EmailConfirmationScreenState extends State<EmailConfirmationScreen> {
 
     if (exists) {
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
+        MaterialPageRoute(builder: (_) => const HomePage()),
       );
     } else {
       Navigator.of(context).pushReplacement(
