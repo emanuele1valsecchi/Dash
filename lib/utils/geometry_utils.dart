@@ -161,6 +161,74 @@ class GeometryUtils {
     return earliestClosure;
   }
 
+  /// Douglas-Peucker simplification: drops every point that already lies
+  /// within [toleranceMeters] of the line its retained neighbours describe.
+  /// First and last points are always kept.
+  ///
+  /// Exists because the live GPS stream records a breadcrumb every 2 m
+  /// (`RunSessionController._distanceFilterMeters`) — a resolution tuned for
+  /// a smooth-looking dot during the run, not for archival. That's ~500
+  /// points per kilometre, and each one costs 16 bytes in a Firestore
+  /// document, so a long run's stored `path` grows large enough to approach
+  /// the hard 1 MiB per-document limit. At the default 5 m tolerance —
+  /// roughly consumer-GPS noise, so the discarded detail was never real
+  /// signal — a running trail typically shrinks 5-10x with no difference
+  /// visible on a map.
+  ///
+  /// Display/storage only. Never run this over geometry that feeds scoring:
+  /// simplifying a closed loop moves its boundary, which changes the claimed
+  /// area the Cloud Function computes from it, and therefore XP.
+  static List<LatLng> simplifyPolyline(
+    List<LatLng> points, {
+    double toleranceMeters = 5.0,
+  }) {
+    if (points.length <= 2 || toleranceMeters <= 0) {
+      return List<LatLng>.from(points);
+    }
+
+    final keep = List<bool>.filled(points.length, false);
+    keep[0] = true;
+    keep[points.length - 1] = true;
+
+    // Explicit stack rather than the textbook recursion: depth degrades to
+    // O(n) on a steadily-curving path — exactly the shape a running loop
+    // has — and a trail can be tens of thousands of points.
+    final stack = <({int first, int last})>[
+      (first: 0, last: points.length - 1),
+    ];
+
+    while (stack.isNotEmpty) {
+      final range = stack.removeLast();
+      if (range.last <= range.first + 1) continue;
+
+      var maxDistance = 0.0;
+      var farthest = -1;
+      for (var i = range.first + 1; i < range.last; i++) {
+        final d = pointToSegmentDistanceMeters(
+          points[i],
+          points[range.first],
+          points[range.last],
+        );
+        if (d > maxDistance) {
+          maxDistance = d;
+          farthest = i;
+        }
+      }
+
+      if (farthest != -1 && maxDistance > toleranceMeters) {
+        keep[farthest] = true;
+        stack.add((first: range.first, last: farthest));
+        stack.add((first: farthest, last: range.last));
+      }
+    }
+
+    final simplified = <LatLng>[];
+    for (var i = 0; i < points.length; i++) {
+      if (keep[i]) simplified.add(points[i]);
+    }
+    return simplified;
+  }
+
   /// Cosmetic Catmull-Rom smoothing for polyline rendering — inserts curved
   /// interpolation between each pair of [points] so real-world turns render
   /// as smooth curves instead of angular vertices (a Google-Maps-style

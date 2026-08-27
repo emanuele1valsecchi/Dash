@@ -584,8 +584,14 @@ Keep this list current — update it whenever a feature moves between these buck
   `_SaveAction`/`_showSaveOptionsDialog` split for the same reason. **Save** calls
   `RouteRepository.publishRoute` (the same `routes` collection/repository route creation
   writes to — no new collection). A found route has no user-tapped waypoints of its own
-  (it's generated, not drawn), so `waypoints` is just the polyline again, the same
-  convention `FavoriteRouteRepository` already uses for a favourited run's whole path;
+  (it's generated, not drawn), so `waypoints` is written as an **empty list**, the same
+  convention `FavoriteRouteRepository` uses for a favourited run's whole path — both used
+  to write a second, byte-identical copy of the polyline there, doubling the stored
+  document for a field nothing ever reads back (`SavedRoute` has no `waypoints` member and
+  `SavedRoute.fromDoc` only parses `routePolyline`). Empty list rather than an omitted
+  field, deliberately: `firestore.rules`' update rule compares
+  `request.resource.data.waypoints`, and a genuinely-missing map key is a rules evaluation
+  error there, not a null — omitting it would break any future rename;
   `isLoop`/`loopAreaM2` come from the page's own `_isClosedCircuit` flag and
   `GeometryUtils.polygonAreaM2(route.polyline)`. The route is auto-named from its own
   stats (`"4.2 km loop"`/`"3.5 km route"`) rather than prompting for a name — renaming is
@@ -1041,18 +1047,56 @@ Keep this list current — update it whenever a feature moves between these buck
     distance* along the polyline (not vertex index, since a breadcrumb trail is never evenly
     sampled) and compute the local direction-of-travel bearing at each, so a viewer can tell
     which way the run actually went. A right-aligned **favourite button**
-    ([lib/services/favorite_route_repository.dart](lib/services/favorite_route_repository.dart), `FavoriteRouteRepository`) publishes the
-    *whole session's* path as a new `routes` doc — owned by the *viewer*, not the original
-    runner, tagged with `sourceSessionId`, `isLoop: session.loopsCompleted > 0`, and the
-    session's real observed `estimatedTimeMin`/`estimatedCalories` rather than distance-based
-    estimates (we actually know them here) — via the existing `RouteRepository.publishRoute`
-    (now returns the new doc's id, and takes an optional `sourceSessionId`), then links it
-    with a `favoriteRoutes` doc; un-favouriting deletes both, in that order (link first, then
-    the route — an interrupted delete should leave an orphaned-but-harmless route rather
-    than a `favoriteRoutes` doc pointing at nothing). "Already favourited?" is resolved on
-    page load by matching `sourceSessionId` against `RouteRepository.fetchUserRoutes()`'s
-    already-cached list rather than a new query/index (same "filter an already-small
-    client-side result" preference as that repository's own `fetchUserRoutes`). Disabled,
+    ([lib/services/favorite_route_repository.dart](lib/services/favorite_route_repository.dart), `FavoriteRouteRepository`) favourites the
+    *whole session's* path as a route the viewer can re-run later. **One shared route
+    document, many per-user links** — a favourited run is stored once, not once per user
+    who favourites it. The geometry goes into a single `routes` doc whose **document ID is
+    the source session's ID**, and each user gets only a small
+    `favoriteRoutes/{uid}_{sessionId}` link pointing at it. The deterministic ID is what
+    makes the de-duplication work with no lookup and no transaction: two users favouriting
+    the same run independently compute the same document ID, so the second finds it already
+    there. (Before this, every favourite published its own full copy of the polyline, so a
+    run favourited by four users cost four byte-identical copies.)
+    **Writes go through the `favoriteSession` Cloud Function ([functions/index.js](functions/index.js)), and
+    `firestore.rules` denies the client every write to both the shared route and the link
+    — this is a security boundary, not tidiness.** A shared route is read by *other* users,
+    and rules can validate a document's shape but cannot verify that a client-supplied
+    polyline actually is the run it claims to come from; a client-writable shared route
+    would let anyone pre-create `routes/{sessionId}` for a not-yet-favourited run and
+    poison the geometry every later user sees. So **only an ID and a display name cross the
+    wire** — the function reads the `runningSessions` doc under the Admin SDK and derives
+    every stored value (`routePolyline`, `distanceMeters`, `estimatedTimeMin`,
+    `estimatedCalories`, `isLoop`, `loopAreaM2`) from it, creating the shared route (only
+    if absent) and the caller's link inside one `runTransaction`. It validates the session
+    exists and has a real path, rejects a `sessionId` containing `/` or equal to `.`/`..`
+    (invalid Firestore document IDs), and caps the name at 120 chars. The shared doc
+    deliberately has **no owner and no name**: no `userId`, so it never appears in
+    `RouteRepository.fetchUserRoutes()` (which queries by owner) and, having no owner, the
+    `update`/`delete` rules (both `isOwner`-gated) deny every client write to it — no
+    single user can rename, overwrite or delete geometry the others reference; the *name*
+    is per-user and lives on each `favoriteRoutes` link, so two users can call the same
+    route whatever they like. It carries `isPublic: true` so the existing read rule lets
+    every referencing user read it, which exposes nothing new since the `runningSessions`
+    doc it was copied from is already readable by any signed-in user. The link also carries
+    a **denormalized summary** (distance/time/calories/loop flag) so a future list UI can
+    render from one query without loading a polyline per row — safe to copy rather than
+    reference, since the shared route is immutable once created, and server-written so it
+    can't be falsified. **Un-favouriting deletes only the
+    link**, never the route, which other users may still reference; reclaiming
+    unreferenced shared routes is a deliberately separate concern, and one shared doc is
+    small and bounded by the number of runs ever favourited, not by the number of users.
+    "Already favourited?" is now a single direct document read (`isFavorited(sessionId)` —
+    the link's ID is fully determined by user + session, so no query, no index, and no
+    staleness), replacing a scan of the user's whole route list for a matching
+    `sourceSessionId`. This flow no longer goes through `RouteRepository.publishRoute`,
+    which creates an *owned* route under an auto-generated ID — exactly what the sharing
+    model replaces; `publishRoute` is still correct for a route the user genuinely authored
+    (planned by hand, or saved from a parameter search), and those stay owned copies.
+    `TempProfilePage` merges both lists and tracks **which query each row came from**
+    (`_RouteSource.owned`/`favorite`) rather than inferring it from `sourceSessionId`:
+    a route favourited under the pre-sharing scheme is an owned copy that still carries
+    that field, so branching on it would wrongly try to un-favourite a document that
+    should simply be deleted. Disabled,
     with an explanatory caption, on the (now rare) case of a session with no recorded path.
 - Each `runningSessions` doc records a best-effort `startLocality` — the raw reverse-geocoded
   place name (e.g. "Seregno") of the run's starting point, via Nominatim in
@@ -1204,13 +1248,41 @@ See [firestore.rules](firestore.rules) for the authoritative, enforced version o
 - `nicknames/{nickname}` — uniqueness index; doc ID is the nickname itself, value holds
   the owning `uid`.
 - `routes/{routeId}` — owned by `userId`; geometry (`routePolyline`, `waypoints`,
-  `distanceMeters`) is immutable after create, only name/visibility can be updated. An
+  `distanceMeters`) is immutable after create, only name/visibility can be updated.
+  `waypoints` means specifically "the points the user tapped out by hand" and is only
+  populated for hand-planned routes from `route_create_page.dart`, where it carries real
+  information the road-snapped `routePolyline` can't reconstruct (kept for an eventual
+  "reopen and edit a saved route" feature, though nothing reads it back today). Routes
+  generated rather than drawn — a favourited run, a found route from search — write it as
+  an empty list instead of a duplicate polyline; see the route-search "Save route" bullet
+  above for why empty and not absent. An
   optional `sourceSessionId` marks a route created by favouriting a run from its detail
   page (see [lib/services/favorite_route_repository.dart](lib/services/favorite_route_repository.dart)) rather than drawn/planned by
-  hand — used to detect "have I already favourited this session" client-side.
-- `favoriteRoutes/{uid}_{routeId}` — `{userId, routeId}`; owner may create/delete, no
-  update. Currently written only by the favourite-a-run-as-a-route flow (see below), always
-  paired 1:1 with a `routes` doc carrying the same `routeId` and a `sourceSessionId`.
+  hand. **Two shapes live in this collection**: an *owned* route (planned by hand or saved
+  from a parameter search — `userId` is its author, who may rename it), and a *shared
+  session route* (`userId: null`, `isPublic: true`, no `name`, document ID ==
+  `sourceSessionId`), which is the single canonical copy of one run's path that every user
+  who favourites that run references instead of duplicating. **The client can never write
+  the second shape**: `create` requires `userId == request.auth.uid` (which a null-owner
+  doc fails), and `update`/`delete` are both `isOwner`-gated (which it also fails), so a
+  shared route is created only by the `favoriteSession` Cloud Function and is thereafter
+  immutable and undeletable from the client — see the run-session detail page bullet above
+  for why that is a security boundary and not just tidiness. Note the shared shape stores
+  `userId` as an explicit `null` rather than omitting the key: rules compare `data.userId`,
+  and reading a genuinely-missing key is an evaluation error there, not a null.
+- `favoriteRoutes/{uid}_{routeId}` — where `routeId` **is the source session's ID**.
+  `create` is `if false`: written only by the `favoriteSession` Cloud Function, together
+  with the shared route it points at, so a link can never reference a route that doesn't
+  exist and its denormalized summary is always the server's own copy of the run's real
+  numbers. The owner may `delete` (un-favourite) and may `update` **`name` only** (enforced
+  with the `diff().affectedKeys().hasOnly(['name'])` idiom, so `routeId` can't be repointed
+  at a different route, `userId` can't be reassigned, and the summary can't be falsified).
+  Carries `{userId, routeId, name}` plus
+  a denormalized summary (`distanceMeters`, `estimatedTimeMin`, `estimatedCalories`,
+  `isLoop`, `loopAreaM2`) so a favourites list renders from one query with no polylines.
+  Written only by the favourite-a-run flow. **Many links may point at the same `routes`
+  doc** — that is the point of the design (see the run-session detail page bullet above);
+  it is no longer 1:1.
 - `claimedAreas/{areaId}` — doc ID is `{sessionId}_{loopIndex}` of whichever run most
   recently created or absorbed it (an area's ID can outlive the specific run it's named
   after, once merges/steals touch it). `create`/`update` are both `if false` for the
@@ -1232,9 +1304,23 @@ See [firestore.rules](firestore.rules) for the authoritative, enforced version o
   it into a new route — see that bullet above; this doesn't loosen anything about who may
   *write* it). Created by the client with `pointsEarned == 0`; only a
   server process may ever change `pointsEarned`. Also carries `closedLoops` (array of
-  `{'points': [...]}` maps), the full breadcrumb `path` (array of GeoPoints — `path[0]` is
+  `{'points': [...]}` maps), the breadcrumb `path` (array of GeoPoints — `path[0]` is
   the run's real start point, what territory resolution keys off), and a best-effort
-  `startLocality` string. `territoryCity`/`territoryBroad`/`territoryBroadType`,
+  `startLocality` string. **`path` is Douglas-Peucker simplified before storage**
+  (`GeometryUtils.simplifyPolyline`, 5 m default tolerance ≈ consumer-GPS noise): the live
+  stream records a breadcrumb every 2 m — a resolution tuned for a smooth-looking dot
+  mid-run, not for archival — which is ~500 points/km, and at 16 bytes per GeoPoint a long
+  run's raw path grows toward Firestore's hard 1 MiB per-document limit. Safe against every
+  consumer: `distanceMeters` and the pace stats are measured from the *raw* breadcrumb
+  stream and stored as their own fields, never recomputed from `path`; simplification always
+  preserves first and last point, so `path[0]` territory resolution is unaffected; the rest
+  (detail-page preview, favouriting the run as a route) is display. **`closedLoops` are
+  deliberately stored raw, not simplified** — their boundaries are what
+  `onRunningSessionCreateClaimedAreas` computes claimed area and XP from, so moving them even
+  slightly would change a score the client must not be able to influence. That leaves a very
+  long multi-loop run still theoretically able to approach the 1 MiB ceiling via
+  `closedLoops` alone; if that ever bites, fix it server-side rather than by simplifying loop
+  geometry on the client. `territoryCity`/`territoryBroad`/`territoryBroadType`,
   `totalAreaM2`/`stolenAreaM2`, `xpFromDistance`/`xpFromArea`/`xpFromStolenArea`, and
   `pointsProcessed` are all server-only the same way (client must omit them on create;
   `firestore.rules` enforces this via `noServerOnlyFields` on create and a

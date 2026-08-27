@@ -1622,15 +1622,16 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   /// `TempProfilePage`'s "My Routes" list. A found route has no user-placed
   /// waypoints of its own (it's generated, not tapped out by hand), so —
   /// same convention `FavoriteRouteRepository` already uses for a
-  /// favourited run's whole path — [waypoints] is just the polyline again
-  /// rather than a separate, smaller point list.
+  /// favourited run's whole path — `waypoints` is written empty rather than
+  /// as a second copy of the polyline, which doubled the stored document for
+  /// a field nothing reads back.
   Future<void> _saveRoute(_FoundRoute route) async {
     final name = '${Units.current.distanceMajor(route.distanceKm * 1000, decimals: 1)} '
         '${_isClosedCircuit ? 'loop' : 'route'}';
     try {
       await RouteRepository.instance.publishRoute(
         name: name,
-        waypoints: route.polyline,
+        waypoints: const [],
         routePolyline: route.polyline,
         distanceMeters: route.distanceKm * 1000,
         estimatedTimeMin: route.estimatedTimeMin,

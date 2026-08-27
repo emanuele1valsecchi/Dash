@@ -13,11 +13,16 @@ plugins {
 android {
     namespace = "com.example.dash"
     compileSdk = 37
-    // permission_handler_android requires compiling against API 37, which the
-    // Android SDK currently only publishes as the decimal-versioned platform
-    // "android-37.0" (AGP 9's compileSdk is Int-only and looks up the bare
-    // hash "android-37" by default, which doesn't exist yet) — compileSdkMinor
-    // is the AGP 9 property that expresses the ".0", producing hash "android-37.0".
+    // API 37 is only published by the Android SDK as the decimal-versioned
+    // platform "android-37.0" (AGP 9's compileSdk is Int-only and looks up the
+    // bare hash "android-37" by default, which doesn't exist yet) —
+    // compileSdkMinor is the AGP 9 property that expresses the ".0",
+    // producing hash "android-37.0".
+    //
+    // This was originally raised to 37 because permission_handler_android 14
+    // required it. That pin is now held at 13.x (see pubspec.yaml), which only
+    // needs 35, so 37 is no longer forced — but compiling against the newer
+    // platform is harmless and other plugins may want it, so it stays.
     compileSdkMinor = 0
     ndkVersion = flutter.ndkVersion
 

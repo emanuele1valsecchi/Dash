@@ -1462,6 +1462,127 @@ async function resetBadgeDocuments(docs) {
 }
 
 // ==============================================================================
+// FAVOURITE A RUN AS A ROUTE
+// ============================================================================
+
+/**
+ * Favourites a completed run as a route the caller can re-run later.
+ *
+ * A favourited run is stored ONCE and shared by everyone who favourites it:
+ * the geometry lives in a single `routes` doc whose ID is the source
+ * session's ID, and each user gets a small `favoriteRoutes/{uid}_{sessionId}`
+ * link pointing at it. The deterministic ID is what makes the sharing
+ * collision-free — two users favouriting the same run resolve to the same
+ * document without a lookup.
+ *
+ * This runs server-side, and `firestore.rules` denies the client any write to
+ * both the shared route and the link, for one specific reason: the shared
+ * document is read by OTHER users. If a client could write it, anyone could
+ * pre-create `routes/{sessionId}` for a run nobody had favourited yet and
+ * poison the geometry every later user would see. Rules can validate a
+ * document's shape but cannot verify that a client-supplied polyline actually
+ * matches the run it claims to come from — only a server that reads the
+ * session itself can. So the client sends an ID, never geometry, and every
+ * stored value here is copied from the session document under the Admin SDK.
+ */
+exports.favoriteSession = functions
+  .region("europe-west1")
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError(
+        "unauthenticated",
+        "You must be logged in to favourite a run."
+      );
+    }
+
+    const uid = context.auth.uid;
+    const sessionId = typeof data?.sessionId === "string" ? data.sessionId.trim() : "";
+    // Firestore document IDs may not contain '/', and '.'/'..' are reserved.
+    if (!sessionId || sessionId.includes("/") || sessionId === "." || sessionId === "..") {
+      throw new functions.https.HttpsError(
+        "invalid-argument",
+        "A valid sessionId is required."
+      );
+    }
+
+    const rawName = typeof data?.name === "string" ? data.name.trim() : "";
+    // Bounded so a client cannot store an unbounded string on its own link.
+    const name = (rawName || "Favourited run").slice(0, 120);
+
+    const sessionSnap = await db.collection("runningSessions").doc(sessionId).get();
+    if (!sessionSnap.exists) {
+      throw new functions.https.HttpsError(
+        "not-found",
+        "That run no longer exists."
+      );
+    }
+
+    const session = sessionSnap.data();
+    const path = Array.isArray(session.path) ? session.path : [];
+    if (path.length < 2) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "That run has no recorded path, so it cannot be favourited."
+      );
+    }
+
+    const routeRef = db.collection("routes").doc(sessionId);
+    const linkRef = db.collection("favoriteRoutes").doc(`${uid}_${sessionId}`);
+
+    // Derived here, from the session, rather than trusted from the caller.
+    const distanceMeters = Number(session.distanceMeters) || 0;
+    const estimatedTimeMin = (Number(session.durationMs) || 0) / 60000;
+    const estimatedCalories = Number(session.caloriesBurned) || 0;
+    const isLoop = (Number(session.loopsCompleted) || 0) > 0;
+    const loopAreaM2 = Number(session.totalAreaM2) || 0;
+
+    await db.runTransaction(async (tx) => {
+      const existingRoute = await tx.get(routeRef);
+
+      // Created once, then never rewritten: later favourites of the same run
+      // must not be able to reshape geometry earlier ones already reference.
+      if (!existingRoute.exists) {
+        tx.set(routeRef, {
+          // No owner and no name. The name is per-user and lives on the link
+          // below, so two users can call the same route whatever they like.
+          userId: null,
+          waypoints: [],
+          routePolyline: path,
+          distanceMeters,
+          estimatedTimeMin,
+          estimatedCalories,
+          isLoop,
+          loopAreaM2,
+          // Lets every referencing user read it. Exposes nothing new: the
+          // session it was copied from is already readable by any signed-in
+          // user (see the runningSessions read rule).
+          isPublic: true,
+          startLocality: session.startLocality ?? null,
+          sourceSessionId: sessionId,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      tx.set(linkRef, {
+        userId: uid,
+        routeId: sessionId,
+        name,
+        // Denormalized summary so a favourites list renders from one query
+        // without loading a polyline per row. Safe to copy rather than
+        // reference: the shared route is immutable once created.
+        distanceMeters,
+        estimatedTimeMin,
+        estimatedCalories,
+        isLoop,
+        loopAreaM2,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    return { routeId: sessionId };
+  });
+
+// ==============================================================================
 // ACCOUNT DELETION
 // ============================================================================
 
