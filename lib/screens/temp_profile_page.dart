@@ -3,8 +3,29 @@ import 'package:flutter_map/flutter_map.dart';
 
 import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
+import '../services/favorite_route_repository.dart';
 import '../services/route_repository.dart';
 import '../widgets/units_scope.dart';
+
+/// Where a listed route came from, which is what decides whether its delete
+/// button destroys a document or just unlinks a favourite.
+///
+/// Tracked explicitly rather than inferred from a field on the route: a route
+/// favourited *before* favourites became shared is an owned copy that still
+/// carries a `sourceSessionId`, so branching on that field would wrongly try
+/// to un-favourite it and leave the copy stranded in the list. Which query
+/// returned it is unambiguous — [RouteRepository.fetchUserRoutes] only ever
+/// returns documents this user owns and may delete, and
+/// [FavoriteRouteRepository.fetchFavorites] only ever returns shared routes
+/// they may only unlink from.
+enum _RouteSource { owned, favorite }
+
+class _RouteEntry {
+  final SavedRoute route;
+  final _RouteSource source;
+
+  const _RouteEntry(this.route, this.source);
+}
 
 class TempProfilePage extends StatefulWidget {
   const TempProfilePage({super.key});
@@ -14,7 +35,7 @@ class TempProfilePage extends StatefulWidget {
 }
 
 class _TempProfilePageState extends State<TempProfilePage> {
-  List<SavedRoute>? _routes;
+  List<_RouteEntry>? _entries;
   bool _isLoading = true;
   String? _error;
 
@@ -26,20 +47,35 @@ class _TempProfilePageState extends State<TempProfilePage> {
 
   Future<void> _load() async {
     try {
-      final routes = await RouteRepository.instance.fetchUserRoutes();
-      if (mounted) setState(() { _routes = routes; _isLoading = false; });
+      final owned = await RouteRepository.instance.fetchUserRoutes();
+      final favorites = await FavoriteRouteRepository.instance.fetchFavorites();
+      final entries = <_RouteEntry>[
+        for (final r in owned) _RouteEntry(r, _RouteSource.owned),
+        for (final r in favorites) _RouteEntry(r, _RouteSource.favorite),
+      ]..sort((a, b) => b.route.createdAt.compareTo(a.route.createdAt));
+
+      if (mounted) setState(() { _entries = entries; _isLoading = false; });
     } catch (e) {
       if (mounted) setState(() { _error = e.toString(); _isLoading = false; });
     }
   }
 
-  Future<void> _confirmDelete(SavedRoute route) async {
+  Future<void> _confirmDelete(_RouteEntry entry) async {
+    final isFavorite = entry.source == _RouteSource.favorite;
+    final route = entry.route;
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Delete route?'),
-        content: Text('Delete "${route.name}"? This cannot be undone.'),
+        title: Text(isFavorite ? 'Remove favourite?' : 'Delete route?'),
+        content: Text(
+          isFavorite
+              // The route itself survives: other users' favourites may point
+              // at the same shared document.
+              ? 'Remove "${route.name}" from your favourites?'
+              : 'Delete "${route.name}"? This cannot be undone.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -48,19 +84,27 @@ class _TempProfilePageState extends State<TempProfilePage> {
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(true),
             style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Delete'),
+            child: Text(isFavorite ? 'Remove' : 'Delete'),
           ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
     try {
-      await RouteRepository.instance.deleteRoute(route.id);
-      if (mounted) setState(() => _routes?.removeWhere((r) => r.id == route.id));
+      if (isFavorite) {
+        await FavoriteRouteRepository.instance.unfavoriteRoute(route.id);
+      } else {
+        await RouteRepository.instance.deleteRoute(route.id);
+      }
+      if (mounted) {
+        setState(() => _entries?.removeWhere(
+              (e) => e.route.id == route.id && e.source == entry.source,
+            ));
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to delete: $e')),
+          SnackBar(content: Text('Failed to remove: $e')),
         );
       }
     }
@@ -90,12 +134,13 @@ class _TempProfilePageState extends State<TempProfilePage> {
             )
           : _error != null
               ? Center(child: Text('Error: $_error'))
-              : (_routes == null || _routes!.isEmpty)
+              : (_entries == null || _entries!.isEmpty)
                   ? _buildEmptyState()
                   : ListView.builder(
                       padding: const EdgeInsets.symmetric(vertical: 16),
-                      itemCount: _routes!.length,
-                      itemBuilder: (context, i) => _buildRouteCard(context, _routes![i]),
+                      itemCount: _entries!.length,
+                      itemBuilder: (context, i) =>
+                          _buildRouteCard(context, _entries![i]),
                     ),
     );
   }
@@ -126,7 +171,8 @@ class _TempProfilePageState extends State<TempProfilePage> {
     );
   }
 
-  Widget _buildRouteCard(BuildContext context, SavedRoute route) {
+  Widget _buildRouteCard(BuildContext context, _RouteEntry entry) {
+    final route = entry.route;
     final distLabel = Units.of(context).distance(route.distanceKm * 1000);
     final timeMin = route.estimatedTimeMin;
     final timeLabel = timeMin < 60
@@ -229,10 +275,16 @@ class _TempProfilePageState extends State<TempProfilePage> {
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.delete_outline_rounded,
-                      color: Color(0xFFD32F2F)),
-                  onPressed: () => _confirmDelete(route),
-                  tooltip: 'Delete route',
+                  icon: Icon(
+                    entry.source == _RouteSource.favorite
+                        ? Icons.favorite_rounded
+                        : Icons.delete_outline_rounded,
+                    color: const Color(0xFFD32F2F),
+                  ),
+                  onPressed: () => _confirmDelete(entry),
+                  tooltip: entry.source == _RouteSource.favorite
+                      ? 'Remove from favourites'
+                      : 'Delete route',
                 ),
               ],
             ),

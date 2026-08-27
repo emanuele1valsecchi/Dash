@@ -9,7 +9,6 @@ import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
 import '../services/favorite_route_repository.dart';
 import '../services/profile_service.dart';
-import '../services/route_repository.dart';
 import '../services/run_session_repository.dart';
 import '../utils/geometry_utils.dart';
 import '../widgets/units_scope.dart';
@@ -67,11 +66,14 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
   late final Future<RunSession?> _sessionFuture =
       RunSessionRepository.instance.fetchSessionById(widget.sessionId);
 
-  /// Id of the `routes` doc this session was favourited as, or null if it
-  /// hasn't been (yet). Resolved on load by matching `sourceSessionId`
-  /// against the current user's already-cached routes — see
-  /// `RouteRepository.fetchUserRoutes`.
-  String? _favoritedRouteId;
+  /// Whether the signed-in user has already favourited this session.
+  ///
+  /// A favourite's route ID *is* the session ID (see
+  /// `FavoriteRouteRepository`), so this is a single direct document read
+  /// rather than a scan of the user's whole route list for a matching
+  /// `sourceSessionId` — which is both cheaper and immune to that list's
+  /// cache being stale.
+  bool _isFavorited = false;
   bool _loadingFavoriteState = true;
   bool _togglingFavorite = false;
 
@@ -82,17 +84,23 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
   }
 
   Future<void> _loadFavoriteState() async {
-    final routes = await RouteRepository.instance.fetchUserRoutes();
-    if (!mounted) return;
-    SavedRoute? match;
-    for (final r in routes) {
-      if (r.sourceSessionId == widget.sessionId) {
-        match = r;
-        break;
-      }
+    // Never let a failure here leave the button spinning forever: this runs
+    // on page load, and an unhandled throw would skip the setState that
+    // clears [_loadingFavoriteState], which the button reads as "still
+    // loading" with nothing left to finish it. Falling back to "not
+    // favourited" leaves the button usable — a favourite attempt reports its
+    // own errors, and re-favouriting an already-favourited run is harmless
+    // (the Cloud Function writes the same link ID either way).
+    var favorited = false;
+    try {
+      favorited =
+          await FavoriteRouteRepository.instance.isFavorited(widget.sessionId);
+    } catch (e) {
+      debugPrint('Could not resolve favourite state: $e');
     }
+    if (!mounted) return;
     setState(() {
-      _favoritedRouteId = match?.id;
+      _isFavorited = favorited;
       _loadingFavoriteState = false;
     });
   }
@@ -101,20 +109,20 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
     if (_togglingFavorite || session.path.length < 2) return;
     setState(() => _togglingFavorite = true);
     try {
-      final currentRouteId = _favoritedRouteId;
-      if (currentRouteId != null) {
-        await FavoriteRouteRepository.instance.unfavoriteRoute(currentRouteId);
+      if (_isFavorited) {
+        await FavoriteRouteRepository.instance.unfavoriteRoute(session.id);
         if (!mounted) return;
-        setState(() => _favoritedRouteId = null);
+        setState(() => _isFavorited = false);
       } else {
         final username = await _usernameFuture;
-        final routeId = await FavoriteRouteRepository.instance
-            .favoriteSessionAsRoute(
-              session,
-              routeName: username != null ? "$username's run" : 'Favourited run',
-            );
+        // Only the ID is sent: the server copies the geometry out of the
+        // session itself rather than trusting anything from this client.
+        await FavoriteRouteRepository.instance.favoriteSession(
+          session.id,
+          routeName: username != null ? "$username's run" : 'Favourited run',
+        );
         if (!mounted) return;
-        setState(() => _favoritedRouteId = routeId);
+        setState(() => _isFavorited = true);
       }
     } catch (e) {
       if (mounted) {
@@ -277,7 +285,7 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
             alignment: Alignment.centerRight,
             child: _FavoriteButton(
               enabled: canFavorite && !_loadingFavoriteState,
-              isFavorited: _favoritedRouteId != null,
+              isFavorited: _isFavorited,
               isLoading: _togglingFavorite || _loadingFavoriteState,
               onTap: () => _toggleFavorite(session),
             ),
