@@ -18,12 +18,15 @@ class DashNavigationTopBar extends StatelessWidget implements PreferredSizeWidge
     return AppBar(
       elevation: 0,
       centerTitle: true,
+      shadowColor: Theme.of(context).shadowColor.withAlpha(60),
       foregroundColor: Theme.of(context).colorScheme.primary,
       titleTextStyle: Theme.of(context).textTheme.bodyMedium!.copyWith(
         color: Theme.of(context).colorScheme.primary
       ),
       title: Text(title!),
+      animateColor: true,
       actions: actions,
+      toolbarOpacity: 1,
     );
   }
 }
