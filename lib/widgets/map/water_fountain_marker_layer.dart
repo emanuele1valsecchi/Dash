@@ -46,6 +46,12 @@ class WaterFountainMarkerLayer extends StatelessWidget {
     if (!visible) return const SizedBox.shrink();
 
     return MarkerLayer(
+      // The run-tracking map rotates to follow the phone's heading
+      // (heading-up navigation). Without this, markers stay pinned to the
+      // map's own coordinate space and visually counter-rotate as the phone
+      // turns, so the icon appears to stay pointed at true north instead of
+      // staying upright on screen.
+      rotate: true,
       markers: fountains
           .map(
             (f) => Marker(

@@ -75,11 +75,54 @@ service cloud.firestore {
     }
 
     // ---------- routes ----------
+    // Two shapes live here:
+    //
+    //  1. An OWNED route — planned by hand on the map, or saved from a
+    //     parameter search. `userId` is its author, who may rename it.
+    //
+    //  2. A SHARED session route — the canonical copy of one run's path,
+    //     created the first time any user favourites that run and then
+    //     referenced by every later user who favourites it, instead of each
+    //     of them storing their own byte-identical duplicate. It has NO
+    //     owner (`userId == null`) and NO name (each user's own name for it
+    //     lives on their `favoriteRoutes` link), and its document ID is the
+    //     source session's ID — which is what makes the de-duplication
+    //     collision-free without a lookup: two users favouriting the same
+    //     run independently compute the same document ID.
+    //
+    //     THE CLIENT MAY NOT CREATE ONE. It is written only by the
+    //     `favoriteSession` Cloud Function (Admin SDK), which copies the
+    //     geometry out of the `runningSessions` doc itself. This is not
+    //     optional strictness: a shared route is read by OTHER users, and
+    //     rules can validate a document's *shape* but cannot verify that a
+    //     client-supplied polyline actually matches the run it claims to
+    //     come from — so a client-writable shared route would let anyone
+    //     pre-create `routes/{sessionId}` for a not-yet-favourited run and
+    //     poison the geometry every later user sees. The client sends an ID;
+    //     the server decides what geometry that means.
+    //
+    //     It is created once and never rewritten — `allow update` below
+    //     requires an owner, and a shared route has none — so later
+    //     favourites of the same run cannot reshape geometry earlier ones
+    //     already reference. It carries `isPublic: true` so the read rule
+    //     lets every referencing user read it; this exposes nothing new,
+    //     since the run it was copied from is already readable by any
+    //     signed-in user (see the runningSessions read rule below).
     match /routes/{routeId} {
+      // `resource == null` (document does not exist) is allowed through so a
+      // direct get() on a missing route returns an empty snapshot instead of
+      // failing the whole read with permission-denied — dereferencing a null
+      // resource is an evaluation error, which denies. Nothing is leaked by
+      // it: a shared route's ID is a session ID, and every runningSessions
+      // doc is already readable by any signed-in user, while an owned route's
+      // ID is an unguessable Firestore auto-ID.
       allow read: if isSignedIn()
-        && (resource.data.userId == request.auth.uid
+        && (resource == null
+            || resource.data.userId == request.auth.uid
             || resource.data.isPublic == true);
 
+      // Owned routes only — a shared session route has no owner, so this
+      // denies creating one. Only the favoriteSession Cloud Function can.
       allow create: if isSignedIn()
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.createdAt == request.time
@@ -87,12 +130,16 @@ service cloud.firestore {
         && request.resource.data.isLoop is bool;
 
       // Owner may rename or toggle visibility. Geometry is immutable.
+      // A shared session route has no owner, so this denies every client
+      // write to one — including from the user who originally created it.
       allow update: if isOwner(resource.data)
         && request.resource.data.userId == resource.data.userId
         && request.resource.data.routePolyline == resource.data.routePolyline
         && request.resource.data.waypoints == resource.data.waypoints
         && request.resource.data.distanceMeters == resource.data.distanceMeters;
 
+      // Likewise denies deleting a shared route: other users' favourites
+      // reference it, so it must outlive any one of them un-favouriting.
       allow delete: if isOwner(resource.data);
     }
 
@@ -174,13 +221,49 @@ service cloud.firestore {
     }
 
     // ---------- favoriteRoutes ----------
+    // Each doc links one user to one route they favourited. For a favourited
+    // run this is the ONLY per-user document: the geometry itself lives in a
+    // single shared `routes` doc (see the routes block above), so this link
+    // is where anything personal about the favourite belongs — the user's own
+    // name for it, and a denormalized summary so a list can be rendered from
+    // one query without loading every polyline.
     match /favoriteRoutes/{favId} {
-      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isSignedIn()
-        && request.resource.data.userId == request.auth.uid
-        && favId == (request.auth.uid + '_' + request.resource.data.routeId);
+      // `resource` is null when the document does not exist, and
+      // dereferencing null is an evaluation error — which denies the read.
+      // That case is NOT an edge case here: "have I favourited this run?" is
+      // answered by getting this exact document, and the usual answer is that
+      // it isn't there yet. So nonexistence has to be handled explicitly.
+      //
+      // It is scoped by the ID's own uid prefix (which `create` guarantees,
+      // and which the favoriteSession Cloud Function writes) rather than
+      // allowed outright, so this can't be used to probe whether ANOTHER
+      // user has favourited a given run: a missing doc under someone else's
+      // prefix stays denied. split() is used rather than matches() because a
+      // uid containing regex metacharacters would make a prefix regex match
+      // too much — this way an unexpected uid shape fails closed.
+      allow read: if isSignedIn() && (
+        (resource != null && resource.data.userId == request.auth.uid)
+        || (resource == null && favId.split('_')[0] == request.auth.uid)
+      );
+
+      // Created only by the favoriteSession Cloud Function, together with the
+      // shared route it points at. Keeping create server-side means a link can
+      // never reference a route that does not exist, and the denormalized
+      // summary on it is always the server's own copy of the run's real
+      // numbers rather than whatever a client claimed they were.
+      allow create: if false;
+
+      // The owner may un-favourite, which deletes this link only — never the
+      // shared route, which other users' links may still reference.
       allow delete: if isOwner(resource.data);
-      allow update: if false;
+
+      // The owner may rename their own favourite. Restricted to `name`
+      // specifically so `routeId` can't be repointed at a different route,
+      // `userId` can't be reassigned, and the summary can't be falsified.
+      allow update: if isSignedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['name']);
     }
 
     // ---------- notifications ----------

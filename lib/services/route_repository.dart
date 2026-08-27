@@ -39,9 +39,32 @@ class SavedRoute {
     this.sourceSessionId,
   });
 
-  factory SavedRoute.fromDoc(QueryDocumentSnapshot doc) {
-    final d = doc.data() as Map<String, dynamic>;
+  factory SavedRoute.fromDoc(QueryDocumentSnapshot doc) =>
+      SavedRoute._fromData(doc.id, doc.data() as Map<String, dynamic>);
 
+  /// Builds a view model for a *shared* session route — the single, ownerless
+  /// `routes` doc many users' favourites point at (see
+  /// `FavoriteRouteRepository`). That doc carries no `name`, because the name
+  /// is per-user and lives on each user's own `favoriteRoutes` link; [name]
+  /// is that user's name for it.
+  ///
+  /// Takes a plain [DocumentSnapshot] rather than a [QueryDocumentSnapshot]
+  /// because a shared route is fetched directly by ID, not through a query.
+  factory SavedRoute.fromSharedRoute(
+    DocumentSnapshot doc, {
+    required String name,
+  }) =>
+      SavedRoute._fromData(
+        doc.id,
+        (doc.data() as Map<String, dynamic>? ?? const {}),
+        nameOverride: name,
+      );
+
+  factory SavedRoute._fromData(
+    String id,
+    Map<String, dynamic> d, {
+    String? nameOverride,
+  }) {
     List<LatLng> toLatLngs(String field) {
       final raw = (d[field] as List<dynamic>?) ?? [];
       return raw.map((p) {
@@ -51,8 +74,8 @@ class SavedRoute {
     }
 
     return SavedRoute(
-      id: doc.id,
-      name: d['name'] as String? ?? 'Unnamed route',
+      id: id,
+      name: nameOverride ?? d['name'] as String? ?? 'Unnamed route',
       distanceMeters: (d['distanceMeters'] as num?)?.toDouble() ?? 0.0,
       estimatedTimeMin: (d['estimatedTimeMin'] as num?)?.toDouble() ?? 0.0,
       estimatedCalories: (d['estimatedCalories'] as num?)?.toDouble() ?? 0.0,

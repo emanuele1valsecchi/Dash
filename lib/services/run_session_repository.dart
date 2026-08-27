@@ -5,6 +5,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
+import '../utils/geometry_utils.dart';
+
 /// A single completed, live-tracked run as stored in the `runningSessions`
 /// Firestore collection.
 ///
@@ -108,6 +110,20 @@ class RunSessionRepository {
   /// deliberately just the raw place name for display — scoreboard territory
   /// placement is separate, server-computed logic (see `functions/territory.js`)
   /// keyed off real coordinates, not this string.
+  ///
+  /// [path] is Douglas-Peucker simplified before storage (see
+  /// [GeometryUtils.simplifyPolyline] for why the live 2 m breadcrumb
+  /// resolution is far finer than anything worth archiving). This is safe
+  /// against every consumer of the stored path: `distanceMeters` and the pace
+  /// stats are passed in already measured from the *raw* breadcrumb stream
+  /// and are never recomputed from this field; territory resolution keys off
+  /// `path[0]`, which simplification always preserves; everything else — the
+  /// detail-page preview, favouriting the run as a route — is display.
+  ///
+  /// [closedLoops] are deliberately stored raw. Their boundaries are what
+  /// `onRunningSessionCreateClaimedAreas` computes claimed area and XP from,
+  /// so moving them even slightly would change a score the client must not
+  /// influence.
   Future<String> saveSession({
     required String name,
     required double distanceMeters,
@@ -122,6 +138,8 @@ class RunSessionRepository {
     int? avgHeartRateBpm,
     int? maxHeartRateBpm,
   }) async {
+    final storedPath = GeometryUtils.simplifyPolyline(path);
+
     final startLocality =
         path.isEmpty ? null : await _reverseGeocodeLocality(path.first);
 
@@ -140,7 +158,8 @@ class RunSessionRepository {
       'caloriesBurned': caloriesBurned,
       'elevationDifferenceMeters': elevationDifferenceMeters,
       'loopsCompleted': loopsCompleted,
-      'path': path.map((p) => GeoPoint(p.latitude, p.longitude)).toList(),
+      'path':
+          storedPath.map((p) => GeoPoint(p.latitude, p.longitude)).toList(),
       'closedLoops': closedLoops
           .map((poly) => {
                 'points':
