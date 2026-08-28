@@ -1,4 +1,4 @@
-:::mermaid
+```mermaid
 sequenceDiagram
     participant User
     participant EmailPage
@@ -20,4 +20,4 @@ sequenceDiagram
     else Email not verified yet
         EmailPage->>User: Show information snackbar
     end
-:::
+```
