@@ -1,9 +1,9 @@
 import 'package:dash/extensions/dash_snackbar.dart';
+import 'package:dash/root_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../services/profile_service.dart';
 import 'welcome_register_page.dart';
-import 'home_page.dart';
 
 class EmailConfirmationScreen extends StatefulWidget {
   final String email;
@@ -31,7 +31,7 @@ class _EmailConfirmationScreenState extends State<EmailConfirmationScreen> {
 
     if (exists) {
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomePage()),
+        MaterialPageRoute(builder: (_) => const RootScreen()),
       );
     } else {
       Navigator.of(context).pushReplacement(

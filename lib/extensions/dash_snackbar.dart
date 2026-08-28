@@ -42,7 +42,6 @@ extension SnackbarExtension on BuildContext {
       );
   }
 
-  // 2. Public method for Errors
   void showErrorSnackBar(String message, {SnackBarAction? action}) {
     _buildAndShowSnackBar(
       message, 
@@ -50,8 +49,7 @@ extension SnackbarExtension on BuildContext {
       action: action
     );
   }
-
-  // 3. Public method for Success / Info messages
+  
   void showSuccessSnackBar(String message, {SnackBarAction? action}) {
     _buildAndShowSnackBar(
       message, 

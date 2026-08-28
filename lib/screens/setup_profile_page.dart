@@ -1,11 +1,11 @@
 import 'package:dash/extensions/dash_snackbar.dart';
+import 'package:dash/root_screen.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:material_symbols_icons/symbols.dart';
 import '../widgets/profile_avatar_widget.dart';
-import 'home_page.dart';
 
 class SetupProfileScreen extends StatefulWidget {
   const SetupProfileScreen({super.key});
@@ -104,7 +104,7 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
         context.showSuccessSnackBar("Profile saved successfully");
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const HomePage()),
+          MaterialPageRoute(builder: (_) => const RootScreen()),
         );
       }
     } catch (e) {

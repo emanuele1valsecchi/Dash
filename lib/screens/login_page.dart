@@ -1,3 +1,4 @@
+import 'package:dash/root_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import '../services/auth_service.dart';
@@ -5,7 +6,6 @@ import 'legal_page.dart';
 import 'register_page.dart';
 import '../services/profile_service.dart';
 import 'welcome_register_page.dart';
-import 'home_page.dart';
 import '../services/push_notification_service.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -104,7 +104,7 @@ class _LoginScreenState extends State<LoginScreen> {
     
     if (exists) {
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomePage()),
+        MaterialPageRoute(builder: (_) => const RootScreen()),
       );
     } else {
       Navigator.of(context).pushReplacement(

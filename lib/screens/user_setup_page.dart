@@ -1,8 +1,8 @@
 import 'dart:io';
+import 'package:dash/root_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../services/profile_service.dart';
-import 'home_page.dart';
 
 class UserSetupScreen extends StatefulWidget {
   const UserSetupScreen({super.key});
@@ -86,7 +86,7 @@ class _UserSetupScreenState extends State<UserSetupScreen> {
 
       if (mounted) {
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const HomePage()),
+          MaterialPageRoute(builder: (_) => const RootScreen()),
         );
       }
 

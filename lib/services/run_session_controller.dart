@@ -10,6 +10,7 @@ import '../utils/geometry_utils.dart';
 import 'location_service.dart';
 import 'run_foreground_service.dart';
 import 'run_session_repository.dart';
+import '../widgets/units_scope.dart';
 
 /// A single accepted GPS fix, kept alongside its timestamp so pace can be
 /// computed over a real time window rather than a fixed number of points.
@@ -349,7 +350,7 @@ class RunSessionController extends ChangeNotifier {
     });
   }
 
-  String _notificationBody() {
+  /*String _notificationBody() {
     final km = (_distanceMeters / 1000).toStringAsFixed(2);
     final elapsed = _stopwatch.elapsed;
     String two(int v) => v.toString().padLeft(2, '0');
@@ -357,6 +358,37 @@ class RunSessionController extends ChangeNotifier {
         ? '${elapsed.inHours}:${two(elapsed.inMinutes % 60)}:${two(elapsed.inSeconds % 60)}'
         : '${two(elapsed.inMinutes % 60)}:${two(elapsed.inSeconds % 60)}';
     return '$km km · $clock';
+  }*/
+
+  String _getNotificationDirection() {
+    final guidance = _guidance;
+    if (guidance == null) return '';
+    if (guidance.isOffRoute) return ' · Off route';
+
+    final distance = guidance.distanceToTurnMeters;
+    final angle = guidance.turnAngleDegrees;
+
+    if (distance == null || angle == null) return ' · Continue straight';
+
+    final side = angle < 0 ? 'left' : 'right';
+    final verb = angle.abs() >= 70.0 ? 'Turn' : 'Bear';
+
+    if (distance < 15.0) return ' · $verb $side now';
+    
+    return ' · $verb $side in ${Units.current.shortDistance(distance, roundTo: 10)}';
+  }
+
+  String _notificationBody() {
+    final elapsed = _stopwatch.elapsed;
+    String two(int v) => v.toString().padLeft(2, '0');
+    final clock = elapsed.inHours > 0
+        ? '${elapsed.inHours}:${two(elapsed.inMinutes % 60)}:${two(elapsed.inSeconds % 60)}'
+        : '${two(elapsed.inMinutes % 60)}:${two(elapsed.inSeconds % 60)}';
+    
+    final distanceStr = Units.current.distanceMajor(_distanceMeters);
+    final directionText = _getNotificationDirection();
+    
+    return '$distanceStr · $clock$directionText';
   }
 
   Timer? _notificationTimer;

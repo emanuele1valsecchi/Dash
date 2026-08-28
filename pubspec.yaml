@@ -28,6 +28,7 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
+  flutter_tts: ^4.0.2
   flutter:
     sdk: flutter
   smooth_page_indicator: ^3.0.0
