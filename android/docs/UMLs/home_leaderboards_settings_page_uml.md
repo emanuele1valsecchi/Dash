@@ -1,4 +1,4 @@
-:::mermaid
+```mermaid
 classDiagram
     class LeaderboardViewConfig {
         +String title
@@ -25,4 +25,4 @@ classDiagram
 
     HomeLeaderboardsSettingsPage --> _HomeLeaderboardsSettingsPageState : creates
     _HomeLeaderboardsSettingsPageState "1" o-- "many" LeaderboardViewConfig : manages
-:::
+```
