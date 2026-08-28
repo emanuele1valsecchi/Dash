@@ -1,26 +1,27 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/models/home_badge_ui_model.dart';
-import 'package:dash/screens/badge_page.dart';
 import 'package:dash/screens/edit_profile_page.dart';
+import 'package:dash/screens/share_profile_page.dart';
 import 'package:dash/services/badge_service.dart';
 import 'package:dash/services/route_repository.dart';
 import 'package:dash/services/storage_service.dart';
-import 'package:dash/widgets/badge/dash_badge.dart';
-import 'package:dash/widgets/dash_gesture_card_container.dart';
+import 'package:dash/widgets/dash_action_button.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:dash/widgets/dash_route_card.dart';
 import 'package:dash/widgets/dash_section_container.dart';
 import 'package:dash/widgets/profile/bio_text_box.dart';
-import 'package:dash/widgets/profile/profile_picture_avatar.dart';
+import 'package:dash/widgets/profile/profile_badge_section.dart';
+import 'package:dash/widgets/profile/profile_header.dart';
 import 'package:dash/widgets/profile/route_source.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'settings_page.dart';
-import 'package:dash/utils/strings_utils.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -108,10 +109,20 @@ class _ProfilePageState extends State<ProfilePage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               spacing: ResponsiveSpacing().lg,
               children: [
-                _buildProfileHeader(),
+                ProfileHeader(
+                  name: _name,
+                  surname: _surname,
+                  email: _email,
+                  profileImageUrl: _profileImageUrl,
+                  followers: _followers,
+                  following: _following,
+                ),
                 BioTextBox(bio: _bio),
                 _buildActionButtons(),
-                _buildBadgeSection(),
+                ProfileBadgeSection(
+                  badges: _badges, 
+                  userId: FirebaseAuth.instance.currentUser!.uid
+                ),
                 _buildActivitiesSection(),
               ],
             ),
@@ -119,118 +130,56 @@ class _ProfilePageState extends State<ProfilePage> {
     );
   }
 
-  Widget _buildProfileHeader(){
-    final double screenWidth = MediaQuery.widthOf(context);
-    final double screenHeight = MediaQuery.heightOf(context);
-
+  Widget _buildActionButtons() {
     return Row(
+      mainAxisSize: MainAxisSize.max,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+
       children: [
-        ProfilePictureAvatar(imageUrl: _profileImageUrl, initialNameSurname: getFirstLetters(_name, _surname),),
-        SizedBox(width: screenWidth * 0.08),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '$_name $_surname',
-                style: Theme.of(context).textTheme.headlineSmall),
-              Text(
-                _email,
-                style: Theme.of(context).textTheme.labelLarge!.copyWith(color: Theme.of(context).colorScheme.outline)
-              ),
-              SizedBox(height: screenHeight * 0.02),
-              Row(
-                children: [
-                  _buildFollowersCount(formatNumber(_followers), 'Followers'),
-                  _buildFollowersCount(formatNumber(_following), 'Following'),
-                ],
-              ),
-            ],
-          ),
+        DashActionButton(
+          onPressed: _editProfile,
+          label: "Edit Profile",
+          icon: Symbols.person_edit_rounded,
         ),
+
+        DashActionButton(
+          onPressed: _shareProfile,
+          label: "Share Profile",
+          icon: Symbols.share_rounded
+        ),
+
+        DashActionButton(
+          onPressed: () => context.showInformationSnackBar("Add friend"),
+          icon: Symbols.person_add_rounded,
+        )
       ],
     );
   }
 
-  Widget _buildFollowersCount(String value, String label) {
-    return Expanded(
-      child:  Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            value,
-            style: Theme.of(context).textTheme.labelLarge!.copyWith(
-              fontWeight: FontWeight.bold
-            )
-          ),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelMedium)
-        ],
+  void _editProfile(){
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (context) => EditProfilePage()
       ),
     );
   }
 
-  Widget _buildActionButtons() {
-    return Row(
-      children: [
-        ProfileActionButton(
-          type: ProfileActionButtonType.edit,
-          onPressedOverride: () async {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => const EditProfilePage()),
-            );
-          },
-        ),
-        Spacer(),
-        ProfileActionButton(type: ProfileActionButtonType.share),
-        ProfileActionButton(type: ProfileActionButtonType.add)
-      ],
-    );
-  }
-
-  Widget _buildBadgeSection(){
-    if (_badges.isEmpty){
-      return Center(
-        child: Padding(
-          padding: context.paddingSm,
-          child: CircularProgressIndicator(),
-        ),
-      );
-    }
-
-    final displayBadges = _badges;
-
-    return DashGestureCardContainer(
-      title: "Badges",
-      onTap: () => _showBadge(context),
-      actions: [
-        Icon(
-          Symbols.arrow_forward_ios_rounded,
-          color: Theme.of(context).colorScheme.outline,
-          size: Theme.of(context).textTheme.bodySmall!.fontSize,
-        )
-      ],
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: displayBadges.map((badge) {
-          return DashBadge(
-            badge: badge, 
-            progress: badge.progress,
-            dimFactor: 0.16,
-            clickable: false,
-          );
-        }).toList()
-      )
-    );
-  }
-
-  void _showBadge(BuildContext context){
+  void _shareProfile(){
+    final user = FirebaseAuth.instance.currentUser;
+            
+    if (user == null) return;
+    
     Navigator.push(
       context,
-      MaterialPageRoute<void>(
-        builder: (context) => BadgePage()
+      MaterialPageRoute(
+        builder: (context) => ShareProfilePage(
+          userId: user.uid,
+          name: _name,
+          surname: _surname,
+          profileImageUrl: _profileImageUrl,
+        ),
       ),
     );
   }
@@ -333,16 +282,40 @@ class _ProfilePageState extends State<ProfilePage> {
     if (user == null) return;
 
     final staticBadges = await BadgeService().getProfileBadges(user.uid);
+    final prefs = await SharedPreferences.getInstance();
 
     for (final badge in staticBadges) {
       if (!_profileUrlCache.containsKey(badge.imagePath)) {
-        try {
-          _profileUrlCache[badge.imagePath] = 
-              await _storageService.getDownloadUrl(badge.imagePath);
-        } catch (_) {
-          _profileUrlCache[badge.imagePath] = '';
+        final String cacheKey = 'badge_url_${badge.imagePath}';
+        final String? diskCachedUrl = prefs.getString(cacheKey);
+
+        if (diskCachedUrl != null && diskCachedUrl.isNotEmpty) {
+          _profileUrlCache[badge.imagePath] = diskCachedUrl;
+        } else {
+          try {
+            final url = await _storageService.getDownloadUrl(badge.imagePath);
+            _profileUrlCache[badge.imagePath] = url;
+            await prefs.setString(cacheKey, url); 
+          } catch (_) {
+            _profileUrlCache[badge.imagePath] = '';
+          }
         }
       }
+    }
+
+    if (mounted && _badges.isEmpty) {
+      setState(() {
+        _badges = staticBadges.map((badge) {
+          return HomeBadgeUiModel(
+            badgeId: badge.id,
+            title: badge.title,
+            description: badge.description,
+            imageUrl: _profileUrlCache[badge.imagePath] ?? '',
+            progress: prefs.getDouble('progress_${badge.id}') ?? 0.0,
+            unlocked: prefs.getBool('unlocked_${badge.id}') ?? false,
+          );
+        }).toList();
+      });
     }
 
     _badgeSub = FirebaseFirestore.instance
@@ -367,6 +340,9 @@ class _ProfilePageState extends State<ProfilePage> {
             progress = (rawProgress / 100).clamp(0.0, 1.0);
             unlocked = data['unlocked'] == true || progress >= 1.0;
           }
+
+          prefs.setDouble('progress_${badge.id}', progress);
+          prefs.setBool('unlocked_${badge.id}', unlocked);
 
           updatedBadges.add(HomeBadgeUiModel(
             badgeId: badge.id,
@@ -481,86 +457,4 @@ class _ProfilePageState extends State<ProfilePage> {
         }
       });
   }
-}
-
-enum ProfileActionButtonType{
-  edit(Symbols.person_edit_rounded, label: 'Edit Profile', action: _editProfile),
-  share(Symbols.share_rounded, label: 'Share Profile', action: _shareProfile),
-  add(Symbols.person_add_rounded, action: _addFriend);
-
-  final IconData iconData;
-  final String label;
-  final void Function(BuildContext context) action;
-
-  const ProfileActionButtonType(
-    this.iconData, {
-    this.label = '',
-    required this.action,
-  });
-}
-
-class ProfileActionButton extends StatelessWidget{
-  final ProfileActionButtonType type;
-  final VoidCallback? onPressedOverride;
-  
-  const ProfileActionButton({
-    super.key, 
-    required this.type,
-    this.onPressedOverride,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final ButtonStyle style = ElevatedButton.styleFrom(
-      foregroundColor: Theme.of(context).colorScheme.secondary,
-      backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-      textStyle: Theme.of(context).textTheme.bodySmall
-    );
-
-    final Icon icon = Icon(
-      type.iconData,
-      size: Theme.of(context).iconTheme.size,
-    );
-
-    if (type == ProfileActionButtonType.add){
-      return ElevatedButton(
-        onPressed: onPressedOverride ?? () => type.action(context),
-        style: style.copyWith(
-          padding: const WidgetStatePropertyAll<EdgeInsetsGeometry>(EdgeInsets.all(1)),
-          shape: const WidgetStatePropertyAll<OutlinedBorder>(CircleBorder())
-        ),
-        child: icon,
-      );
-    }
-
-    return ElevatedButton.icon(
-      style: style,
-      icon: icon,
-      label: Text(
-        type.label
-      ),
-      onPressed: onPressedOverride ?? () => type.action(context),
-    );
-  }
-}
-
-void _editProfile(BuildContext context) {
-  Navigator.push(
-    context,
-    MaterialPageRoute<void>(
-      builder: (context) => EditProfilePage()
-    ),
-  );
-}
-
-void _shareProfile(BuildContext context) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(content: Text('Share profile')),
-  );
-}
-
-void _addFriend(BuildContext context) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    const SnackBar(content: Text('Add friend')),
-  );
 }

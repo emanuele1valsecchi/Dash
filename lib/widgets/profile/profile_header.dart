@@ -1,0 +1,83 @@
+import 'package:dash/utils/strings_utils.dart';
+import 'package:dash/widgets/profile/profile_picture_avatar.dart';
+import 'package:flutter/material.dart';
+
+class ProfileHeader extends StatelessWidget{
+
+  final String name;
+  final String surname;
+  final String email;
+  final String profileImageUrl;
+  final int followers;
+  final int following;
+
+  const ProfileHeader({
+    super.key, 
+    required this.name, 
+    required this.surname, 
+    required this.email, 
+    required this.profileImageUrl, 
+    required this.followers, 
+    required this.following
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final double screenWidth = MediaQuery.widthOf(context);
+    final double screenHeight = MediaQuery.heightOf(context);
+
+    return Row(
+      children: [
+        ProfilePictureAvatar(
+          imageUrl: profileImageUrl,
+          initialNameSurname: getFirstLetters(name, surname),
+        ),
+        SizedBox(width: screenWidth * 0.08),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '$name $surname',
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+              Text(
+                email,
+                style: Theme.of(context).textTheme.labelLarge!.copyWith(
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+              ),
+              SizedBox(height: screenHeight * 0.02),
+              Row(
+                children: [
+                  _buildFollowersCount(context, formatNumber(followers), 'Followers'),
+                  _buildFollowersCount(context, formatNumber(following), 'Following'),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFollowersCount(BuildContext context, String value, String label) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: Theme.of(context).textTheme.labelLarge!.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelMedium,
+          ),
+        ],
+      ),
+    );
+  }
+}
