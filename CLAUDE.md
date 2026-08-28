@@ -51,9 +51,31 @@ Keep this list current — update it whenever a feature moves between these buck
   crossing. When a new segment produces more than one valid crossing, the one enclosing
   the *largest* polygon wins (`_checkSelfIntersection`), not whichever was found first —
   and a newly-finalised loop supersedes (removes) any already-recorded loop whose own
-  segment range overlaps its own, since the new one — built by walking as far back along
-  the route as still validly closes — is always at least as large as anything sharing
-  its ground. Deleting any pin still conservatively clears every loop closed so far,
+  segment range overlaps its own **and which the new polygon geometrically covers**
+  (`GeometryUtils.polygonCoversPolygon`), since the new one — built by walking as far back
+  along the route as still validly closes — is always at least as large as anything sharing
+  its ground. **The segment-range test alone was wrong, and a field test caught it**: pin a
+  square, then pin a second square sharing one of its sides, and the two loops' ranges
+  necessarily touch at the shared edge's segment even though neither covers the other's
+  ground — so the first square vanished the moment the second closed. Coverage is decided
+  by sampling evenly *along* the older loop's own boundary (reusing
+  `GeometryUtils.arrowPositions`) and counting a sample as covered when it is either inside
+  the new polygon or within 15 m of its edge; two squares sharing one side of four score
+  only ~25%, while a loop genuinely drawn around another scores essentially all of it. It
+  deliberately cannot be a vertex-inside test: every point of the shared street lies exactly
+  *on* both polygons' boundaries, where ray casting is a coin flip, so a vertex test cannot
+  tell "drawn around it" from "next door to it". Anything short of real containment errs
+  toward keeping both claims — the bug being fixed was ground silently disappearing, and the
+  claim Cloud Function unions same-owner areas server-side anyway. The same fix is applied
+  in `test_run_creator_page.dart` and, most importantly, in `RunSessionController` for live
+  runs (see that bullet). `_clearLoopsOverlappingRange` (pin drag) deliberately keeps the
+  pure range test: there the question is which loops a *structural* edit invalidated, not
+  which ones a new loop supersedes. **The mirror-image rule is applied first**: a newly
+  closed loop that an *already-recorded* loop covers is discarded rather than recorded,
+  since it encloses no ground that is not already claimed — without this, drawing a square
+  inside an existing shape inflated the route's reported area for a shape adding nothing
+  (reported from the field). Checking it before the supersede pass means a re-drawn,
+  near-identical loop keeps the original rather than swapping in a duplicate. Deleting any pin still conservatively clears every loop closed so far,
   rather than trying to work out which ones a given deletion actually invalidated (no
   re-detection pass runs afterward, even though the rebuilt bridge segment could in
   principle re-trigger some of them). **Snap-to-waypoint closes go through the same
@@ -630,9 +652,26 @@ Keep this list current — update it whenever a feature moves between these buck
   qualifying point rather than the nearest one — so it always reports the biggest loop
   currently closable, the same fix applied to route creation's segment-based detection
   above (see that bullet for the full rationale). `_checkLoopClosure` then supersedes
-  (removes) any already-closed loop whose own breadcrumb-index range overlaps the new
-  one's, keyed on `_loopRangeStart`/`_loopRangeEnd`, so re-detecting a bigger loop around
-  the same ground replaces the smaller one instead of piling both on top of each other.
+  (removes) any already-closed loop that the new one both overlaps in breadcrumb-index
+  range (`_loopRangeStart`/`_loopRangeEnd`) **and geometrically covers**
+  (`GeometryUtils.polygonCoversPolygon`), so re-detecting a bigger loop around the same
+  ground replaces the smaller one instead of piling both on top of each other.
+  **The range test alone was a real bug that silently destroyed claimed territory** — see
+  the adjacent-blocks note under route planning above: run one block, then the block next
+  door, and the trail necessarily re-enters the first loop's range along the street the two
+  share, so the first block was dropped along with its area and its XP the instant the
+  second closed. Covered by `test/run_session_controller_test.dart`'s "keeps both blocks
+  when a second loop is run next door", confirmed to fail before the fix.
+  The same mirror-image rule as route creation applies here too, and runs *before* the
+  supersede pass: a loop enclosing only ground an earlier one already claimed is discarded
+  rather than recorded, so running a lap inside an existing loop no longer reads as having
+  claimed new territory (`test/run_session_controller_test.dart`'s "a loop run inside
+  another claims no extra area", also confirmed to fail before the fix). Note the *client*
+  total (`claimedAreaM2`, the live readout and the watch's) is therefore exact for
+  containment and for disjoint loops, but still over-counts a **partial** overlap, having
+  no polygon-union primitive on the device; the authoritative figure the run-results popup
+  ends up showing is the Cloud Function's `totalAreaM2`, which unions with turf and is
+  exact in every case.
   On finish the user names
   the run and reviews time/distance/avg pace/max pace/calories/elevation before choosing
   Save (persists via `RunSessionRepository` to `runningSessions`, see below) or Discard
@@ -687,9 +726,80 @@ Keep this list current — update it whenever a feature moves between these buck
   "Bear left" instead of "Turn left" (the two split at 70°). And the peak scan stops on a
   **plateau**, not on a decrease: a loop turning the same way at every corner climbs
   90°→180°→270° monotonically, so breaking only on a decrease swallows every later corner
-  into the first one. Covered by `test/route_guidance_test.dart` (12 tests). The arrow,
+  into the first one. Covered by `test/route_guidance_test.dart` (15 tests). The arrow,
   off-route buzz and loop-finish behaviour were **confirmed on a real device** (Android,
   outdoor GPS run); the turn indicator was added afterward and has **not** been.
+  **Arrival is gated on real progress, not proximity — fixing a field-test bug where a
+  route whose start and finish were the same point (the way most people will use the app)
+  said "Route complete" the moment the runner moved.** Two independent causes, both fixed:
+  - **The first match was ambiguous.** On the run's first fix `previousSegmentIndex` was
+    null, so the search scanned the whole route — and on a closed loop the runner standing
+    at the start is equidistant from the first and last segments, with GPS noise alone
+    deciding which won. Matching the last one reported ~0 m remaining, and then *stuck*,
+    because the returned index is fed straight back in and the window (`[prev-2,
+    prev+40]`) clamps to the end of the route; it could only escape once the runner drifted
+    far enough for the out-of-threshold re-scan to fire. `RunSessionController._updateGuidance`
+    now seeds the first call with `previousSegmentIndex: 0`. Nothing is lost by seeding: a
+    runner who genuinely starts elsewhere trips that same out-of-threshold fallback, which
+    re-scans the entire route exactly as a null hint did. Note this only bites on a *dense*
+    (road-snapped) polyline, where 40 segments is a small fraction of the route — on a
+    coarse hand-tapped shape the window already spanned everything, which is why the
+    regression test densifies its loop to 200 segments.
+  - **Proximity can't tell "hasn't started" from "has come all the way round".** New
+    [lib/utils/route_progress.dart](lib/utils/route_progress.dart) (`RouteProgressTracker`, pure/testable the same way
+    `GeometryUtils` is — `test/route_progress_test.dart`, 14 tests) divides the planned
+    route into checkpoints spaced ~150 m apart by *cumulative distance* (clamped to 3–12,
+    placed via the existing `GeometryUtils.arrowPositions` sampling, endpoints excluded)
+    and requires all of them to be passed before `_RouteGuidanceCard` will say "Route
+    complete". **Checkpoints must be reached in order**, which is load-bearing rather than
+    tidiness: an unordered proximity test reintroduces the same bug from the other end,
+    since on a small loop the *last* checkpoint can sit within the 35 m visit radius of the
+    start line as the crow flies, across the loop's interior. Strict ordering alone would be
+    too rigid, so the pointer may jump forward by up to 2 checkpoints — absorbing a cut
+    corner (the roundabout case below) without allowing a shortcut past a whole limb of the
+    route. That look-ahead is itself capped at half the checkpoint count, or on a
+    three-checkpoint route it would span the whole thing and silently disable the ordering
+    it exists to protect. **Known limitation, deliberate**: a runner who joins the route
+    partway along can never reach the checkpoints already behind them, so the completion
+    banner simply never fires for that run (the card reads "Part of the route was skipped"
+    instead) — everything else is unaffected, and degrading to "no banner" is strictly
+    better than the false "Route complete" it replaces. Both "Run now" flows start the
+    runner at the route's start, so this is the rare case. Gating on the runner's own
+    accumulated distance instead was considered and rejected: it says nothing about *where*
+    they went.
+  The **watch** (`wear/lib/widgets/navigation_page.dart`) mirrors this card but has no
+  arrival state at all, so it never had the false-completion bug; it reads the same
+  `controller.guidance`, so the seeding fix corrects its remaining-distance readout for
+  free, with no protocol change.
+  **Off-route is debounced and hysteretic, not an instantaneous test** — the second fix
+  from the same field test, where a runner who cut a roundabout at the crosswalk instead of
+  following the planned arc round it was flagged off-route, buzzed, told so aloud, and had
+  the arrow swung round behind them for the few seconds it took to rejoin the route further
+  along. Three changes, all in `routeGuidance`:
+  - The threshold to be *declared* off route rose from 25 m to 35 m
+    (`offRouteThresholdMeters`), since ~25-30 m is the deviation cutting across a
+    roundabout produces on its own.
+  - Forgiveness happens at a tighter 25 m (`backOnRouteThresholdMeters`), so a runner
+    tracking the far pavement of a wide road sits at the boundary without the state — and
+    with it the haptic buzz and the spoken warning — flickering.
+  - The deviation must survive `offRouteFixesRequired` (5) consecutive fixes.
+  **A plain fix count is sound here specifically because the position stream is
+  distance-filtered**, not timed: `RunSessionController` emits a fix per 2 m of movement,
+  so five fixes cannot elapse in under ~10 m of travel however fast the runner is going,
+  and a stationary runner emits none at all — the debounce is really a distance guarantee
+  wearing a fix count's clothes. Clearing is *not* debounced: a runner who has rejoined is
+  told immediately. `routeGuidance` stays pure, so the caller feeds `wasOffRoute` and
+  `previousOffRouteFixes` back in each call exactly as it already did `previousSegmentIndex`;
+  `RouteGuidance.offRouteFixes` is what it feeds back. **A forward-skip tolerance was
+  considered and dropped as a no-op**: the idea was to check, before declaring off-route,
+  whether a point ~60 m further along the route is within threshold — but the search
+  already falls back to a full re-scan of the whole polyline, so it is *already* matching
+  the globally nearest point. If that is beyond the threshold, no point anywhere on the
+  route is nearer, and looking ahead cannot find one. Debouncing is what actually addresses
+  the case. Still unaddressed: `_handleTtsGuidance`'s
+  dedupe key includes `guidance.segmentIndex`, which advances every few metres on a
+  road-snapped polyline, so the same turn is re-announced repeatedly within one distance
+  band — it should key on the turn's own identity, not the runner's current position.
 - **`RunSessionController`** ([lib/services/run_session_controller.dart](lib/services/run_session_controller.dart)) — owns everything about a
   live run: the clock, the GPS stream, the breadcrumb trail, distance/pace/altitude,
   closed-loop detection and planned-route guidance. `RunTrackingPage` is now purely the UI
@@ -849,12 +959,20 @@ Keep this list current — update it whenever a feature moves between these buck
 - **XP/points and scoreboard territory**, computed in the same `onRunningSessionCreateClaimedAreas`
   transaction pass rather than a separate trigger, since both need the same per-loop
   union/difference geometry: `XP = distanceKm*100 + totalAreaM2/1000 + stolenAreaM2/333`
-  (`totalAreaM2` is deliberately the raw closed loop's *own* area, not the post-merge shape
-  `mergedGeom` ends up as — otherwise re-running a loop that re-absorbs a large existing
-  same-owner area would inflate XP, and a multi-loop session would double-count ground a later
-  loop re-absorbs from an earlier one in the same session; `stolenAreaM2` reuses the existing
-  other-owner subtraction pass, `area(existingGeom) - area(remaining)`, rather than a separate
-  geometry call). Sessions with zero closed loops still earn distance-only XP. Written onto
+  (`totalAreaM2` is built from the loops' *own* raw enclosed areas, never the post-merge
+  shapes `mergedGeom` ends up as — otherwise re-running a loop that re-absorbs a large
+  existing same-owner area would inflate XP. It is the **area of the union of the session's
+  own claimed loops** (`geo.sessionLoopsAreaM2`, `turf.union` then `turf.area`), *not* the
+  sum of their individual areas: summing double-charged any ground one session covered
+  twice, which a field test caught by drawing one square wholly inside another and watching
+  the reported area grow when no new ground had been claimed. Unioning keeps the original
+  protection — pre-existing territory still contributes nothing — while charging the
+  session's own overlap once, and is exact for partial overlaps as well as containment.
+  Only loops whose `claimLoop` actually succeeded are unioned, so a failed loop stays
+  uncounted exactly as it did when this was a running total. Verified by
+  `functions/_verify_session_area.js` (7 scenarios, same not-deployed convention as
+  `_verify_geo.js`); `stolenAreaM2` still reuses the existing other-owner subtraction pass,
+  `area(existingGeom) - area(remaining)`, rather than a separate geometry call). Sessions with zero closed loops still earn distance-only XP. Written onto
   `runningSessions` as `pointsEarned` (rounded total) plus the raw, unrounded
   `xpFromDistance`/`xpFromArea`/`xpFromStolenArea` (so a client can show *why* — see the
   run-results popup below — without duplicating the Cd/Ca/Cr constants), `totalAreaM2`/
@@ -870,7 +988,30 @@ Keep this list current — update it whenever a feature moves between these buck
   a genuinely-missing map key is a rules evaluation error. Territory
   resolution ([functions/territory.js](functions/territory.js)) is two-tier and always keyed off the session's real GPS
   start point (`runningSessions.path[0]`), never the client-supplied `startLocality` string — it's
-  now score-affecting, so it falls under the same server-only trust rule as area ownership:
+  now score-affecting, so it falls under the same server-only trust rule as area ownership.
+  **This was silently untrue for a while and is worth knowing about**: `awardSessionPoints`
+  called `resolveTerritory` and then overwrote its answer with `const city = startLocality`,
+  so every run was filed under its raw village name and the curated coverage polygons had no
+  effect at all — a Seregno run went to a "Seregno" board instead of Milano's, fragmenting
+  each metro leaderboard into one board per village, which is the exact outcome those
+  polygons exist to prevent. The same inversion existed twice more on the client, in
+  `home_page.dart` and `home_leaderboards_settings_page.dart`, both reading
+  `startLocality.isNotEmpty ? startLocality : territoryCity`; fixing only the server would
+  have left the home screen still grouping by village. All three now prefer the
+  server-resolved territory, and the client mirrors the server's own tier choice exactly
+  (`territoryCity ?? territoryBroad ?? startLocality`, matching `city || broad` in
+  `awardSessionPoints`) — falling straight through to `startLocality` would show a village
+  board the server never writes a point to. `startLocality` survives as a fallback only for
+  sessions predating territory resolution. Relatedly, only the *city* tier was ever written
+  to a leaderboard, so a runner outside every curated polygon earned XP but appeared on no
+  scoreboard at all; the broad tier is now used when no city matches, which is what the
+  fallback was always documented to be for. **`userStats.cityCounts` deliberately still uses
+  `startLocality`** — it feeds the `traveller`/`interrail`/`the_foreigner` badges, where
+  counting distinct *villages* is the point and collapsing a region into two or three metro
+  areas would make "run in 10 different cities" nearly unachievable. Different question,
+  different key. **Migration note**: sessions written before this fix still carry the village
+  in `territoryCity`, and `cityStats` docs are keyed by those old names, so both village and
+  metro boards will coexist until someone backfills them.
   1. **City** — point-in-polygon against a small curated, hand-drawn coverage-polygon list in
      [functions/cityTerritories.js](functions/cityTerritories.js) (administrative boundaries don't match colloquial metro
      groupings — Seregno isn't in Milano's own province — so this can't be derived from
@@ -882,7 +1023,10 @@ Keep this list current — update it whenever a feature moves between these buck
      format needs zero reformatting this way, and each city's diff stays isolated instead of
      one array growing forever. A shape's `name` comes from its GeoJSON `properties.name`
      (set in geojson.io's editor before exporting), not the filename. Currently seeded with
-     one illustrative Milano placeholder polygon (`functions/cities/milano.geojson`), not
+     four hand-drawn polygons (`milano`, `northernLombardy`, `easternLombardy`,
+     `southernLombardy`) covering Lombardy, verified to resolve Seregno and Milano centre to
+     "Milano" and Bergamo to "Northern Lombardy"; the rest of the world is still unsurveyed and
+     falls through to the broad tier, not
      surveyed data — real boundaries are a content-authoring follow-up, city by city.
   2. **Broad fallback** (only reached if no city matched, so every run lands *somewhere*) — a
      server-side Nominatim reverse-geocode of the start point. Region and Country turn out to
@@ -1175,6 +1319,42 @@ Keep this list current — update it whenever a feature moves between these buck
   m2/ha/km2 area ladder is gone too, which incidentally fixes it disagreeing with every
   other area display in the app. One cosmetic change: `session_detail_screen.dart`'s pace
   now renders `5:30` like the rest of the app rather than its own `5'30"`.
+- **Account deletion** (`deleteMyAccount` in [functions/index.js](functions/index.js), called from
+  [lib/screens/personal_information_page.dart](lib/screens/personal_information_page.dart)) — deletes the user's `runningSessions`,
+  `claimedAreas`, `notifications`, `favoriteRoutes`, `follows`, `userStats`, city
+  leaderboard entries, `badge_progress`, profile doc and profile image, then the Auth
+  account last so a failed Firestore cleanup doesn't strand an account with no data.
+  **The route cascade is the non-obvious part, and it deliberately does not delete
+  everything** (decision logic in `functions/routeCascade.js`, see Project structure):
+  - A **shared session route** (the canonical copy of a run's path that other users'
+    favourites point at — see the run-session detail page bullet above) **survives**. It
+    has no owner, so the `where('userId', '==', uid)` sweep never matches it anyway, and
+    that is correct: a path through public streets is a geographic fact, not something
+    the runner authored, and deleting it would break every other user's saved route. What
+    does *not* survive is the part describing the runner — `estimatedTimeMin`/
+    `estimatedCalories` are overwritten with distance-based planned estimates (9 min/km,
+    70 kcal/km, matching `RouteCreatePage`'s own constants, so a scrubbed route reads
+    exactly like a hand-planned one) and `sourceSessionId` is deleted, breaking the last
+    link back to the deleted person. `startLocality` and the polyline are kept, both
+    describing where the route goes rather than who ran it. Every referencing user's
+    `favoriteRoutes` link carries a denormalized copy of those same two measurements and
+    is updated in the same pass — scrubbing only the route would leave them behind.
+  - An **owned** route (planned by hand or saved from search) is **deleted** unless
+    `isPublic == true`, in which case it's preserved but with `userId` cleared. The old
+    "published routes are intentionally preserved" behaviour preserved *everything*,
+    which was ineffective: `publishRoute` always writes `isPublic: false` and the read
+    rule only lets a non-owner read a route when it's true, so those documents were
+    unreadable by everyone forever — a deleted user's personal data kept at cost with
+    nobody able to see it.
+  - **Ordering matters and is load-bearing**: the cascade runs *before* anything is
+    deleted, because a shared route is found by its document ID being its source
+    session's ID, and once the `runningSessions` docs are gone there is no way left to
+    enumerate them. Don't move it below the delete loop.
+  - Still **not** handled, deliberately: reclaiming shared routes nothing references any
+    more (no refcount/GC — one shared doc is small and bounded by the number of runs ever
+    favourited, not by the number of users), and the fact that a scrubbed route's
+    *document ID* is still the deleted session's ID (an opaque string once the session is
+    gone, so accepted rather than migrated).
 
 **Designed in Firestore rules but NOT yet built in the Flutter app** (i.e. the security
 rules anticipate these collections — `runningSessions`, `claimedAreas`, `userStats`,
@@ -1191,10 +1371,25 @@ milestones:
   Onboarding copy describing an "outrun the champion / steal the crown" mechanic predated
   the real design and was rewritten at the same time; if you find any other surviving
   reference to a champion, it is stale and should be removed rather than implemented.
-- The scoreboard itself (leaderboard UI, and the aggregation/query layer behind it). The
-  per-session data it will read from — `pointsEarned` and city/broad territory — **is** now
-  computed and stored server-side (see "XP/points and scoreboard territory" above); only the
-  actual ranking/UI on top of that data is still unbuilt.
+- The scoreboard's **aggregation/query layer**. The per-session data — `pointsEarned` and
+  city/broad territory — is computed server-side (see "XP/points and scoreboard territory"
+  above), and a leaderboard UI now exists: `home_page.dart` renders preview cards, and
+  "Customize Home" (`home_leaderboards_settings_page.dart`, reached from Settings) lets a
+  user drag-reorder them and hide any except Global. Default order lives in
+  [lib/utils/leaderboard_order.dart](lib/utils/leaderboard_order.dart) (`LeaderboardOrder.defaultOrder`) — Global, then the
+  runner's metropolitan area, then every other territory most-recently-scored-in first —
+  shared by both screens deliberately, since the settings page seeds its list from it and the
+  home screen falls back to it for anyone who has never opened that page; if they disagreed,
+  opening settings once would silently rearrange the home screen. Only the *city* tier
+  (`territoryCity`, i.e. a curated metro polygon) earns the promoted second slot; broad-region
+  territories are ordinary entries. **What is genuinely still missing is the query layer, and
+  the current stand-in is a real scaling problem**: `home_page.dart` opens a realtime
+  `snapshots()` listener on the *entire* `runningSessions` collection — every run by every
+  user, streamed to every client — and recomputes all rankings locally on each change. That
+  contradicts the read-cost rule under "Security & performance" and will not survive a real
+  user base. The server already maintains exactly these rankings in
+  `cityStats/{territory}/users/{uid}` (written by `updateCityRankAndNotify`), and **nothing
+  reads it** — wiring the UI to that collection is the actual work outstanding here.
 - Background/lock-screen GPS tracking for live runs (needs a foreground service on
   Android and a background location mode on iOS — deliberately out of scope for the
   first version of the run-tracking screen; flag this if asked to make it production-ready).
@@ -1232,6 +1427,10 @@ milestones:
   Firestore-independent functions specifically so they're unit-testable standalone
   (`functions/_verify_geo.js`, excluded from deploy — see `firebase.json`) without a live
   or emulated database; `index.js` is the thin transactional I/O wrapper around it.
+  `functions/routeCascade.js` follows the same split for account deletion's route
+  handling (`functions/_verify_routeCascade.js`, 13 checks) — worth its own tested unit
+  specifically because deletion is irreversible: a wrong branch there permanently
+  destroys either a deleted user's privacy or other users' saved routes.
 - `firestore.rules` — the source of truth for what the client is and isn't allowed to
   write; read this before adding any new Firestore read/write path.
 
