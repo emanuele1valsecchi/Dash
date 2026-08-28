@@ -5,21 +5,24 @@ class ResponsiveSpacing extends ThemeExtension<ResponsiveSpacing> {
   final double sm; 
   final double md; 
   final double lg; 
+  final double xl;
 
   const ResponsiveSpacing({
     this.sm = 8.0, 
     this.md = 16.0, 
     this.lg = 24.0,
+    this.xl = 32.0,
   });
 
   @override
   ThemeExtension<ResponsiveSpacing> copyWith({
-    double? sm, double? md, double? lg
+    double? sm, double? md, double? lg, double? xl, double? xxl,
   }) {
     return ResponsiveSpacing(
       sm: sm ?? this.sm,
       md: md ?? this.md,
       lg: lg ?? this.lg,
+      xl: xl ?? this.xl,
     );
   }
 
@@ -30,6 +33,7 @@ class ResponsiveSpacing extends ThemeExtension<ResponsiveSpacing> {
       sm: ui.lerpDouble(sm, other.sm, t)!,
       md: ui.lerpDouble(md, other.md, t)!,
       lg: ui.lerpDouble(lg, other.lg, t)!,
+      xl: ui.lerpDouble(xl, other.xl, t)!,
     );
   }
 }
@@ -40,4 +44,5 @@ extension SpacingContext on BuildContext {
   EdgeInsets get paddingSm => EdgeInsets.all(responsiveSpacing.sm);
   EdgeInsets get paddingMd => EdgeInsets.all(responsiveSpacing.md);
   EdgeInsets get paddingLg => EdgeInsets.all(responsiveSpacing.lg);
+  EdgeInsets get paddingXl => EdgeInsets.all(responsiveSpacing.xl);
 }
