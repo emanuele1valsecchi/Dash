@@ -988,7 +988,30 @@ Keep this list current — update it whenever a feature moves between these buck
   a genuinely-missing map key is a rules evaluation error. Territory
   resolution ([functions/territory.js](functions/territory.js)) is two-tier and always keyed off the session's real GPS
   start point (`runningSessions.path[0]`), never the client-supplied `startLocality` string — it's
-  now score-affecting, so it falls under the same server-only trust rule as area ownership:
+  now score-affecting, so it falls under the same server-only trust rule as area ownership.
+  **This was silently untrue for a while and is worth knowing about**: `awardSessionPoints`
+  called `resolveTerritory` and then overwrote its answer with `const city = startLocality`,
+  so every run was filed under its raw village name and the curated coverage polygons had no
+  effect at all — a Seregno run went to a "Seregno" board instead of Milano's, fragmenting
+  each metro leaderboard into one board per village, which is the exact outcome those
+  polygons exist to prevent. The same inversion existed twice more on the client, in
+  `home_page.dart` and `home_leaderboards_settings_page.dart`, both reading
+  `startLocality.isNotEmpty ? startLocality : territoryCity`; fixing only the server would
+  have left the home screen still grouping by village. All three now prefer the
+  server-resolved territory, and the client mirrors the server's own tier choice exactly
+  (`territoryCity ?? territoryBroad ?? startLocality`, matching `city || broad` in
+  `awardSessionPoints`) — falling straight through to `startLocality` would show a village
+  board the server never writes a point to. `startLocality` survives as a fallback only for
+  sessions predating territory resolution. Relatedly, only the *city* tier was ever written
+  to a leaderboard, so a runner outside every curated polygon earned XP but appeared on no
+  scoreboard at all; the broad tier is now used when no city matches, which is what the
+  fallback was always documented to be for. **`userStats.cityCounts` deliberately still uses
+  `startLocality`** — it feeds the `traveller`/`interrail`/`the_foreigner` badges, where
+  counting distinct *villages* is the point and collapsing a region into two or three metro
+  areas would make "run in 10 different cities" nearly unachievable. Different question,
+  different key. **Migration note**: sessions written before this fix still carry the village
+  in `territoryCity`, and `cityStats` docs are keyed by those old names, so both village and
+  metro boards will coexist until someone backfills them.
   1. **City** — point-in-polygon against a small curated, hand-drawn coverage-polygon list in
      [functions/cityTerritories.js](functions/cityTerritories.js) (administrative boundaries don't match colloquial metro
      groupings — Seregno isn't in Milano's own province — so this can't be derived from
@@ -1000,7 +1023,10 @@ Keep this list current — update it whenever a feature moves between these buck
      format needs zero reformatting this way, and each city's diff stays isolated instead of
      one array growing forever. A shape's `name` comes from its GeoJSON `properties.name`
      (set in geojson.io's editor before exporting), not the filename. Currently seeded with
-     one illustrative Milano placeholder polygon (`functions/cities/milano.geojson`), not
+     four hand-drawn polygons (`milano`, `northernLombardy`, `easternLombardy`,
+     `southernLombardy`) covering Lombardy, verified to resolve Seregno and Milano centre to
+     "Milano" and Bergamo to "Northern Lombardy"; the rest of the world is still unsurveyed and
+     falls through to the broad tier, not
      surveyed data — real boundaries are a content-authoring follow-up, city by city.
   2. **Broad fallback** (only reached if no city matched, so every run lands *somewhere*) — a
      server-side Nominatim reverse-geocode of the start point. Region and Country turn out to
@@ -1345,10 +1371,25 @@ milestones:
   Onboarding copy describing an "outrun the champion / steal the crown" mechanic predated
   the real design and was rewritten at the same time; if you find any other surviving
   reference to a champion, it is stale and should be removed rather than implemented.
-- The scoreboard itself (leaderboard UI, and the aggregation/query layer behind it). The
-  per-session data it will read from — `pointsEarned` and city/broad territory — **is** now
-  computed and stored server-side (see "XP/points and scoreboard territory" above); only the
-  actual ranking/UI on top of that data is still unbuilt.
+- The scoreboard's **aggregation/query layer**. The per-session data — `pointsEarned` and
+  city/broad territory — is computed server-side (see "XP/points and scoreboard territory"
+  above), and a leaderboard UI now exists: `home_page.dart` renders preview cards, and
+  "Customize Home" (`home_leaderboards_settings_page.dart`, reached from Settings) lets a
+  user drag-reorder them and hide any except Global. Default order lives in
+  [lib/utils/leaderboard_order.dart](lib/utils/leaderboard_order.dart) (`LeaderboardOrder.defaultOrder`) — Global, then the
+  runner's metropolitan area, then every other territory most-recently-scored-in first —
+  shared by both screens deliberately, since the settings page seeds its list from it and the
+  home screen falls back to it for anyone who has never opened that page; if they disagreed,
+  opening settings once would silently rearrange the home screen. Only the *city* tier
+  (`territoryCity`, i.e. a curated metro polygon) earns the promoted second slot; broad-region
+  territories are ordinary entries. **What is genuinely still missing is the query layer, and
+  the current stand-in is a real scaling problem**: `home_page.dart` opens a realtime
+  `snapshots()` listener on the *entire* `runningSessions` collection — every run by every
+  user, streamed to every client — and recomputes all rankings locally on each change. That
+  contradicts the read-cost rule under "Security & performance" and will not survive a real
+  user base. The server already maintains exactly these rankings in
+  `cityStats/{territory}/users/{uid}` (written by `updateCityRankAndNotify`), and **nothing
+  reads it** — wiring the UI to that collection is the actual work outstanding here.
 - Background/lock-screen GPS tracking for live runs (needs a foreground service on
   Android and a background location mode on iOS — deliberately out of scope for the
   first version of the run-tracking screen; flag this if asked to make it production-ready).

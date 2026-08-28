@@ -5,6 +5,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import '../utils/leaderboard_order.dart';
+
 class LeaderboardViewConfig {
   final String title;
   bool isVisible;
@@ -57,19 +59,62 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
           .where('userId', isEqualTo: user.uid)
           .get();
 
-      Set<String> myCities = {'Global Leaderboard'};
+      // Discovered territories, most recently scored in first, plus the
+      // runner's metropolitan area tracked separately — `LeaderboardOrder`
+      // owns where each one lands, so this only has to gather them.
+      final Map<String, DateTime> territoryLastRun = {};
+      String? myMetroTerritory;
+      DateTime? myMetroAt;
+
       for (var doc in sessionsSnap.docs) {
         final data = doc.data();
+        // Same ordering fix as `home_page.dart` — see the comment there for
+        // why `territoryCity` must win over `startLocality`. The two lists
+        // have to agree, or settings would offer leaderboards the home screen
+        // never shows.
         final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
         final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
-        final city = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
-        if (city != 'Unknown') myCities.add(city);
+        final rawBroad = (data['territoryBroad'] as String?)?.trim() ?? '';
+        // Must mirror the server's own choice of scoreboard exactly
+        // (`city || broad` in awardSessionPoints): `territoryCity` is only
+        // set when a curated metro polygon covers the start point, and a run
+        // outside every polygon is filed under the broad region tier instead.
+        // Falling straight through to `startLocality` there would show a
+        // village leaderboard the server never writes a single point to.
+        final city = rawTerritory.isNotEmpty
+            ? rawTerritory
+            : rawBroad.isNotEmpty
+                ? rawBroad
+                : (rawLocality.isNotEmpty ? rawLocality : 'Unknown');
+
+        final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
+        if (city == 'Unknown' || createdAt == null) continue;
+
+        final seen = territoryLastRun[city];
+        if (seen == null || createdAt.isAfter(seen)) {
+          territoryLastRun[city] = createdAt;
+        }
+        // Only a curated metro polygon sets `territoryCity`; the broad region
+        // fallback does not, and does not earn the promoted slot.
+        if (rawTerritory.isNotEmpty &&
+            (myMetroAt == null || createdAt.isAfter(myMetroAt))) {
+          myMetroTerritory = rawTerritory;
+          myMetroAt = createdAt;
+        }
       }
 
-      // Aggiungiamo le città nuove in fondo se non erano salvate nelle preferenze
-      for (var city in myCities) {
-        if (!loadedConfigs.any((c) => c.title == city)) {
-          loadedConfigs.add(LeaderboardViewConfig(title: city, isVisible: true));
+      final byRecency = territoryLastRun.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+
+      // Anything not already saved is appended in the shared default order,
+      // so a first-time visitor sees global, then their metro area, then the
+      // rest — matching exactly what the home screen already shows them.
+      for (final title in LeaderboardOrder.defaultOrder(
+        byRecency.map((e) => e.key),
+        metroTerritory: myMetroTerritory,
+      )) {
+        if (!loadedConfigs.any((c) => c.title == title)) {
+          loadedConfigs.add(LeaderboardViewConfig(title: title, isVisible: true));
         }
       }
     }
@@ -126,7 +171,7 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
                   child: ReorderableListView.builder(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     itemCount: _leaderboards.length,
-                    onReorderItem: _onReorder,
+                    onReorder: _onReorder,
 
                     proxyDecorator: (Widget child, int index, Animation<double> animation) {
                       return Material(
@@ -141,7 +186,8 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
                     itemBuilder: (context, index) {
                       final config = _leaderboards[index];
                       // --- NEW: Check if this is the Global Leaderboard ---
-                      final bool isGlobal = config.title == 'Global Leaderboard';
+                      final bool isGlobal =
+                          config.title == LeaderboardOrder.globalTitle;
                       
                       return Card(
                         key: ValueKey(config.title),
