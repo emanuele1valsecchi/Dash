@@ -248,7 +248,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           case NotificationType.badgeUnlocked:
             Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => const BadgePage(),
+                builder: (_) => BadgePage(
+                  userId: FirebaseAuth.instance.currentUser!.uid
+                ),
               ),
             );
             break;
