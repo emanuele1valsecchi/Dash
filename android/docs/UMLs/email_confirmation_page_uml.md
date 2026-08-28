@@ -1,4 +1,4 @@
-:::mermaid
+```mermaid
 classDiagram
     class EmailConfirmationScreen {
         +String email
@@ -16,4 +16,4 @@ classDiagram
     }
 
     EmailConfirmationScreen --> _EmailConfirmationScreenState : creates
-:::
+```
