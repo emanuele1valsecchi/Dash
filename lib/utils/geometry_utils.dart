@@ -117,6 +117,102 @@ class GeometryUtils {
     return (area / 2).abs();
   }
 
+  /// Ray-casting point-in-polygon test, in raw lat/lng space.
+  ///
+  /// Planar rather than spherical, which is fine for the block-sized shapes
+  /// Dash deals in: over a few hundred metres the difference is orders of
+  /// magnitude below the tolerances every caller already works to.
+  ///
+  /// A point lying exactly *on* an edge is ambiguous by nature — which side
+  /// it falls is down to floating-point luck. Callers that care must pair this
+  /// with an explicit boundary test rather than trusting the answer; see
+  /// [polygonCoversPolygon], where that ambiguity is the whole difficulty.
+  static bool isPointInPolygon(LatLng point, List<LatLng> polygon) {
+    if (polygon.length < 3) return false;
+
+    final x = point.longitude, y = point.latitude;
+    var inside = false;
+    for (int i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      final xi = polygon[i].longitude, yi = polygon[i].latitude;
+      final xj = polygon[j].longitude, yj = polygon[j].latitude;
+      if (((yi > y) != (yj > y)) &&
+          (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  /// Shortest distance from [p] to any edge of [polygon].
+  static double distanceToPolygonBoundaryMeters(
+    LatLng p,
+    List<LatLng> polygon,
+  ) {
+    var best = double.infinity;
+    for (int i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      final d = pointToSegmentDistanceMeters(p, polygon[j], polygon[i]);
+      if (d < best) best = d;
+    }
+    return best;
+  }
+
+  /// True when [inner]'s ground is already accounted for by [outer] — i.e.
+  /// [outer] genuinely supersedes it rather than merely touching it.
+  ///
+  /// **Why this can't be a vertex-inside test.** Two blocks claimed by the
+  /// same route share a street: the second loop's boundary runs back along
+  /// the first's. Every point of that shared border is exactly on both
+  /// polygons' edges, where [isPointInPolygon] is a coin flip — so a vertex
+  /// test cannot tell "B was drawn around A" from "B is A's next-door
+  /// neighbour". Instead this samples evenly *along* [inner]'s own boundary
+  /// (reusing [arrowPositions], which already spaces points by cumulative
+  /// distance) and counts a sample as covered when it is either strictly
+  /// inside [outer] or within [boundaryToleranceMeters] of [outer]'s edge.
+  /// Neighbours then score only the fraction of perimeter they actually
+  /// share — a quarter, for two squares sharing one side of four — while a
+  /// loop genuinely drawn around another scores essentially all of it.
+  ///
+  /// [boundaryToleranceMeters] exists so that a loop re-run over the same
+  /// streets, whose two boundaries differ only by GPS noise, still reads as
+  /// covered rather than as a near-miss.
+  static bool polygonCoversPolygon(
+    List<LatLng> outer,
+    List<LatLng> inner, {
+    double minCoveredFraction = 0.85,
+    double boundaryToleranceMeters = 15,
+    int sampleCount = 32,
+  }) {
+    if (outer.length < 3 || inner.length < 3) return false;
+
+    final samples = arrowPositions(inner, count: sampleCount);
+    if (samples.isEmpty) return false;
+
+    // Bail out as soon as enough samples have missed for the threshold to be
+    // unreachable. This matters because the checks run per detected loop
+    // closure — on a live run, potentially on every GPS fix — and the miss
+    // path is the expensive one: [isPointInPolygon] is plain arithmetic,
+    // while [distanceToPolygonBoundaryMeters] does trigonometry per edge and
+    // is only reached for a sample that fell outside. The common "these two
+    // loops are unrelated" answer therefore costs a handful of edge walks
+    // rather than one per sample.
+    final needed = (samples.length * minCoveredFraction).ceil();
+    final allowedMisses = samples.length - needed;
+
+    var covered = 0;
+    var missed = 0;
+    for (final s in samples) {
+      final isCovered = isPointInPolygon(s.point, outer) ||
+          distanceToPolygonBoundaryMeters(s.point, outer) <=
+              boundaryToleranceMeters;
+      if (isCovered) {
+        covered++;
+      } else if (++missed > allowedMisses) {
+        return false;
+      }
+    }
+    return covered >= needed;
+  }
+
   /// Scans a live GPS breadcrumb trail for the point that closes the
   /// *biggest* loop with the trail's current tip.
   ///
@@ -394,7 +490,11 @@ class GeometryUtils {
     List<LatLng> route,
     LatLng position, {
     double lookaheadMeters = 30,
-    double offRouteThresholdMeters = 25,
+    double offRouteThresholdMeters = 35,
+    double backOnRouteThresholdMeters = 25,
+    int offRouteFixesRequired = 5,
+    bool wasOffRoute = false,
+    int previousOffRouteFixes = 0,
     double turnScanMeters = 300,
     double turnThresholdDegrees = 35,
     int? previousSegmentIndex,
@@ -443,7 +543,41 @@ class GeometryUtils {
       remaining += dist(route[i], route[i + 1]);
     }
 
-    final isOffRoute = match.distanceMeters > offRouteThresholdMeters;
+    // Off-route is deliberately *not* the instantaneous test it used to be.
+    // A field test found the old "one fix beyond 25 m" rule far too eager: a
+    // runner who cut a roundabout at the crosswalk instead of following the
+    // planned arc was flagged off route, buzzed, and had the arrow swung
+    // round behind them — for the four or five seconds it took to rejoin the
+    // route a little further along. Nothing had gone wrong.
+    //
+    // Two guards, which compose:
+    //
+    //  * **Hysteresis.** It takes more deviation to be declared off route
+    //    ([offRouteThresholdMeters]) than to be forgiven
+    //    ([backOnRouteThresholdMeters]), so a runner tracking the far pavement
+    //    of a wide road sits at the boundary without the state flickering —
+    //    and with it, the haptic buzz and the spoken warning.
+    //
+    //  * **Debounce.** The deviation must survive [offRouteFixesRequired]
+    //    consecutive fixes. That is a *distance* guarantee rather than a
+    //    timing one, which is what makes a plain fix count sound here: the
+    //    run's position stream is distance-filtered (2 m of movement per fix,
+    //    see `RunSessionController`), so five fixes cannot elapse in under
+    //    ~10 m of travel however fast or slow the runner is going, and a
+    //    stationary runner emits no fixes to spend at all. A genuine wrong
+    //    turn diverges monotonically and trips it almost immediately; a cut
+    //    corner rejoins first.
+    //
+    // The window-versus-full-rescan decision above deliberately keeps using
+    // the raw threshold: that is a question about match quality, not about
+    // what to tell the runner.
+    final threshold =
+        wasOffRoute ? backOnRouteThresholdMeters : offRouteThresholdMeters;
+    final beyondThreshold = match.distanceMeters > threshold;
+    final offRouteFixes = beyondThreshold ? previousOffRouteFixes + 1 : 0;
+    final isOffRoute = wasOffRoute
+        ? beyondThreshold
+        : offRouteFixes >= offRouteFixesRequired;
 
     // Aiming at a point *ahead* rather than at the next vertex keeps the arrow
     // steady through dense road-snapped polylines, where consecutive vertices
@@ -477,6 +611,7 @@ class GeometryUtils {
       targetBearingDegrees: bearing,
       offRouteMeters: match.distanceMeters,
       isOffRoute: isOffRoute,
+      offRouteFixes: offRouteFixes,
       distanceRemainingMeters: remaining,
       distanceToTurnMeters: turn?.distanceMeters,
       turnAngleDegrees: turn?.angleDegrees,
@@ -630,9 +765,17 @@ class RouteGuidance {
   /// Perpendicular distance from the nearest point on the route.
   final double offRouteMeters;
 
-  /// True when [offRouteMeters] exceeded the caller's threshold. While set,
-  /// [targetBearingDegrees] points back at [anchor].
+  /// True when the runner has been far enough from the route, for long
+  /// enough, to be told so — not merely a single fix beyond the threshold.
+  /// While set, [targetBearingDegrees] points back at [anchor].
   final bool isOffRoute;
+
+  /// Consecutive fixes so far beyond the off-route threshold, zero as soon as
+  /// the runner is back inside it. Feed back as
+  /// [GeometryUtils.routeGuidance]'s `previousOffRouteFixes` on the next call,
+  /// alongside [isOffRoute] as `wasOffRoute`; together they carry the
+  /// debounce and the hysteresis the pure function cannot remember itself.
+  final int offRouteFixes;
 
   /// Remaining route distance from [anchor] to the route's final point.
   final double distanceRemainingMeters;
@@ -658,6 +801,7 @@ class RouteGuidance {
     required this.targetBearingDegrees,
     required this.offRouteMeters,
     required this.isOffRoute,
+    required this.offRouteFixes,
     required this.distanceRemainingMeters,
     required this.distanceToTurnMeters,
     required this.turnAngleDegrees,

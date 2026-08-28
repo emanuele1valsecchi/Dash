@@ -429,16 +429,23 @@ exports.onRunningSessionCreateClaimedAreas = onDocumentCreated(
     const userId = sessionData.userId;
     const sessionId = event.params.sessionId;
 
-    let sessionTotalAreaM2 = 0;
     let sessionStolenAreaM2 = 0;
     let sessionVictims = new Set(); 
+
+    // Collected rather than summed: a session that covers the same ground
+    // twice — most obviously a loop drawn wholly inside another, which claims
+    // nothing new — must be paid for that ground once, so the area feeding XP
+    // is the union of these, not the sum of their areas. Only loops that
+    // actually claimed are collected, so a failed claimLoop stays uncounted
+    // exactly as it did when this was a running total.
+    const claimedLoops = [];
 
     for (let index = 0; index < closedLoops.length; index++) {
       const points = closedLoops[index] && closedLoops[index].points;
       if (!Array.isArray(points) || points.length < 3) continue;
       try {
         const loopResult = await claimLoop({userId, sessionId, loopIndex: index, points, sessionData});
-        sessionTotalAreaM2 += loopResult.totalAreaM2;
+        claimedLoops.push(points);
         sessionStolenAreaM2 += loopResult.stolenAreaM2;
         
         if (loopResult.stolenFrom) {
@@ -448,6 +455,8 @@ exports.onRunningSessionCreateClaimedAreas = onDocumentCreated(
         console.error(`claimLoop failed for ${sessionId}_${index}:`, e);
       }
     }
+
+    const sessionTotalAreaM2 = geo.sessionLoopsAreaM2(claimedLoops);
 
     // ── LOGICA BADGE "COUP" ──
     for (const victimId of sessionVictims) {

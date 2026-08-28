@@ -886,14 +886,20 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   }
 
   /// Validates the polygon area and records the closed loop, superseding any
-  /// already-closed loop whose own `[rangeStart, rangeEnd]` segment span
-  /// overlaps this one's. [rangeStart]/[rangeEnd] cover every segment this
-  /// polygon was built from — so an old loop entirely inside a new, bigger
-  /// one (same start further back, or a wholly later start reached by
-  /// re-crossing part of the old loop's boundary) always gets replaced
-  /// rather than kept alongside it, which would double-count the shared
-  /// ground and draw two overlapping fills. Loops with disjoint ranges (two
-  /// separate blocks claimed by the same route) are untouched.
+  /// already-closed loop that this one both overlaps in `[rangeStart,
+  /// rangeEnd]` segment span *and* geometrically covers
+  /// ([GeometryUtils.polygonCoversPolygon]). [rangeStart]/[rangeEnd] cover
+  /// every segment this polygon was built from — so an old loop entirely
+  /// inside a new, bigger one (same start further back, or a wholly later
+  /// start reached by re-crossing part of the old loop's boundary) gets
+  /// replaced rather than kept alongside it, which would double-count the
+  /// shared ground and draw two overlapping fills.
+  ///
+  /// **The span test alone is not enough**, which a field test caught: pin a
+  /// square, then pin a second square sharing one of its sides, and the two
+  /// loops' spans necessarily touch at the shared edge's segment even though
+  /// neither covers the other. That dropped the first square the instant the
+  /// second closed. Loops with disjoint ranges are untouched as before.
   void _finaliseLoop(
     List<LatLng> polygon, {
     required int rangeStart,
@@ -902,15 +908,33 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     if (polygon.length < 3) return;
     final area = GeometryUtils.polygonAreaM2(polygon);
     if (area < _minLoopAreaM2) return;
+      // The mirror image of superseding, and the other half of the same rule:
+      // a loop drawn wholly inside one already recorded encloses no ground
+      // that is not already claimed, so recording it would inflate the
+      // route's reported area for a shape that adds nothing. Checked before
+      // the supersede pass below, so a re-drawn near-identical loop keeps the
+      // original rather than swapping in a duplicate of it.
+      for (final existing in _loopPolygons) {
+        if (GeometryUtils.polygonCoversPolygon(existing, polygon)) return;
+      }
     setState(() {
       final newPolygons = <List<LatLng>>[];
       final newAreas = <double>[];
       final newRangeStart = <int>[];
       final newRangeEnd = <int>[];
       for (int i = 0; i < _loopPolygons.length; i++) {
-        final overlaps =
-            _loopRangeStart[i] <= rangeEnd && rangeStart <= _loopRangeEnd[i];
-        if (overlaps) continue;
+        // Sharing a segment span is necessary but not sufficient: two blocks
+        // claimed by one route share the street between them, so their spans
+        // touch even though neither covers the other's ground. Superseding on
+        // the span alone silently deleted the first block the moment the
+        // second closed — confirmed in the field by pinning two adjacent
+        // squares. The geometric check is what distinguishes "drawn around
+        // it" from "next door to it".
+        final supersedes =
+            _loopRangeStart[i] <= rangeEnd &&
+                rangeStart <= _loopRangeEnd[i] &&
+                GeometryUtils.polygonCoversPolygon(polygon, _loopPolygons[i]);
+        if (supersedes) continue;
         newPolygons.add(_loopPolygons[i]);
         newAreas.add(_loopAreasM2[i]);
         newRangeStart.add(_loopRangeStart[i]);

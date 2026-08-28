@@ -22,6 +22,7 @@ import '../services/run_session_controller.dart';
 import '../services/wear_bridge.dart';
 import '../services/water_fountain_service.dart';
 import '../utils/geometry_utils.dart';
+import '../utils/route_progress.dart';
 import '../utils/unit_formatter.dart';
 import '../widgets/units_scope.dart';
 import '../widgets/map/area_visibility_toggle.dart';
@@ -923,6 +924,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                   const SizedBox(height: 18),
                   _RouteGuidanceCard(
                     guidance: _controller.guidance!,
+                    progress: _controller.routeProgress,
                     heading: _displayedHeading,
                     isVoiceEnabled: _isVoiceEnabled,
                     onToggleVoice: () {
@@ -1331,12 +1333,19 @@ class _StatBlock extends StatelessWidget {
 
 class _RouteGuidanceCard extends StatelessWidget {
   final RouteGuidance guidance;
+
+  /// How much of the route has actually been covered. Null when there is no
+  /// planned route to track progress through, in which case arrival falls
+  /// back to the proximity test alone.
+  final RouteProgress? progress;
+
   final double? heading;
   final bool isVoiceEnabled;
   final VoidCallback onToggleVoice;
 
   const _RouteGuidanceCard({
-    required this.guidance, 
+    required this.guidance,
+    required this.progress,
     required this.heading,
     required this.isVoiceEnabled,
     required this.onToggleVoice,
@@ -1349,8 +1358,15 @@ class _RouteGuidanceCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final offRoute = guidance.isOffRoute;
-    final arrived =
+    final atFinish =
         !offRoute && guidance.distanceRemainingMeters < _arrivalRadiusMeters;
+
+    // Being near the finish is not the same as having run the route. On a
+    // closed loop the two ends are the same place, so proximity alone reported
+    // "Route complete" before the runner had moved — see [RouteProgressTracker].
+    final covered = progress?.isCovered ?? true;
+    final arrived = atFinish && covered;
+    final shortOfFinish = atFinish && !covered;
     final canPoint = heading != null && !arrived;
 
     final (Color bg, Color fg) = switch ((offRoute, arrived)) {
@@ -1370,6 +1386,14 @@ class _RouteGuidanceCard extends StatelessWidget {
     } else if (arrived) {
       title = 'Route complete';
       subtitle = 'You have reached the end of the planned route';
+    } else if (shortOfFinish) {
+      // Standing at the finish having skipped part of the route: the distance
+      // readout would say "0 m to go", which is true of the line but not of
+      // the run. Say what is actually outstanding instead.
+      final p = progress!;
+      title = 'Keep going';
+      subtitle = 'Part of the route was skipped — '
+          '${p.remaining} of ${p.total} checkpoints missed';
     } else if (canPoint) {
       title = _turnLabel(units);
       subtitle = _formatRemaining(units, guidance.distanceRemainingMeters);

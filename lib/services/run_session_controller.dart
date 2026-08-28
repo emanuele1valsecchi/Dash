@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../utils/geometry_utils.dart';
+import '../utils/route_progress.dart';
 import 'location_service.dart';
 import 'run_foreground_service.dart';
 import 'run_session_repository.dart';
@@ -82,7 +83,14 @@ class RunSessionController extends ChangeNotifier {
   /// How far from the planned route counts as off route. Generous enough to
   /// absorb ordinary GPS error plus running on the far pavement of a wide
   /// road, while still catching an actual wrong turn.
-  static const double _offRouteThresholdMeters = 25.0;
+  /// Distance from the planned route at which the runner is *considered* to
+  /// have left it, subject to `routeGuidance`'s own debounce; forgiveness
+  /// happens at the tighter [_backOnRouteThresholdMeters]. Raised from a flat
+  /// 25 m after a field test: 25 m is inside the deviation a runner picks up
+  /// simply by cutting across a roundabout rather than following the planned
+  /// arc round it, which was being reported as going off route.
+  static const double _offRouteThresholdMeters = 35.0;
+  static const double _backOnRouteThresholdMeters = 25.0;
 
   static const double _fixIntervalEmaAlpha = 0.35;
   static const double _fixIntervalSeed = 0.8;
@@ -218,8 +226,16 @@ class RunSessionController extends ChangeNotifier {
   RouteGuidance? _guidance;
   int? _guidanceSegmentIndex;
   bool _wasOffRoute = false;
+  int _offRouteFixes = 0;
+  RouteProgressTracker? _progressTracker;
 
   RouteGuidance? get guidance => _guidance;
+
+  /// How far through the planned route the runner has actually got. Null when
+  /// there is no planned route to make progress through. Gates the "Route
+  /// complete" banner — see [RouteProgressTracker] for why proximity to the
+  /// finish is not enough on its own.
+  RouteProgress? get routeProgress => _progressTracker?.progress;
 
   // ── Derived stats ─────────────────────────────────────────────────────────
 
@@ -248,6 +264,9 @@ class RunSessionController extends ChangeNotifier {
   /// starting point exists.
   Future<void> prepare({List<LatLng>? plannedRoute}) async {
     _plannedRoute = plannedRoute;
+    _progressTracker = plannedRoute == null || plannedRoute.length < 2
+        ? null
+        : RouteProgressTracker(plannedRoute);
 
     await LocationService.instance.start();
     if (!LocationService.instance.permissionGranted) {
@@ -512,16 +531,35 @@ class RunSessionController extends ChangeNotifier {
     final area = GeometryUtils.polygonAreaM2(polygon);
     if (area < _minLoopAreaM2) return;
 
-    // A bigger loop supersedes any already-closed loop it overlaps with —
+    // The mirror image of superseding, below: a loop enclosing only ground
+    // an earlier one already claimed adds nothing, so it must not be recorded
+    // as a second claim — that double-counts the same ground in the area this
+    // run reports, and used to make running a lap inside an existing loop look
+    // like it had claimed new territory.
+    for (final existing in _closedLoops) {
+      if (GeometryUtils.polygonCoversPolygon(existing, polygon)) return;
+    }
+
+    // A bigger loop supersedes any already-closed loop it covers —
     // `findLoopClosureIndex` always walks as far back along the trail as still
     // closes a loop, so it's always at least as large as anything sharing its
     // ground (e.g. a bigger loop run around one already closed).
+    //
+    // Overlapping breadcrumb ranges alone do *not* mean one loop supersedes
+    // the other, and treating them as if they did lost real territory: run one
+    // block, then run the block next to it, and the trail necessarily
+    // re-enters the first loop's range along the street they share — dropping
+    // the first block, and the XP and claimed area with it, the moment the
+    // second closed. The range stays a cheap pre-filter; coverage decides.
     final rangeStart = idx;
     final rangeEnd = points.length - 1;
     for (int i = _closedLoops.length - 1; i >= 0; i--) {
-      final overlaps =
+      final sharesRange =
           _loopRangeStart[i] <= rangeEnd && rangeStart <= _loopRangeEnd[i];
-      if (!overlaps) continue;
+      if (!sharesRange) continue;
+      if (!GeometryUtils.polygonCoversPolygon(polygon, _closedLoops[i])) {
+        continue;
+      }
       _closedLoops.removeAt(i);
       _loopRangeStart.removeAt(i);
       _loopRangeEnd.removeAt(i);
@@ -538,16 +576,35 @@ class RunSessionController extends ChangeNotifier {
     final route = _plannedRoute;
     if (route == null || route.length < 2) return;
 
+    _progressTracker?.update(position);
+
     final guidance = GeometryUtils.routeGuidance(
       route,
       position,
-      previousSegmentIndex: _guidanceSegmentIndex,
+      // Seeding the very first match at segment 0 rather than letting it scan
+      // the whole route matters on a closed loop, where `route.first` and
+      // `route.last` are the same place: standing at the start, the runner is
+      // equidistant from the first and last segments and GPS noise alone
+      // decided which won. Matching the last one reported ~0 m remaining —
+      // "Route complete" before a single step — and then stuck, because the
+      // returned index is fed back in and the search window clamps to the end
+      // of the route. Nothing is lost by seeding: a runner who really is
+      // somewhere else still trips [routeGuidance]'s own out-of-threshold
+      // fallback, which re-scans the entire route exactly as a null hint did.
+      previousSegmentIndex: _guidanceSegmentIndex ?? 0,
       offRouteThresholdMeters: _offRouteThresholdMeters,
+      backOnRouteThresholdMeters: _backOnRouteThresholdMeters,
+      // Carries the debounce and hysteresis across calls, the same way
+      // `previousSegmentIndex` carries the match window — `routeGuidance` is
+      // pure and remembers nothing itself.
+      wasOffRoute: _wasOffRoute,
+      previousOffRouteFixes: _offRouteFixes,
     );
     if (guidance == null) return;
 
     _guidance = guidance;
     _guidanceSegmentIndex = guidance.segmentIndex;
+    _offRouteFixes = guidance.offRouteFixes;
 
     if (guidance.isOffRoute && !_wasOffRoute) {
       // Felt, not read — the whole point of the arrow is that a runner
@@ -674,6 +731,8 @@ class RunSessionController extends ChangeNotifier {
     _guidance = null;
     _guidanceSegmentIndex = null;
     _wasOffRoute = false;
+    _offRouteFixes = 0;
+    _progressTracker = null;
 
     notifyListeners();
   }
