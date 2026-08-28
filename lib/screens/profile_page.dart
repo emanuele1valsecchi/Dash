@@ -49,7 +49,7 @@ class _ProfilePageState extends State<ProfilePage> {
   List<HomeBadgeUiModel> _badges = [];
   List<RouteEntry> _ownedRoutes = [];
   List<RouteEntry> _favoriteRoutes = [];
-  List<RouteEntry> _createdRoutes = [];
+  final List<RouteEntry> _createdRoutes = [];
 
   List<RouteEntry> get _allRoutes => [..._ownedRoutes, ..._favoriteRoutes, ..._createdRoutes]
     ..sort((a, b) => b.route.createdAt.compareTo(a.route.createdAt));
