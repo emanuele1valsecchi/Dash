@@ -1,4 +1,4 @@
-:::mermaid
+```mermaid
 sequenceDiagram
     participant Navigation
     participant LegalScreen
@@ -11,4 +11,4 @@ sequenceDiagram
     LegalScreen->>LegalScreen: Select constant legal text
     LegalScreen->>LegalDocumentView: Build scrollable document view
     LegalDocumentView-->>User: Display legal document
-:::
+```
