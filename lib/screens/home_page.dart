@@ -31,6 +31,7 @@ import '../widgets/home/badge_progress_section.dart';
 import '../widgets/home/leaderboard_preview_card.dart';
 import '../widgets/home/start_run_overlay.dart';
 import '../widgets/home/monthly_stats_section.dart';
+import '../utils/leaderboard_order.dart';
 import 'leaderboard_page.dart';
 import 'notifications_page.dart';
 
@@ -650,6 +651,13 @@ class _HomePageState extends State<HomePage> {
         Map<String, int> globalUserPoints = {};
         Map<String, DateTime> currentUserCities = {};
 
+        // The runner's own metropolitan area — the most recent territory of
+        // theirs that came from `territoryCity`, i.e. from a curated metro
+        // coverage polygon rather than the broad region fallback. Only that
+        // tier earns second place in the default order.
+        String? myMetroTerritory;
+        DateTime? myMetroAt;
+
         // 2. Tally up all the points from the streamed data
         for (var doc in sessionsSnap.docs) {
           final data = doc.data();
@@ -657,9 +665,30 @@ class _HomePageState extends State<HomePage> {
           final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
           final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
 
+          // `territoryCity` first, `startLocality` only as a fallback. These
+          // were the other way round, which defeated the whole point of the
+          // curated metro polygons: `startLocality` is the raw reverse-geocoded
+          // village name the client records for display, so preferring it
+          // filed a run in Seregno under "Seregno" instead of the Milano metro
+          // area that covers it, splitting one leaderboard into one per
+          // village. `territoryCity` is the server-resolved territory and is
+          // the only one of the two that is trustworthy for ranking at all.
+          // Sessions predating territory resolution have no `territoryCity`,
+          // which is what the fallback is still here for.
           final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
           final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
-          final city = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
+          final rawBroad = (data['territoryBroad'] as String?)?.trim() ?? '';
+          // Must mirror the server's own choice of scoreboard exactly
+          // (`city || broad` in awardSessionPoints): `territoryCity` is only
+          // set when a curated metro polygon covers the start point, and a run
+          // outside every polygon is filed under the broad region tier instead.
+          // Falling straight through to `startLocality` there would show a
+          // village leaderboard the server never writes a single point to.
+          final city = rawTerritory.isNotEmpty
+              ? rawTerritory
+              : rawBroad.isNotEmpty
+                  ? rawBroad
+                  : (rawLocality.isNotEmpty ? rawLocality : 'Unknown');
 
           if (userId != null && createdAt != null) {
             globalUserPoints[userId] = (globalUserPoints[userId] ?? 0) + points;
@@ -671,6 +700,11 @@ class _HomePageState extends State<HomePage> {
               if (userId == user.uid) {
                 if (!currentUserCities.containsKey(city) || createdAt.isAfter(currentUserCities[city]!)) {
                   currentUserCities[city] = createdAt;
+                }
+                if (rawTerritory.isNotEmpty &&
+                    (myMetroAt == null || createdAt.isAfter(myMetroAt))) {
+                  myMetroTerritory = rawTerritory;
+                  myMetroAt = createdAt;
                 }
               }
             }
@@ -735,12 +769,23 @@ class _HomePageState extends State<HomePage> {
           );
         }
 
-        // 5. Generate the preview cards
-        for (var city in allUserCities) {
-          previews.add(await buildCardData(cityUserPoints[city]!, city));
+        // 5. Generate the preview cards, in the shared default order —
+        // global, then the runner's metro area, then everything else by
+        // recency. A saved config from the settings page overrides this in
+        // `_applyLeaderboardPreferences`; this is what a user who has never
+        // opened that page sees, and the two must match.
+        final orderedTitles = LeaderboardOrder.defaultOrder(
+          allUserCities,
+          metroTerritory: myMetroTerritory,
+        );
+        for (final title in orderedTitles) {
+          if (title == LeaderboardOrder.globalTitle) {
+            previews.add(await buildCardData(globalUserPoints, title));
+          } else {
+            final points = cityUserPoints[title];
+            if (points != null) previews.add(await buildCardData(points, title));
+          }
         }
-
-        previews.add(await buildCardData(globalUserPoints, 'Global Leaderboard'));
 
         // Salviamo i dati grezzi in memoria e applichiamo subito l'ordinamento
         _rawLeaderboards = previews;
@@ -770,7 +815,7 @@ class _HomePageState extends State<HomePage> {
         final String title = item['title'];
         
         // --- NEW: Force Global Leaderboard to always be visible ---
-        final bool isVisible = (title == 'Global Leaderboard') ? true : (item['isVisible'] ?? true);
+        final bool isVisible = (title == LeaderboardOrder.globalTitle) ? true : (item['isVisible'] ?? true);
 
         if (isVisible) {
           // Check if a card exists for that newly generated city in the raw data

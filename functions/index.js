@@ -488,19 +488,29 @@ async function awardSessionPoints({userId, sessionId, sessionData, totalAreaM2, 
   const path = sessionData.path;
   const start = Array.isArray(path) && path.length > 0 ? path[0] : null;
 
-  const startLocality = sessionData.startLocality || null;
-  const resolvedBroad = start ?
+  // Territory is score-affecting, so it is derived here from the run's real
+  // GPS start point and never from the client-supplied `startLocality`
+  // string — see territory.js's header, and the standing rule in CLAUDE.md
+  // that the client must not set anything feeding points or ranking.
+  //
+  // This used to read `const city = startLocality`, which threw the resolver's
+  // answer away: a run starting in Seregno was filed under "Seregno" rather
+  // than the Milano metro area that actually covers it, so the curated
+  // coverage polygons had no effect and city leaderboards fragmented into one
+  // per village — the whole reason those polygons exist, since administrative
+  // names do not match colloquial metro groupings.
+  const resolved = start ?
     await territory.resolveTerritory(start.latitude, start.longitude) :
-    {broad: null, broadType: null};
+    {city: null, broad: null, broadType: null};
 
-  const city = startLocality;
+  const city = resolved.city;
 
   const batch = db.batch();
   batch.update(db.collection('runningSessions').doc(sessionId), {
     pointsEarned: xp,
     territoryCity: city,
-    territoryBroad: resolvedBroad.broad,
-    territoryBroadType: resolvedBroad.broadType,
+    territoryBroad: resolved.broad,
+    territoryBroadType: resolved.broadType,
     totalAreaM2,
     stolenAreaM2,
     xpFromDistance,
@@ -515,8 +525,15 @@ async function awardSessionPoints({userId, sessionId, sessionData, totalAreaM2, 
   );
   await batch.commit();
 
-  if (city) {
-    await updateCityRankAndNotify({userId, city, xp});
+  // Which scoreboard the run counts toward: its curated metro area when one
+  // covers the start point, otherwise the broad (region) tier. `resolveTerritory`
+  // deliberately returns one tier or the other, and only the city tier was ever
+  // written to a leaderboard — so a runner outside every drawn polygon earned XP
+  // but appeared on no scoreboard at all, defeating the fallback's stated purpose
+  // of leaving nobody off every scoreboard.
+  const leaderboardTerritory = city || resolved.broad;
+  if (leaderboardTerritory) {
+    await updateCityRankAndNotify({userId, city: leaderboardTerritory, xp});
   }
 }
 
