@@ -5,7 +5,7 @@ import 'package:material_symbols_icons/symbols.dart';
 class DashSectionContainer extends StatelessWidget{
   final VoidCallback? onTap;
 
-  final Icon? leading;
+  final IconData? leadingIcon;
   final String title;
   final bool hasForwardIcon;
 
@@ -14,7 +14,7 @@ class DashSectionContainer extends StatelessWidget{
   const DashSectionContainer({
     super.key, 
     this.onTap,
-    this.leading,
+    this.leadingIcon,
     required this.title,
     this.hasForwardIcon = true,
     required this.child, 
@@ -34,13 +34,14 @@ class DashSectionContainer extends StatelessWidget{
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.start,
-          spacing: ResponsiveSpacing().sm,
+          spacing: ResponsiveSpacing().md,
           children: [
             Row(
               mainAxisAlignment: MainAxisAlignment.start,
               crossAxisAlignment: CrossAxisAlignment.center,
+              spacing: ResponsiveSpacing().sm,
               children: [
-                ?leading,
+                ?_buildLeadingIcon(textStyle, headerColor),
                 Text(
                   title,
                   style: textStyle.copyWith(
@@ -52,11 +53,20 @@ class DashSectionContainer extends StatelessWidget{
                 if (hasForwardIcon) _buildForwardIcon(headerColor, textStyle)
               ],
             ),
-
             child
           ],
         )
       ),
+    );
+  }
+
+  Widget? _buildLeadingIcon(TextStyle textStyle, Color headerColor){
+    if( leadingIcon == null ) return null;
+
+    return Icon(
+      leadingIcon,
+      size: textStyle.fontSize,
+      color: headerColor,
     );
   }
 
