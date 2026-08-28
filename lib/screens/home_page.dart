@@ -229,11 +229,10 @@ class _HomePageState extends State<HomePage> {
           icon: Badge(
             alignment: AlignmentGeometry.topRight,
             isLabelVisible: hasUnread,
-            backgroundColor: Theme.of(context).colorScheme.tertiary,
+            backgroundColor: Theme.of(context).colorScheme.primary,
             child: Icon(
               Symbols.notifications_rounded,
               fill: (hasUnread) ? 1 : 0,
-              color: (hasUnread) ? Theme.of(context).colorScheme.tertiary : null,
             ),
           )
         );
