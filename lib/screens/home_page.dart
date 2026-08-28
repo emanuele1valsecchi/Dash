@@ -35,7 +35,6 @@ import '../utils/leaderboard_order.dart';
 import 'leaderboard_page.dart';
 import 'notifications_page.dart';
 
-
 class _NoOverscrollBehavior extends ScrollBehavior {
   const _NoOverscrollBehavior();
 
@@ -98,6 +97,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+
     LocationService.instance.start();
     WaterFountainService.instance.warmUp();
     UnitPreferences.instance.syncFromCloud();
@@ -337,7 +337,6 @@ class _HomePageState extends State<HomePage> {
 
               const SizedBox(height: 12),
               
-              // SMART FLUID INDICATOR
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: List.generate(
@@ -350,13 +349,13 @@ class _HomePageState extends State<HomePage> {
                     double margin;
 
                     if (dist == 0) {
-                      width = 16; height = 6; margin = 4; // Active (Long)
+                      width = 16; height = 6; margin = 4;
                     } else if (dist <= 2) { 
-                      width = 6; height = 6; margin = 4; // Near (Normal)
+                      width = 6; height = 6; margin = 4;
                     } else if (dist == 3) {
-                      width = 4; height = 4; margin = 3; // Far (Small/Faded)
+                      width = 4; height = 4; margin = 3;
                     } else {
-                      width = 0; height = 0; margin = 0; // Too far (Invisible)
+                      width = 0; height = 0; margin = 0;
                     }
 
                     return AnimatedContainer(
@@ -413,6 +412,7 @@ class _HomePageState extends State<HomePage> {
         .snapshots()
         .listen((doc) {
       if (!mounted || !doc.exists) return;
+
       final data = doc.data()!;
       final nickname = data['username'] ?? data['nickname'] ?? data['name'];
       if (nickname is String && nickname.trim().isNotEmpty) {
@@ -551,12 +551,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  /// Formats the monthly stat cards from the raw figures, in the units
-  /// currently selected. Called from `build`, so a change of units re-renders
-  /// the cards without touching Firestore.
-  ///
-  /// The three rate cards follow the pace/speed preference — including their
-  /// titles, since "Average speed" over a pace figure would be simply wrong.
   List<MonthlyStatData> _buildMonthlyStats(UnitFormatter units) {
     final raw = _monthlyRaw;
     if (raw == null) return const [];
@@ -637,13 +631,10 @@ class _HomePageState extends State<HomePage> {
     
     final db = FirebaseFirestore.instance;
 
-    // Listen to the entire runningSessions collection in real-time
     _globalSessionsSub = db.collection('runningSessions').snapshots().listen((sessionsSnap) async {
       if (!mounted) return;
 
       try {
-        // 1. Fetch your following list (we use .get() here to keep it simple, 
-        // but you could stream this too if you wanted instant friend updates)
         final followsSnap = await db.collection('follows').where('followerId', isEqualTo: user.uid).get();
         final List<String> followingIds = followsSnap.docs.map((d) => d.data()['followingId'] as String).toList();
 
@@ -651,39 +642,19 @@ class _HomePageState extends State<HomePage> {
         Map<String, int> globalUserPoints = {};
         Map<String, DateTime> currentUserCities = {};
 
-        // The runner's own metropolitan area — the most recent territory of
-        // theirs that came from `territoryCity`, i.e. from a curated metro
-        // coverage polygon rather than the broad region fallback. Only that
-        // tier earns second place in the default order.
         String? myMetroTerritory;
         DateTime? myMetroAt;
 
-        // 2. Tally up all the points from the streamed data
         for (var doc in sessionsSnap.docs) {
           final data = doc.data();
           final userId = data['userId'] as String?;
           final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
           final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
 
-          // `territoryCity` first, `startLocality` only as a fallback. These
-          // were the other way round, which defeated the whole point of the
-          // curated metro polygons: `startLocality` is the raw reverse-geocoded
-          // village name the client records for display, so preferring it
-          // filed a run in Seregno under "Seregno" instead of the Milano metro
-          // area that covers it, splitting one leaderboard into one per
-          // village. `territoryCity` is the server-resolved territory and is
-          // the only one of the two that is trustworthy for ranking at all.
-          // Sessions predating territory resolution have no `territoryCity`,
-          // which is what the fallback is still here for.
           final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
           final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
           final rawBroad = (data['territoryBroad'] as String?)?.trim() ?? '';
-          // Must mirror the server's own choice of scoreboard exactly
-          // (`city || broad` in awardSessionPoints): `territoryCity` is only
-          // set when a curated metro polygon covers the start point, and a run
-          // outside every polygon is filed under the broad region tier instead.
-          // Falling straight through to `startLocality` there would show a
-          // village leaderboard the server never writes a single point to.
+          
           final city = rawTerritory.isNotEmpty
               ? rawTerritory
               : rawBroad.isNotEmpty
@@ -711,13 +682,11 @@ class _HomePageState extends State<HomePage> {
           }
         }
 
-        // 3. Sort user cities
         var sortedCities = currentUserCities.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
         var allUserCities = sortedCities.map((e) => e.key).toList();
 
         List<LeaderboardPreviewData> previews = [];
 
-        // 4. Helper function to build the card data (identical to your original logic)
         Future<LeaderboardPreviewData> buildCardData(Map<String, int> pointsMap, String title) async {
           if (!pointsMap.containsKey(user.uid)) pointsMap[user.uid] = 0;
           var sortedMap = pointsMap.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
@@ -769,11 +738,6 @@ class _HomePageState extends State<HomePage> {
           );
         }
 
-        // 5. Generate the preview cards, in the shared default order —
-        // global, then the runner's metro area, then everything else by
-        // recency. A saved config from the settings page overrides this in
-        // `_applyLeaderboardPreferences`; this is what a user who has never
-        // opened that page sees, and the two must match.
         final orderedTitles = LeaderboardOrder.defaultOrder(
           allUserCities,
           metroTerritory: myMetroTerritory,
@@ -787,7 +751,6 @@ class _HomePageState extends State<HomePage> {
           }
         }
 
-        // Salviamo i dati grezzi in memoria e applichiamo subito l'ordinamento
         _rawLeaderboards = previews;
         await _applyLeaderboardPreferences();
         
@@ -803,34 +766,27 @@ class _HomePageState extends State<HomePage> {
     final prefs = await SharedPreferences.getInstance();
     final String? savedData = prefs.getString('home_leaderboard_config');
 
-    // Lavoriamo su una copia dei dati grezzi
     List<LeaderboardPreviewData> currentPreviews = List.from(_rawLeaderboards);
 
     if (savedData != null) {
       final List<dynamic> decoded = jsonDecode(savedData);
       List<LeaderboardPreviewData> sortedAndFilteredPreviews = [];
 
-      // Read the preferred order saved by the user
       for (var item in decoded) {
         final String title = item['title'];
-        
-        // --- NEW: Force Global Leaderboard to always be visible ---
         final bool isVisible = (title == LeaderboardOrder.globalTitle) ? true : (item['isVisible'] ?? true);
 
         if (isVisible) {
-          // Check if a card exists for that newly generated city in the raw data
           final index = currentPreviews.indexWhere((p) => p.city == title);
           if (index != -1) {
             sortedAndFilteredPreviews.add(currentPreviews[index]);
-            currentPreviews.removeAt(index); // Remove to avoid duplication
+            currentPreviews.removeAt(index);
           }
         } else {
-          // Remove hidden cities
           currentPreviews.removeWhere((p) => p.city == title);
         }
       }
 
-      // Aggiungi eventuali "città nuove" scoperte che non erano ancora salvate nelle impostazioni
       sortedAndFilteredPreviews.addAll(currentPreviews);
       currentPreviews = sortedAndFilteredPreviews;
     }
@@ -864,7 +820,6 @@ class _HomePageState extends State<HomePage> {
             imageUrl = await _storageService.getDownloadUrl(badge.imagePath);
           } catch (_) {}
 
-          // Find the matching progress document from the stream snapshot
           final progressDoc = snap.docs.where((d) => d.id == badge.id).firstOrNull;
           
           double progress = 0.0;
@@ -947,8 +902,6 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    // A snackbar is a one-shot string, so a snapshot of the units is right
-    // here — nothing would redraw it if they changed a second later anyway.
     final distance = Units.current.distanceMajor(summary.distanceMeters);
     final minutes = summary.elapsed.inMinutes;
     final loopsText = summary.loopsCompleted > 0
@@ -958,46 +911,25 @@ class _HomePageState extends State<HomePage> {
         'Run saved — $distance in $minutes min$loopsText');
   }
 
-  /// Commands the watch cannot action on its own. Only `start` is handled here;
-  /// `finish` belongs to whichever run screen is live.
   void _onWatchCommand(WatchCommand command) {
     if (command != WatchCommand.start) return;
     if (!mounted) return;
 
-    // Only act when the app is actually on screen. A backgrounded phone can
-    // receive the message and push the run screen, but cannot finish starting:
-    // Android refuses a foreground-service start from the background, so the
-    // run sits on "getting GPS position" until the user happens to open the
-    // app — at which point it springs to life and collides with the run the
-    // watch has been recording in the meantime. Ignoring it here is what lets
-    // the watch keep the run it already started.
     if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
       return;
     }
-    // This screen stays mounted underneath the run screen, so without this
-    // guard a stray start from the watch would stack a second RunTrackingPage
-    // on top of a live run — and the new one would reset the controller.
+    
     final session = RunSessionController.instance;
     if (session.hasStarted || session.isCountingDown) return;
     _startRunNow();
   }
 
-  /// A run arriving from the watch happens with no interaction at all — it can
-  /// land minutes after the user opened the app. A snackbar is the least
-  /// intrusive way to say so; anything modal would interrupt whatever they
-  /// actually opened the app to do.
   void _onWatchImportMessage(String message) {
     if (!mounted) return;
     context.showInformationSnackBar(message);
   }
 }
 
-/// The always-metric figures behind the home screen's monthly stat cards.
-///
-/// Split out from the Firestore fetch so the cards can be *formatted* during
-/// `build` — that is what lets a change of units re-render them immediately
-/// without another query. [avgDurationStr] is the one pre-formatted member:
-/// a duration has no unit setting to respect.
 class _MonthlyStatsRaw {
   const _MonthlyStatsRaw({
     required this.avgDurationMs,
