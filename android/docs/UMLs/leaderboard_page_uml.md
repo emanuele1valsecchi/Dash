@@ -1,4 +1,4 @@
-:::mermaid
+```mermaid
 classDiagram
     class LeaderboardEntry {
         +String userId
@@ -46,4 +46,4 @@ classDiagram
     LeaderboardScreenState --> Firestore : reads
     LeaderboardScreenState --> FirebaseAuth : reads current user
     LeaderboardScreenState --> PublicProfilePage : opens
-:::
+```
