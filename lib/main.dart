@@ -118,6 +118,10 @@ class DashApp extends StatelessWidget {
           ),
         ),
 
+        iconTheme: IconThemeData(
+          weight: 600,
+        ),
+
         progressIndicatorTheme: ProgressIndicatorThemeData(
           color: materialColorScheme.tertiary,           
           circularTrackColor: materialColorScheme.surfaceContainer,
