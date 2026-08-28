@@ -1,4 +1,4 @@
-:::mermaid
+```mermaid
 classDiagram
     class HomePage {
         +HomePage()
@@ -45,4 +45,4 @@ classDiagram
     HomePageState --> SharedPreferences : loads preferences
     HomePageState --> WearBridge : listens to
     HomePageState --> RunTrackingPage : starts
-:::
+```
