@@ -1,4 +1,4 @@
-:::mermaid
+```mermaid
 sequenceDiagram
     participant User
     participant SettingsPage
@@ -19,4 +19,4 @@ sequenceDiagram
     User->>SettingsPage: Reorders or toggles visibility
     SettingsPage->>SettingsPage: setState()
     SettingsPage->>SharedPreferences: Save updated config JSON
-:::
+```
