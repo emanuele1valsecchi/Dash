@@ -1,4 +1,4 @@
-import 'package:dash/extensions/responsive_border_radius.dart';
+import 'package:dash/decorations/card_decorations.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:flutter/material.dart';
 
@@ -30,14 +30,7 @@ class DashGestureCardContainer extends StatelessWidget{
       child: Container(
         width: MediaQuery.widthOf(context),
         padding: EdgeInsets.all(ResponsiveSpacing().md),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainer,
-          borderRadius: context.radiusXl,
-          border: Border.all(
-            color: Theme.of(context).colorScheme.surfaceContainerHigh,
-            width: 1.8
-          )
-        ),
+        decoration: getDashCardDecoration(context),
         child: hasTopBar
           ? _buildWithInternalTopBar(context, child)
           : child
