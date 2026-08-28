@@ -1,4 +1,4 @@
-:::mermaid
+```mermaid
 classDiagram
     class CalendarScreen {
         +const CalendarScreen()
@@ -28,4 +28,4 @@ classDiagram
 
     CalendarScreen --> _CalendarScreenState : creates
     _CalendarScreenState "1" *-- "many" SessionCard : renders
-:::
+```
