@@ -199,7 +199,47 @@ function computeClaim({newLoopPoints, userId, sessionId, loopIndex, candidates, 
   };
 }
 
+/**
+ * Ground covered by one session's own closed loops, counting overlap once.
+ *
+ * XP's area term is deliberately built from the loops' *raw* enclosed areas
+ * rather than the merged shapes `computeClaim` produces, so that re-absorbing
+ * a large pre-existing same-owner area cannot inflate a run's score (see the
+ * note on `rawLoopGeom`). Summing those raw areas, though, double-counts any
+ * ground a single session covers twice — most obviously a loop drawn wholly
+ * inside another, which claims nothing new but used to be paid for in full a
+ * second time. Unioning first keeps the original protection while charging
+ * overlap once, and is exact for partial overlaps too, not just containment.
+ *
+ * @param {Array<Array<{latitude:number,longitude:number}>>} loops
+ * @return {number} area in square metres, 0 when nothing valid was given.
+ */
+function sessionLoopsAreaM2(loops) {
+  let union = null;
+  for (const points of loops) {
+    if (!Array.isArray(points) || points.length < 3) continue;
+    let geom;
+    try {
+      geom = loopToTurfPolygon(points);
+    } catch (e) {
+      continue; // A degenerate ring turf refuses is simply not ground.
+    }
+    if (!geom) continue;
+    if (!union) {
+      union = geom;
+      continue;
+    }
+    // Disjoint loops come back as a MultiPolygon rather than null (verified
+    // against turf 7.3.5), so separate blocks stay additive on their own. The
+    // fallback is pure defensiveness against a future turf returning null.
+    const merged = turf.union(turf.featureCollection([union, geom]));
+    union = merged || turf.featureCollection([union, geom]);
+  }
+  return union ? turf.area(union) : 0;
+}
+
 module.exports = {
+  sessionLoopsAreaM2,
   loopToTurfPolygon,
   storedPolygonToTurf,
   turfToStoredPolygon,

@@ -6,6 +6,7 @@ const { getMessaging } = require('firebase-admin/messaging'); // <-- Add this ne
 const geo = require('./geo');
 const territory = require('./territory');
 const routing = require('./routing');
+const routeCascade = require('./routeCascade');
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { getAuth } = require('firebase-admin/auth');
 
@@ -428,16 +429,23 @@ exports.onRunningSessionCreateClaimedAreas = onDocumentCreated(
     const userId = sessionData.userId;
     const sessionId = event.params.sessionId;
 
-    let sessionTotalAreaM2 = 0;
     let sessionStolenAreaM2 = 0;
     let sessionVictims = new Set(); 
+
+    // Collected rather than summed: a session that covers the same ground
+    // twice — most obviously a loop drawn wholly inside another, which claims
+    // nothing new — must be paid for that ground once, so the area feeding XP
+    // is the union of these, not the sum of their areas. Only loops that
+    // actually claimed are collected, so a failed claimLoop stays uncounted
+    // exactly as it did when this was a running total.
+    const claimedLoops = [];
 
     for (let index = 0; index < closedLoops.length; index++) {
       const points = closedLoops[index] && closedLoops[index].points;
       if (!Array.isArray(points) || points.length < 3) continue;
       try {
         const loopResult = await claimLoop({userId, sessionId, loopIndex: index, points, sessionData});
-        sessionTotalAreaM2 += loopResult.totalAreaM2;
+        claimedLoops.push(points);
         sessionStolenAreaM2 += loopResult.stolenAreaM2;
         
         if (loopResult.stolenFrom) {
@@ -447,6 +455,8 @@ exports.onRunningSessionCreateClaimedAreas = onDocumentCreated(
         console.error(`claimLoop failed for ${sessionId}_${index}:`, e);
       }
     }
+
+    const sessionTotalAreaM2 = geo.sessionLoopsAreaM2(claimedLoops);
 
     // ── LOGICA BADGE "COUP" ──
     for (const victimId of sessionVictims) {
@@ -1403,6 +1413,128 @@ exports.clearUserProgress = functions
     }
   });
 
+/**
+ * Scrubs a deleted user's personal data off the shared routes built from
+ * their runs — WITHOUT deleting the routes themselves.
+ *
+ * A shared route (see `favoriteSession`) is the canonical copy of one run's
+ * path, referenced by every user who favourited that run. It has no owner, so
+ * the `where('userId', '==', uid)` sweep in `deleteMyAccount` never matches
+ * it, and it correctly survives its original runner's account deletion: other
+ * users' favourites point at it, and a path through public streets is a
+ * geographic fact rather than something the runner authored.
+ *
+ * What must NOT survive is the part that describes the runner rather than the
+ * route: `estimatedTimeMin`/`estimatedCalories` are that run's real measured
+ * duration and burn, and `sourceSessionId` is a pointer to their activity
+ * record. Those are replaced with distance-based estimates and removed
+ * respectively, which also breaks the last link back to a now-deleted person.
+ * `startLocality` and the polyline are deliberately kept: both describe where
+ * the route goes, and the locality is derivable from the geometry anyway.
+ *
+ * Every referencing user's `favoriteRoutes` link carries a denormalized copy
+ * of those same two measurements, so scrubbing only the route would leave
+ * them behind — the links are updated in the same pass.
+ *
+ * Finding the routes needs no query, no index and no extra field: a shared
+ * route's document ID *is* its source session's ID.
+ */
+async function anonymizeSessionDerivedRoutes(sessionIds) {
+  for (const sessionId of sessionIds) {
+    const routeRef = db.collection("routes").doc(sessionId);
+    const routeSnap = await routeRef.get();
+    if (!routeSnap.exists) continue;
+
+    const route = routeSnap.data();
+    // Only ownerless (shared) routes are session-derived. An owned route is
+    // handled by anonymizeOrDeleteOwnedRoutes instead, and must not be
+    // rewritten here even if its ID happened to collide.
+    if (!routeCascade.isSharedRoute(route)) continue;
+
+    const { estimatedTimeMin, estimatedCalories } =
+      routeCascade.anonymizedRouteStats(route);
+
+    await routeRef.update({
+      estimatedTimeMin,
+      estimatedCalories,
+      sourceSessionId: FieldValue.delete(),
+    });
+
+    const links = await db
+      .collection("favoriteRoutes")
+      .where("routeId", "==", sessionId)
+      .get();
+
+    for (let i = 0; i < links.docs.length; i += 450) {
+      const chunk = links.docs.slice(i, i + 450);
+      const batch = db.batch();
+
+      for (const link of chunk) {
+        batch.update(link.ref, { estimatedTimeMin, estimatedCalories });
+      }
+
+      await batch.commit();
+    }
+
+    console.log(
+      `[deleteMyAccount] Anonymized shared route ${sessionId} ` +
+      `and ${links.docs.length} link(s) to it`
+    );
+  }
+}
+
+/**
+ * Handles the routes a deleted user *owned* — planned by hand, or saved from
+ * a parameter search.
+ *
+ * These were previously left untouched ("published routes are intentionally
+ * preserved"), but nothing publishes: `publishRoute` always writes
+ * `isPublic: false`, and the read rule only lets a non-owner read a route
+ * when `isPublic == true`. So a preserved owned route was unreadable by
+ * everyone, forever — the deleted user's personal data kept at cost with no
+ * one able to see it.
+ *
+ * Anything genuinely marked public is preserved as the original comment
+ * intended, but with `userId` cleared, so it survives as an ownerless shared
+ * route rather than as a document still carrying a deleted user's ID.
+ * Everything else is deleted.
+ */
+async function anonymizeOrDeleteOwnedRoutes(uid) {
+  const ownedSnap = await db
+    .collection("routes")
+    .where("userId", "==", uid)
+    .get();
+
+  const toDelete = [];
+  const toAnonymize = [];
+
+  for (const doc of ownedSnap.docs) {
+    if (routeCascade.ownedRouteDisposition(doc.data()) === "anonymize") {
+      toAnonymize.push(doc.ref);
+    } else {
+      toDelete.push(doc);
+    }
+  }
+
+  for (let i = 0; i < toAnonymize.length; i += 450) {
+    const chunk = toAnonymize.slice(i, i + 450);
+    const batch = db.batch();
+
+    for (const ref of chunk) {
+      batch.update(ref, { userId: null });
+    }
+
+    await batch.commit();
+  }
+
+  await deleteDocumentsInBatches(toDelete);
+
+  console.log(
+    `[deleteMyAccount] Owned routes: deleted ${toDelete.length}, ` +
+    `anonymized ${toAnonymize.length}`
+  );
+}
+
 /** Deletes documents in chunks below Firestore's 500-operation limit. */
 async function deleteDocumentsInBatches(docs) {
   for (let i = 0; i < docs.length; i += 450) {
@@ -1609,6 +1741,26 @@ exports.deleteMyAccount = functions
       const profileSnap = await profileRef.get();
       const profileData = profileSnap.exists ? profileSnap.data() : {};
 
+      // ── Route cascade, BEFORE anything is deleted ────────────────────────
+      //
+      // Order matters: a shared route derived from a run is found by its
+      // document ID, which is that run's ID. Once the runningSessions docs
+      // below are gone there is no way left to enumerate them, so the IDs
+      // have to be captured first.
+      //
+      // Routes are deliberately NOT deleted wholesale. A route another user
+      // favourited outlives its original runner — see
+      // anonymizeSessionDerivedRoutes for the full reasoning — it is only
+      // stripped of what described that runner.
+      const ownSessionsSnap = await db
+        .collection("runningSessions")
+        .where("userId", "==", uid)
+        .get();
+      const ownSessionIds = ownSessionsSnap.docs.map((doc) => doc.id);
+
+      await anonymizeSessionDerivedRoutes(ownSessionIds);
+      await anonymizeOrDeleteOwnedRoutes(uid);
+
       // Delete user-owned documents from top-level collections.
       const collectionsToDelete = [
         "runningSessions",
@@ -1697,14 +1849,19 @@ exports.deleteMyAccount = functions
         }
       }
 
-      // Published routes are intentionally preserved.
+      // Routes were handled by the cascade at the top of this function:
+      // session-derived shared routes survive (stripped of anything
+      // describing this user), public owned routes survive without an owner,
+      // and unpublished owned routes are gone.
       await getAuth().deleteUser(uid);
 
       console.log(`[deleteMyAccount] SUCCESS uid=${uid}`);
 
       return {
         success: true,
-        message: "Account and user data deleted. Published routes were preserved.",
+        message:
+          "Account and user data deleted. Routes other users saved from your " +
+          "runs were kept, with your run data removed from them.",
       };
     } catch (error) {
       console.error(`[deleteMyAccount] FAILED uid=${uid}`, error);
