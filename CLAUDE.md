@@ -1175,6 +1175,42 @@ Keep this list current — update it whenever a feature moves between these buck
   m2/ha/km2 area ladder is gone too, which incidentally fixes it disagreeing with every
   other area display in the app. One cosmetic change: `session_detail_screen.dart`'s pace
   now renders `5:30` like the rest of the app rather than its own `5'30"`.
+- **Account deletion** (`deleteMyAccount` in [functions/index.js](functions/index.js), called from
+  [lib/screens/personal_information_page.dart](lib/screens/personal_information_page.dart)) — deletes the user's `runningSessions`,
+  `claimedAreas`, `notifications`, `favoriteRoutes`, `follows`, `userStats`, city
+  leaderboard entries, `badge_progress`, profile doc and profile image, then the Auth
+  account last so a failed Firestore cleanup doesn't strand an account with no data.
+  **The route cascade is the non-obvious part, and it deliberately does not delete
+  everything** (decision logic in `functions/routeCascade.js`, see Project structure):
+  - A **shared session route** (the canonical copy of a run's path that other users'
+    favourites point at — see the run-session detail page bullet above) **survives**. It
+    has no owner, so the `where('userId', '==', uid)` sweep never matches it anyway, and
+    that is correct: a path through public streets is a geographic fact, not something
+    the runner authored, and deleting it would break every other user's saved route. What
+    does *not* survive is the part describing the runner — `estimatedTimeMin`/
+    `estimatedCalories` are overwritten with distance-based planned estimates (9 min/km,
+    70 kcal/km, matching `RouteCreatePage`'s own constants, so a scrubbed route reads
+    exactly like a hand-planned one) and `sourceSessionId` is deleted, breaking the last
+    link back to the deleted person. `startLocality` and the polyline are kept, both
+    describing where the route goes rather than who ran it. Every referencing user's
+    `favoriteRoutes` link carries a denormalized copy of those same two measurements and
+    is updated in the same pass — scrubbing only the route would leave them behind.
+  - An **owned** route (planned by hand or saved from search) is **deleted** unless
+    `isPublic == true`, in which case it's preserved but with `userId` cleared. The old
+    "published routes are intentionally preserved" behaviour preserved *everything*,
+    which was ineffective: `publishRoute` always writes `isPublic: false` and the read
+    rule only lets a non-owner read a route when it's true, so those documents were
+    unreadable by everyone forever — a deleted user's personal data kept at cost with
+    nobody able to see it.
+  - **Ordering matters and is load-bearing**: the cascade runs *before* anything is
+    deleted, because a shared route is found by its document ID being its source
+    session's ID, and once the `runningSessions` docs are gone there is no way left to
+    enumerate them. Don't move it below the delete loop.
+  - Still **not** handled, deliberately: reclaiming shared routes nothing references any
+    more (no refcount/GC — one shared doc is small and bounded by the number of runs ever
+    favourited, not by the number of users), and the fact that a scrubbed route's
+    *document ID* is still the deleted session's ID (an opaque string once the session is
+    gone, so accepted rather than migrated).
 
 **Designed in Firestore rules but NOT yet built in the Flutter app** (i.e. the security
 rules anticipate these collections — `runningSessions`, `claimedAreas`, `userStats`,
@@ -1232,6 +1268,10 @@ milestones:
   Firestore-independent functions specifically so they're unit-testable standalone
   (`functions/_verify_geo.js`, excluded from deploy — see `firebase.json`) without a live
   or emulated database; `index.js` is the thin transactional I/O wrapper around it.
+  `functions/routeCascade.js` follows the same split for account deletion's route
+  handling (`functions/_verify_routeCascade.js`, 13 checks) — worth its own tested unit
+  specifically because deletion is irreversible: a wrong branch there permanently
+  destroys either a deleted user's privacy or other users' saved routes.
 - `firestore.rules` — the source of truth for what the client is and isn't allowed to
   write; read this before adding any new Firestore read/write path.
 
