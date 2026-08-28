@@ -455,6 +455,7 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> with TickerProv
       action: failure.isRetryable
         ? SnackBarAction(
             label: 'Retry',
+            textColor: Theme.of(context).colorScheme.onErrorContainer,
             onPressed: () => _retryStrokeConversion(rawPoints),
           )
         : null,

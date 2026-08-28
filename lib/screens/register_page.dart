@@ -1,7 +1,7 @@
+import 'package:dash/root_screen.dart';
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
 import 'email_confirmation_page.dart';
-import 'home_page.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -102,7 +102,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       final result = await _authService.signInWithGoogle();
       if (result != null && mounted) {
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const HomePage()),
+          MaterialPageRoute(builder: (_) => const RootScreen()),
         );
       }
     } on Exception catch (e) {

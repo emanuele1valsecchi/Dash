@@ -129,7 +129,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                 if (_emailController.text.contains('@') && _emailController.text.isNotEmpty) {
                   _pageController.nextPage(duration: const Duration(milliseconds: 300), curve: Curves.ease);
                 } else {
-                  context.showErrorSnackBar("INsert a valid email");
+                  context.showErrorSnackBar("Insert a valid email");
                 }
               },
               child: const Icon(Icons.chevron_right, color: Color(0xFF4A5D3F)),
