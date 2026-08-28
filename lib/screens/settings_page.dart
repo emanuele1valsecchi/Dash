@@ -38,7 +38,6 @@ class SettingsPage extends StatelessWidget {
       await FirebaseAuth.instance.signOut();
       
       if (context.mounted) {
-        // 2. Naviga alla pagina di Login e distrugge tutto lo storico
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(
             builder: (context) => const LoginScreen(), // <-- Corretto qui!
