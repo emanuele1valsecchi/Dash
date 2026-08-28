@@ -1,4 +1,4 @@
-:::mermaid
+```mermaid
 sequenceDiagram
     participant User
     participant CalendarScreen
@@ -17,4 +17,4 @@ sequenceDiagram
     CalendarScreen->>CalendarScreen: Get events for day
     CalendarScreen->>ListView: Pass selected activities
     ListView->>SessionCard: Render Polyline and Stats
-:::
+```
