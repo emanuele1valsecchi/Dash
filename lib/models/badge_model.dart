@@ -6,7 +6,6 @@ class BadgeModel {
   final bool defaultVisible;
   final int order;
   final double requiredValue;
-  // User specific state
   final double progress;
   final bool unlocked;
 
@@ -31,12 +30,9 @@ class BadgeModel {
       defaultVisible: map['defaultVisible'] ?? false,
       order: (map['order'] ?? 0) as int,
       requiredValue: (map['requiredValue'] as num?)?.toDouble() ?? 0.0,
-      // We don't map progress and unlocked here because they don't live 
-      // in the global 'badges' collection. They start at default values.
     );
   }
 
-  // Helper method to create a copy of the model with updated user state
   BadgeModel copyWith({
     double? progress,
     bool? unlocked,

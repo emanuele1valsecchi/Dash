@@ -23,6 +23,8 @@ class _BadgePageState extends State<BadgePage> {
   StreamSubscription<QuerySnapshot>? _badgeSub;
   final StorageService _storageService = StorageService();
 
+  static final Map<String, String> _urlCache = {};
+
   @override
   void initState() {
     super.initState();
@@ -68,20 +70,28 @@ class _BadgePageState extends State<BadgePage> {
 
   void _startBadgesStream() async {
     final user = FirebaseAuth.instance.currentUser;
+
     if (user == null) return;
 
     final staticBadges = await BadgeService().getAllBadges(user.uid);
+
+    for (final badge in staticBadges) {
+      if (!_urlCache.containsKey(badge.imagePath)) {
+        _urlCache[badge.imagePath] = 
+            await _storageService.getDownloadUrlSafe(badge.imagePath) ?? '';
+      }
+    }
 
     _badgeSub = FirebaseFirestore.instance
       .collection('profiles')
       .doc(user.uid)
       .collection('badge_progress')
       .snapshots()
-      .listen((snap) async {
+      .listen((snap) {
         final updatedBadges = <HomeBadgeUiModel>[];
 
         for (final badge in staticBadges) {
-          String imageUrl = await _storageService.getDownloadUrlSafe(badge.imagePath) ?? '';
+          String imageUrl = _urlCache[badge.imagePath] ?? '';;
 
           final progressDoc = snap.docs.where((d) => d.id == badge.id).firstOrNull;
           

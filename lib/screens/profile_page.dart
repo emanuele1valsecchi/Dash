@@ -56,6 +56,8 @@ class _ProfilePageState extends State<ProfilePage> {
 
   final StorageService _storageService = StorageService();
 
+  static final Map<String, String> _profileUrlCache = {};
+
   @override
   void initState() {
     super.initState();
@@ -241,7 +243,6 @@ class _ProfilePageState extends State<ProfilePage> {
         : ListView.builder(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            padding: const EdgeInsets.only(top: 8, bottom: 24),
             itemCount: _allRoutes.length,
             itemBuilder: (context, i) =>
                 DashRouteCard(
@@ -252,6 +253,45 @@ class _ProfilePageState extends State<ProfilePage> {
                   onActionTap: () => {}
                 )
           ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    ThemeData contextTheme = Theme.of(context);
+
+    TextStyle bodyLargeTextStyle = contextTheme.textTheme.bodyLarge!.copyWith(
+      color: contextTheme.colorScheme.outlineVariant,
+    );
+
+    return Center(
+      child:Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        mainAxisAlignment: MainAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        spacing: ResponsiveSpacing().sm,
+        children: [
+          Icon(
+            Symbols.route_rounded, 
+            size: contextTheme.textTheme.displayLarge!.fontSize, 
+            color: contextTheme.colorScheme.outlineVariant,
+            fill: 1,
+          ),
+          Text(
+            'No activities yet',
+            style: bodyLargeTextStyle.copyWith(
+              fontWeight: FontWeight.bold
+            ),
+          ),
+          SizedBox(
+            width: MediaQuery.widthOf(context) * 2 / 3,
+            child: Text(
+              'Complete a run, create a route or favourite one to see it here.',
+              textAlign: TextAlign.center,
+              style: bodyLargeTextStyle,
+            ) 
+          ),
+        ],
+      )
     );
   }
 
@@ -274,8 +314,8 @@ class _ProfilePageState extends State<ProfilePage> {
             _surname = data['surname'] ?? '';
             _email = data['email'] ?? 'No Email';
             _bio = data['bio'] ?? '';
-            _followers = (data['followers'] as num?)?.toInt() ?? 0;
-            _following = (data['following'] as num?)?.toInt() ?? 0;
+            _followers = (data['followersCount'] as num?)?.toInt() ?? 0;
+            _following = (data['followingCount'] as num?)?.toInt() ?? 0;
             _profileImageUrl = data['profileImageUrl'] as String? ?? '';
             _isLoading = false;
           });
@@ -294,23 +334,30 @@ class _ProfilePageState extends State<ProfilePage> {
 
     final staticBadges = await BadgeService().getProfileBadges(user.uid);
 
+    for (final badge in staticBadges) {
+      if (!_profileUrlCache.containsKey(badge.imagePath)) {
+        try {
+          _profileUrlCache[badge.imagePath] = 
+              await _storageService.getDownloadUrl(badge.imagePath);
+        } catch (_) {
+          _profileUrlCache[badge.imagePath] = '';
+        }
+      }
+    }
+
     _badgeSub = FirebaseFirestore.instance
       .collection('profiles')
       .doc(user.uid)
       .collection('badge_progress')
       .snapshots()
-      .listen((snap) async {
+      .listen((snap) {
         final updatedBadges = <HomeBadgeUiModel>[];
 
         for (final badge in staticBadges) {
-          String imageUrl = '';
-          try {
-            imageUrl = await _storageService.getDownloadUrl(badge.imagePath);
-          } catch (_) {}
+          String imageUrl = _profileUrlCache[badge.imagePath] ?? '';
 
-          // Find the matching progress document from the stream snapshot
           final progressDoc = snap.docs.where((d) => d.id == badge.id).firstOrNull;
-          
+                    
           double progress = 0.0;
           bool unlocked = false;
           
@@ -433,45 +480,6 @@ class _ProfilePageState extends State<ProfilePage> {
           });
         }
       });
-  }
-
-  Widget _buildEmptyState() {
-    ThemeData contextTheme = Theme.of(context);
-
-    TextStyle bodyLargeTextStyle = contextTheme.textTheme.bodyLarge!.copyWith(
-      color: contextTheme.colorScheme.outlineVariant,
-    );
-
-    return Center(
-      child:Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        mainAxisAlignment: MainAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        spacing: ResponsiveSpacing().sm,
-        children: [
-          Icon(
-            Symbols.route_rounded, 
-            size: contextTheme.textTheme.displayLarge!.fontSize, 
-            color: contextTheme.colorScheme.outlineVariant,
-            fill: 1,
-          ),
-          Text(
-            'No activities yet',
-            style: bodyLargeTextStyle.copyWith(
-              fontWeight: FontWeight.bold
-            ),
-          ),
-          SizedBox(
-            width: MediaQuery.widthOf(context) * 2 / 3,
-            child: Text(
-              'Complete a run, create a route or favourite one to see it here.',
-              textAlign: TextAlign.center,
-              style: bodyLargeTextStyle,
-            ) 
-          ),
-        ],
-      )
-    );
   }
 }
 
