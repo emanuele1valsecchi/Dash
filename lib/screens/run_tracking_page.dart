@@ -9,6 +9,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 
 import '../config/map_style.dart';
 import '../models/water_fountain.dart';
@@ -16,7 +17,6 @@ import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
 import 'package:dash_watch_protocol/dash_watch_protocol.dart';
 
-import '../services/location_service.dart';
 import '../services/run_foreground_service.dart';
 import '../services/run_session_controller.dart';
 import '../services/wear_bridge.dart';
@@ -129,100 +129,34 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   }
 
   // ── Dot smoothing ─────────────────────────────────────────────────────────
-  //
-  // GPS fixes arrive in discrete jumps, which makes the marker teleport
-  // instead of glide. This is a single exponential "chase": a perpetual
-  // per-frame ticker nudges [_displayedPosition] a fraction of the remaining
-  // gap toward [_controller.currentPosition] (the raw latest fix) every frame, scaled
-  // by real elapsed time. Two things this is deliberately NOT, because both
-  // were tried and both still visibly stalled:
-  //
-  //  1. A bounded Tween whose duration is guessed from the *previous*
-  //     fix-to-fix gap and then played back after the fix arrives. Our
-  //     position stream is triggered by a distance filter, not a fixed timer
-  //     (unlike e.g. Google's FusedLocationProvider), so fixes never arrive
-  //     on a predictable beat — any guessed duration can still finish before
-  //     the next fix shows up, leaving the dot idle in between.
-  //  2. A *fixed*-time-constant chase. This still has the same problem in
-  //     disguise: with a short constant (what shipped originally, 0.35s) the
-  //     chase converges and snaps to the target well within a typical
-  //     0.5–1s fix interval, so it's sitting "settled" — not incrementally
-  //     approaching anything — for whatever time is left until the next fix.
-  //     That idle window is indistinguishable from a stall.
-  //
-  // The fix for both: the chase's time constant (computed fresh each tick in
-  // [_onDotTick]) is *adaptive*, tracking the recently observed real gap
-  // between fixes (any pace, any GPS cadence) via
-  // [_controller.fixIntervalEstimateSeconds], with enough headroom that the chase
-  // structurally cannot finish converging before the next fix retargets it.
-  // It only actually reaches "settled" once fixes genuinely stop arriving —
-  // i.e. the runner has actually stopped — which is exactly when the dot
-  // should stop moving.
   LatLng? _displayedPosition;
   double? _displayedHeading;
   late final Ticker _dotTicker;
   Duration _dotTickerLastElapsed = Duration.zero;
 
-  /// The chase's time constant is this multiple of the observed fix
-  /// interval — comfortably longer than the gap it needs to survive, so a
-  /// fix arriving right on schedule (or even a bit late) still finds the
-  /// chase mid-glide rather than idle. Clamped so unusually fast bursts
-  /// don't make it snappy/jittery, and unusually long GPS gaps (tunnels,
-  /// poor signal) don't leave it crawling forever.
   static const double _dotChaseTauMultiplier = 1.5;
   static const double _dotChaseTauMin = 0.3;
   static const double _dotChaseTauMax = 2.5;
-
-  /// How close the chase needs to get before snapping the rest of the way —
-  /// otherwise it's asymptotic and technically never *exactly* arrives,
-  /// which would mean pointless per-frame work forever once the runner
-  /// actually stops.
   static const double _dotChaseSnapThresholdMeters = 0.25;
 
   // ── UI-only run bookkeeping ───────────────────────────────────────────────
 
-  /// Drives the HH:MM:SS:DD display at 10 Hz, independent of GPS, so the clock
-  /// stays smooth between location fixes. Purely a repaint pulse — the elapsed
-  /// time itself comes from the controller's stopwatch.
   Timer? _uiTicker;
-
-  /// Re-entrancy guard on [_finishRun]'s `Navigator.pop`. Stays here rather
-  /// than moving to the controller: it guards a navigation call, not run state.
   bool _isFinishing = false;
-
-  /// The watch's stop button, forwarded by [WearBridge]. Only this screen can
-  /// action it, since finishing shows the save/discard summary.
   StreamSubscription<WatchCommand>? _watchCommands;
+
+  // ── TTS State ─────────────────────────────────────────────────────────────
+  final FlutterTts _flutterTts = FlutterTts();
+  bool _isVoiceEnabled = true;
+  String _lastSpokenMilestone = '';
 
   void _onWatchCommand(WatchCommand command) {
     if (command != WatchCommand.finish) return;
-    // Guard against a duplicate stop arriving mid-teardown, which would try to
-    // show a second summary over the first.
     if (!mounted || _isFinishing) return;
     _confirmFinish(alreadyConfirmed: true);
   }
 
-  /// The trail as painted on the map: every confirmed fix, plus a final
-  /// "live" vertex that the dot-chase ([_onDotTick]) mutates in place each
-  /// frame rather than rebuilding this whole list from [_controller.breadcrumb] every
-  /// tick — for a long run with thousands of points, re-copying the entire
-  /// trail 60 times a second for every glide would be needless GC pressure.
-  /// flutter_map's polyline painter already repaints every frame regardless
-  /// (it compares the outer `Polyline`/`List<Polyline>` wrapper objects,
-  /// which are freshly built on every `build()` call anyway), so mutating
-  /// this list's last element in place is safe — it doesn't skip a repaint
-  /// that would otherwise happen. Since the chase is itself a low-pass
-  /// filter on the raw fixes, this also smooths out the jagged look of
-  /// connecting noisy raw GPS points with straight segments (most visible on
-  /// turns/roundabouts) as a side effect, with no separate smoothing pass
-  /// needed. [_controller.breadcrumb] stays the raw, unsmoothed source of truth for
-  /// distance/pace/loop-closure — none of that math is affected by this.
   final List<LatLng> _trailPoints = [];
-
-  /// [RunTrackingPage.plannedRoute] run through [GeometryUtils.smoothPolyline]
-  /// once at startup — purely a rendering concern, so the raw
-  /// `widget.plannedRoute` (same start/end points either way) is still what
-  /// distance/proximity checks use.
   List<LatLng>? _smoothedPlannedRoute;
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -230,45 +164,98 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   @override
   void initState() {
     super.initState();
-    // The controller is a singleton, so a previous run's state could still be
-    // sitting in it — clear before anything else touches it.
     _controller.reset();
     _controller.addListener(_onSessionChanged);
-
-    // Finishing needs the save/discard summary, which only this screen can
-    // show — so the bridge forwards the watch's stop button here rather than
-    // acting on it itself. Pause/resume it handles directly.
     _watchCommands = WearBridge.instance.commands.listen(_onWatchCommand);
 
     _dotTicker = createTicker(_onDotTick)..start();
     final route = widget.plannedRoute;
     _smoothedPlannedRoute =
         (route != null && route.length >= 3) ? GeometryUtils.smoothPolyline(route) : route;
+    
+    _initTts();
     _initLocation();
     _loadClaimedAreas();
   }
 
-  /// Repaints on any controller change, and advances the map trail whenever
-  /// that change was a newly-accepted GPS fix.
+  Future<void> _initTts() async {
+    await _flutterTts.setLanguage("en-US"); 
+    await _flutterTts.setSpeechRate(0.5);
+    await _flutterTts.setVolume(1.0);
+  }
+
   void _onSessionChanged() {
     if (!mounted) return;
 
-    // The countdown handing over to a live run is the controller's decision,
-    // so the screen picks it up here rather than being told directly.
     if (_controller.hasStarted && _uiTicker == null) _startUiTicker();
 
     final length = _controller.breadcrumb.length;
     if (length > _lastBreadcrumbLength) {
       _lastBreadcrumbLength = length;
       final position = _controller.currentPosition;
-      if (position != null) _advanceTrail(position);
+      if (position != null) {
+        _advanceTrail(position);
+        _handleTtsGuidance();
+      }
     }
     setState(() {});
   }
 
+  void _handleTtsGuidance() {
+    if (!_isVoiceEnabled) return;
+    
+    final guidance = _controller.guidance;
+    if (guidance == null) return;
+
+    // 1. Off route warning
+    if (guidance.isOffRoute) {
+      if (_lastSpokenMilestone != 'off_route') {
+        _flutterTts.speak("You are off route.");
+        _lastSpokenMilestone = 'off_route';
+      }
+      return;
+    }
+
+    // 2. Back on route
+    if (_lastSpokenMilestone == 'off_route' && !guidance.isOffRoute) {
+      _flutterTts.speak("Back on route.");
+      _lastSpokenMilestone = '';
+      return;
+    }
+
+    final distance = guidance.distanceToTurnMeters;
+    final angle = guidance.turnAngleDegrees;
+
+    if (distance == null || angle == null) return;
+
+    final side = angle < 0 ? 'left' : 'right';
+    final verb = angle.abs() >= 70.0 ? 'Turn' : 'Bear';
+
+    String milestoneKey = '';
+    String phraseToSpeak = '';
+
+    if (distance <= 15.0) {
+      milestoneKey = 'now';
+      phraseToSpeak = '$verb $side now';
+    } else if (distance <= 50.0) {
+      milestoneKey = '50';
+      phraseToSpeak = 'In 50 meters, $verb $side';
+    } else if (distance <= 100.0) {
+      milestoneKey = '100';
+      phraseToSpeak = 'In 100 meters, $verb $side';
+    }
+
+    if (milestoneKey.isNotEmpty) {
+      final uniqueTurnKey = '${guidance.segmentIndex}_$milestoneKey';
+
+      if (_lastSpokenMilestone != uniqueTurnKey) {
+        _flutterTts.speak(phraseToSpeak);
+        _lastSpokenMilestone = uniqueTurnKey;
+      }
+    }
+  }
+
   Future<void> _loadClaimedAreas() async {
-    // .first grabs the current snapshot and immediately closes the listener, 
-    // saving battery while the user runs!
     final areas = await ClaimedAreaRepository.instance.areasStream().first;
     if (!mounted) return;
     setState(() => _allAreas = areas);
@@ -276,13 +263,9 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
   @override
   void dispose() {
+    _flutterTts.stop();
     _watchCommands?.cancel();
     _controller.removeListener(_onSessionChanged);
-    // Leaving this screen still ends the run, exactly as it always has. The
-    // controller being a singleton means it *could* keep recording instead —
-    // removing this one call is what will enable minimize-and-keep-running
-    // once there's a foreground service to keep GPS alive. Never call
-    // `_controller.dispose()`: it is app-lifetime, not screen-lifetime.
     _controller.reset();
 
     _uiTicker?.cancel();
@@ -294,21 +277,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
   // ── Location & tracking ──────────────────────────────────────────────────
 
-  /// Routes permission through the app-wide [LocationService] rather than
-  /// requesting it fresh — by the time a run starts, `HomeScreen` has
-  /// usually already requested it and kept GPS warm, so this resolves
-  /// immediately instead of prompting again. Deliberately still takes its
-  /// own precise fix below (not [LocationService.current]) and gates
-  /// [_startCountdown] on it: that fix becomes the run's first breadcrumb
-  /// point (with altitude/timestamp `LocationService` doesn't expose), and
-  /// starting the countdown before it lands would risk the run's own
-  /// continuous stream ([_startPositionStream], via [_beginRun]) recording
-  /// breadcrumbs before the authoritative starting point exists.
   Future<void> _initLocation() async {
-    // Asked before the run starts, not when backgrounding: on Android 13+ a
-    // foreground service cannot run without a visible notification, so a
-    // refusal here silently costs background tracking. Prompting mid-run, with
-    // the phone already in a pocket, would be worse than useless.
     await RunForegroundService.ensureNotificationPermission();
     if (!mounted) return;
 
@@ -318,15 +287,11 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
     final start = _controller.currentPosition;
     if (start != null) {
-      // Seed the map's own display state from the controller's first fix —
-      // nothing to chase from yet, so show it directly.
       _lastBreadcrumbLength = _controller.breadcrumb.length;
       _trailPoints.add(start);
       setState(() => _displayedPosition = start);
 
       _waterFountainService.fetchNearby(start).then((fountains) {
-        // null means the fetch failed (e.g. rate-limited) — leave whatever
-        // was already showing rather than clearing it to empty.
         if (!mounted || fountains == null) return;
         setState(() => _waterFountains = fountains);
       });
@@ -340,11 +305,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     _controller.startCountdown();
   }
 
-  /// If a [RunTrackingPage.plannedRoute] is set and the runner's current fix
-  /// is far from its start, ask before proceeding rather than silently
-  /// starting a run far from where it was planned. Returns true when it's
-  /// fine to proceed (no planned route, already close enough, or the user
-  /// chose to continue anyway).
   Future<bool> _confirmStartProximity() async {
     final route = widget.plannedRoute;
     final position = _controller.currentPosition;
@@ -365,18 +325,8 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     return proceed == true;
   }
 
-  /// Beyond this distance from the route's start, draw [_startConnectorLine]
-  /// so the runner can see which way to head — much smaller than
-  /// [_maxStartDistanceMeters] (which only gates the one-time warning
-  /// dialog), so the line stays a lightweight visual aid at everyday
-  /// distances and only disappears once the runner has actually arrived.
   static const double _startConnectorMinDistanceMeters = 15.0;
 
-  /// A thin dashed straight line from the runner to the planned route's
-  /// start, shown whenever they're not already there. Deliberately just a
-  /// straight "as the crow flies" line, not a routed path — no live
-  /// rerouting/navigation is built for this, per the off-route decision (see
-  /// RunTrackingPage.plannedRoute doc).
   Polyline? get _startConnectorLine {
     final route = widget.plannedRoute;
     final pos = _displayedPosition ?? _controller.currentPosition;
@@ -392,16 +342,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     );
   }
 
-  /// Wired to `MapOptions.onPositionChanged`. Keeps [_fountainsVisible] in
-  /// sync with the zoom threshold as the user zooms; only `setState`s on an
-  /// actual threshold crossing, not every zoom frame. Also drops
-  /// [_isFollowingUser] the moment the user drags/pinches the map themselves
-  /// (`hasGesture`) — every other camera move on this screen (the follow
-  /// tick in [_onDotTick], [_animateCameraTo]) goes through [MapController]
-  /// directly and reports `hasGesture: false`, so this only ever fires for a
-  /// real touch. No re-fetch on pan (unlike explore/route create/search):
-  /// fountains/areas are deliberately fetched once at run start to save
-  /// battery/network mid-workout — see the fields above.
   void _handleMapPositionChanged(MapCamera camera, bool hasGesture) {
     final visible = camera.zoom >= WaterFountainMarkerLayer.minZoomToShow;
     if (visible != _fountainsVisible) {
@@ -414,30 +354,20 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
   // ── Pre-run countdown ─────────────────────────────────────────────────────
 
-  /// Dev-only shortcut for generating `runningSessions` docs without
-  /// physically running, to test the area-claiming logic.
   Future<void> _openTestRunCreator() async {
-    // Pause the countdown before leaving — timers keep firing even while
-    // this route isn't on top, so without this a real run could silently
-    // start while the user is away on the testing screen.
     if (!_controller.countdownPaused) _controller.pauseCountdown();
 
     final created = await Navigator.of(context).push<bool>(
       MaterialPageRoute(builder: (_) => const TestRunCreatorPage()),
     );
 
-    // A test run was published in place of a real one — close this screen too.
     if (created == true && mounted) {
       Navigator.of(context).pop();
     }
   }
 
-  /// Beyond this distance from a [RunTrackingPage.plannedRoute]'s start, warn
-  /// the user before starting the run instead of silently proceeding.
   static const double _maxStartDistanceMeters = 150.0;
 
-  /// Starts the 10 Hz repaint pulse that keeps the HH:MM:SS:DD display smooth
-  /// between GPS fixes. Called once the countdown hands over to a live run.
   void _startUiTicker() {
     _uiTicker?.cancel();
     _uiTicker = Timer.periodic(const Duration(milliseconds: 100), (_) {
@@ -445,29 +375,15 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     });
   }
 
-  /// Hands the chase ticker ([_onDotTick]) a new point to head toward.
   void _advanceTrail(LatLng newPoint) {
     if (_displayedPosition == null) {
-      // Bootstrap: no prior position at all (the initial fetch in
-      // _initLocation must have failed) — show this fix directly, there's
-      // nothing to chase from yet.
       _displayedPosition = newPoint;
       _trailPoints.add(newPoint);
       return;
     }
-
-    // The trail's current last vertex is already wherever the dot is
-    // displayed (kept in sync every frame by `_onDotTick`), so leaving it in
-    // place freezes it. Appending a duplicate opens a new live vertex for
-    // the chase to update in place toward the new fix.
     _trailPoints.add(_displayedPosition!);
   }
 
-  /// Runs every frame for the lifetime of the page (started in [initState]),
-  /// nudging [_displayedPosition]/[_displayedHeading] toward [_controller.currentPosition]
-  /// / [_controller.lastHeading]. See the "Dot smoothing" field comments for why this is
-  /// a perpetual, adaptively-paced chase rather than a bounded per-fix
-  /// animation or a fixed time constant.
   void _onDotTick(Duration elapsed) {
     if (!mounted) return;
     final dtMs = (elapsed - _dotTickerLastElapsed).inMilliseconds;
@@ -488,10 +404,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
       current.longitude + (target.longitude - current.longitude) * factor,
     );
 
-    // Snap once close enough — otherwise the chase asymptotically approaches
-    // but never *exactly* reaches the target, which would mean pointless
-    // per-frame work (and endless imperceptible drift) forever once the
-    // runner stops moving.
     if (const Distance()(newDisplayed, target) < _dotChaseSnapThresholdMeters) {
       newDisplayed = target;
     }
@@ -506,7 +418,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     final positionSettled =
         newDisplayed.latitude == current.latitude && newDisplayed.longitude == current.longitude;
     final headingSettled = newHeading == _displayedHeading;
-    if (positionSettled && headingSettled) return; // nothing changed — skip the rebuild.
+    if (positionSettled && headingSettled) return;
 
     if (_trailPoints.isNotEmpty) {
       _trailPoints[_trailPoints.length - 1] = newDisplayed;
@@ -524,31 +436,14 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           _mapController.camera.zoom,
           _followRotationDegrees(newHeading),
         );
-      } catch (_) {
-        // Map not attached yet — next tick will re-attempt.
-      }
+      } catch (_) {}
     } else if (!_isMapExpanded) {
       try {
         _previewMapController.move(newDisplayed, _previewZoom);
-      } catch (_) {
-        // Preview map not mounted (e.g. during countdown) — next tick retries.
-      }
+      } catch (_) {}
     }
   }
 
-  /// The map rotation to show while following the runner, given whichever
-  /// course-over-ground [heading] the caller currently has on hand (the
-  /// smoothed [_displayedHeading] for the continuous per-frame follow in
-  /// [_onDotTick], the raw [_controller.lastHeading] for a one-off snap like
-  /// [_toggleMapExpanded] or the "my location" button's [_centerOnUser]) —
-  /// negated to flutter_map's rotation convention, same as this app's other
-  /// heading-follow code. Null (not moving fast enough yet for a real course
-  /// — see [_minSpeedForHeadingMs]) falls back to the direction of
-  /// [RunTrackingPage.plannedRoute]'s very first leg, if one is set, so the
-  /// map still points the way the runner needs to go before they've taken a
-  /// single step; with neither, plain north-up (rotation 0). Shared by every
-  /// rotation call site so a recenter's chosen rotation is never immediately
-  /// undone by the next follow tick disagreeing on the fallback.
   double _followRotationDegrees(double? heading) {
     if (heading != null) return -heading;
 
@@ -564,9 +459,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     return 0;
   }
 
-  /// Interpolates from angle [a] to [b] (degrees) along whichever direction
-  /// is shorter, so e.g. 350°→10° sweeps forward through 360° instead of
-  /// spinning the long way back through 180°.
   double _lerpAngleDegrees(double a, double b, double t) {
     var diff = (b - a + 180) % 360 - 180;
     if (diff < -180) diff += 360;
@@ -575,13 +467,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
 
   // ── Camera animation ─────────────────────────────────────────────────────
 
-  /// Animates the camera to [targetCenter]/[targetZoom] over a short tween
-  /// instead of jumping instantly. flutter_map has no built-in animated
-  /// move, so this drives one manually: an [AnimationController] ticks a
-  /// lat/lng/zoom [Tween] (plus a rotation tween via [_lerpAngleDegrees],
-  /// along whichever direction is shorter, when [targetRotationDegrees] is
-  /// given) and calls [MapController.move]/[MapController.moveAndRotate]
-  /// each frame, then disposes itself once the animation finishes.
   Future<void> _animateCameraTo(
     LatLng targetCenter,
     double targetZoom, {
@@ -595,7 +480,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
       camera = _mapController.camera;
     } catch (_) {
       _isCameraAnimating = false;
-      return; // Map not attached yet.
+      return;
     }
 
     final latTween = Tween<double>(begin: camera.center.latitude, end: targetCenter.latitude);
@@ -632,11 +517,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     }
   }
 
-  /// The round map button's action: re-centers on the runner's live
-  /// position (whatever the user panned/zoomed to in the meantime), rotates
-  /// to face [_followRotationDegrees] (heading, planned-route direction, or
-  /// north — see that method), and turns [_isFollowingUser] back on so
-  /// [_onDotTick] resumes auto-following from there.
   Future<void> _centerOnUser() async {
     setState(() => _isFollowingUser = true);
     final target = _displayedPosition ?? _controller.currentPosition;
@@ -654,7 +534,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   void _toggleMapExpanded() {
     setState(() {
       _isMapExpanded = !_isMapExpanded;
-      _isFollowingUser = true; // always reopen the map in follow mode
+      _isFollowingUser = true;
     });
     final target = _displayedPosition ?? _controller.currentPosition;
     if (_isMapExpanded && target != null) {
@@ -680,10 +560,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     if (confirmed == true && mounted) Navigator.of(context).pop();
   }
 
-  /// [alreadyConfirmed] skips the "barely moved" prompt. Set when the finish
-  /// came from the watch's stop button, which already required a deliberate
-  /// press-and-hold — asking again on the phone would be a second confirmation
-  /// for one decision, on a device the runner may not even be looking at.
   Future<void> _confirmFinish({bool alreadyConfirmed = false}) async {
     if (!alreadyConfirmed && _controller.distanceMeters < 20) {
       final confirmed = await _showConfirmDialog(
@@ -751,7 +627,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   }
 
   Future<void> _handleSummarySaved(String sessionId) async {
-    Navigator.of(context).pop(); // close the summary dialog
+    Navigator.of(context).pop();
     if (!mounted) return;
     await showRunResultsDialog(
       context: context,
@@ -767,7 +643,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   }
 
   void _handleSummaryDiscarded() {
-    Navigator.of(context).pop(); // close the summary dialog
+    Navigator.of(context).pop();
     _finishRun(saved: false);
   }
 
@@ -857,17 +733,11 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     return '$hh:$mm:$ss:$dd';
   }
 
-  /// Always the major unit (km/mi), never switching to metres for a short
-  /// run — a live readout that changed unit mid-run would be jarring.
   String _formatDistance(UnitFormatter units) =>
       units.distanceMajor(_controller.distanceMeters);
 
-  /// Null means no watch reported a reading — not a reading of zero, which is
-  /// why this can't just print the number.
   String _formatBpm(int? bpm) => bpm == null ? '--' : '$bpm bpm';
 
-  /// The bare rate figure — pace or speed, per the user's preference. The
-  /// unit is rendered separately by each caller, in its own caption.
   String _formatRateValue(UnitFormatter units, double? paceMinPerKm) =>
       units.rateValueFromPace(paceMinPerKm);
 
@@ -876,17 +746,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      // Once a run is actually in progress (`_controller.hasStarted` — set in
-      // `_beginRun`, after the pre-run countdown), the system/gesture back
-      // button must not silently exit — it should behave exactly like
-      // tapping "Finish" (`_confirmFinish`), not like the X button's
-      // `_confirmDiscard` (which abandons the run with no summary). Before
-      // that (loading, permission-denied, countdown), there's nothing to
-      // protect yet, so back pops normally — matching `_confirmDiscard`'s
-      // own `!_controller.hasStarted` fast-path. `canPop: false` only blocks the
-      // system back gesture/`maybePop`; every explicit `Navigator.pop()`
-      // call elsewhere in this file (discard, finish, summary
-      // save/discard) is unaffected and still pops immediately.
       canPop: !_controller.hasStarted,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
@@ -948,8 +807,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                   return;
                 }
                 if (status.isGranted) {
-                  // reset() restores exactly the loading/not-denied state
-                  // _initLocation expects to start from.
                   _controller.reset();
                   _lastBreadcrumbLength = 0;
                   _initLocation();
@@ -1059,17 +916,21 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           child: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
             child: Column(
-              children: [
+              children: <Widget>[
                 const SizedBox(height: 12),
                 _buildTimeDisplay(),
                 if (_controller.guidance != null) ...[
                   const SizedBox(height: 18),
                   _RouteGuidanceCard(
                     guidance: _controller.guidance!,
-                    // The smoothed heading the map dot uses, not the raw one —
-                    // an arrow twitching on every noisy course reading is far
-                    // more distracting than a dot doing the same.
                     heading: _displayedHeading,
+                    isVoiceEnabled: _isVoiceEnabled,
+                    onToggleVoice: () {
+                      setState(() {
+                        _isVoiceEnabled = !_isVoiceEnabled;
+                        if (!_isVoiceEnabled) _flutterTts.stop();
+                      });
+                    },
                   ),
                 ],
                 const SizedBox(height: 22),
@@ -1231,6 +1092,20 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
         Positioned(
           right: 16,
           bottom: 164,
+          child: _RoundMapButton(
+            icon: _isVoiceEnabled ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+            tooltip: 'Toggle Voice Guidance',
+            onTap: () {
+              setState(() {
+                _isVoiceEnabled = !_isVoiceEnabled;
+                if (!_isVoiceEnabled) _flutterTts.stop();
+              });
+            },
+          ),
+        ),
+        Positioned(
+          right: 16,
+          bottom: 220,
           child: AreaVisibilityToggle(
             showOtherAreas: _showOtherAreas,
             showMyAreas: _showMyAreas,
@@ -1248,11 +1123,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
     );
   }
 
-  /// Small live map card shown in [_buildStatsView] in place of a static
-  /// "view map" button — a separate, non-interactive [FlutterMap] (its own
-  /// [_previewMapController], recentered from [_onDotTick]) that mirrors the
-  /// runner's live position and route so there's something to actually see
-  /// before tapping through to [_buildExpandedMapView].
   Widget _buildMapPreviewCard() {
     final center = _displayedPosition ?? _controller.currentPosition;
     if (center == null) return const SizedBox.shrink();
@@ -1272,10 +1142,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                 initialZoom: _previewZoom,
                 minZoom: MapStyle.minZoom,
                 interactionOptions: const InteractionOptions(flags: InteractiveFlag.none),
-                // Tap detection is independent of the pan/zoom flags above,
-                // so this fires even with interactions fully disabled —
-                // matches the existing onTap pattern used for map taps
-                // elsewhere (e.g. RouteCreatePage's pin-drop handler).
                 onTap: (_, _) => _toggleMapExpanded(),
               ),
               children: [
@@ -1346,16 +1212,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   }
 
   Widget _buildMap() {
-    // Rotate isn't in the flags below (never was) and the wrapping
-    // EnhancedMapGestures doesn't change that — it only adds a dead-zoned
-    // two-finger rotate (plus a little zoom inertia) on top of whatever
-    // flutter_map flags a screen already allows, shared with every other
-    // map screen; see that widget. Pan is now allowed, same as every other
-    // wrapped screen (`InteractiveFlag.all & ~InteractiveFlag.rotate`) — a
-    // runner can freely look around mid-workout; [_handleMapPositionChanged]
-    // drops [_isFollowingUser] the moment a real drag/pinch happens so the
-    // next GPS fix doesn't immediately yank the camera back, and the "my
-    // location" round button ([_centerOnUser]) snaps back to live tracking.
     return EnhancedMapGestures(
       mapController: _mapController,
       child: FlutterMap(
@@ -1378,13 +1234,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
             retinaMode: RetinaMode.isHighDensity(context),
             tileProvider: CachedTileProvider.instance,
           ),
-
-          // ── Claimed areas (as of when this run started — not refreshed
-          // live, to save battery/network mid-workout; display only, no
-          // tap-to-view while running) ────────────────────────────────────
           ClaimedAreasLayer(areas: _visibleAreas),
-
-          // ── Claimed loop fills (this run's own in-progress loops) ────────
           if (_controller.closedLoops.isNotEmpty)
             PolygonLayer(
               polygons: _controller.closedLoops
@@ -1396,9 +1246,6 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                       ))
                   .toList(),
             ),
-
-          // ── Planned-route guide line (static — no on/off-route tracking or
-          // rerouting, see RunTrackingPage.plannedRoute) ──────────────────
           if (_smoothedPlannedRoute != null && _smoothedPlannedRoute!.length >= 2)
             PolylineLayer(
               polylines: [
@@ -1409,13 +1256,8 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                 ),
               ],
             ),
-
-          // ── Dashed connector from the runner to the route's start, while
-          // they're still far enough from it to be useful ─────────────────
           if (_startConnectorLine case final connector?)
             PolylineLayer(polylines: [connector]),
-
-          // ── Breadcrumb trail (paint left behind the runner) ──────────────
           if (_trailPoints.length >= 2)
             PolylineLayer(
               polylines: [
@@ -1426,11 +1268,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                 ),
               ],
             ),
-
-          // ── Water fountains ────────────────────────────────────────────
           WaterFountainMarkerLayer(fountains: _waterFountains, visible: _fountainsVisible),
-
-          // ── Runner position ────────────────────────────────────────────
           if ((_displayedPosition ?? _controller.currentPosition) != null)
             MarkerLayer(
               markers: [
@@ -1491,36 +1329,21 @@ class _StatBlock extends StatelessWidget {
 
 // ── Route guidance (direction arrow) ─────────────────────────────────────────
 
-/// Compass-style direction arrow, shown only while a planned route is active.
-///
-/// Rotates to [RouteGuidance.targetBearingDegrees] *relative to* [heading], so
-/// it points where the runner should go from where they are actually facing —
-/// the same read as a handheld compass, legible at a glance and needing no
-/// street names (which the app doesn't have; see [GeometryUtils.routeGuidance]
-/// for why this is a bearing guide rather than turn-by-turn navigation).
-///
-/// [heading] is null whenever the runner is stationary or slower than
-/// `_minSpeedForHeadingMs`, since GPS course-over-ground is meaningless there.
-/// A *relative* arrow would then be pointing confidently in a direction that
-/// means nothing, so the card drops to a neutral "no bearing yet" state and
-/// keeps showing distance remaining instead of guessing.
 class _RouteGuidanceCard extends StatelessWidget {
   final RouteGuidance guidance;
   final double? heading;
+  final bool isVoiceEnabled;
+  final VoidCallback onToggleVoice;
 
-  const _RouteGuidanceCard({required this.guidance, required this.heading});
+  const _RouteGuidanceCard({
+    required this.guidance, 
+    required this.heading,
+    required this.isVoiceEnabled,
+    required this.onToggleVoice,
+  });
 
-  /// Close enough to the route's final point to call it done.
   static const double _arrivalRadiusMeters = 20.0;
-
-  /// At or above this many degrees a change of direction reads as a junction
-  /// ("Turn left"); below it, as a curve in the road ("Bear left"). Turns are
-  /// only detected at all past `turnThresholdDegrees` (35°), so everything
-  /// between the two is a genuine bend rather than polyline noise.
   static const double _sharpTurnDegrees = 70.0;
-
-  /// Inside this distance the turn is announced as "now" rather than counted
-  /// down — a runner covers the last few metres before it lands anyway.
   static const double _imminentTurnMeters = 15.0;
 
   @override
@@ -1528,8 +1351,6 @@ class _RouteGuidanceCard extends StatelessWidget {
     final offRoute = guidance.isOffRoute;
     final arrived =
         !offRoute && guidance.distanceRemainingMeters < _arrivalRadiusMeters;
-    // Without a heading there is no way to say "turn left" — only "the route
-    // continues north", which is worse than saying nothing.
     final canPoint = heading != null && !arrived;
 
     final (Color bg, Color fg) = switch ((offRoute, arrived)) {
@@ -1582,25 +1403,19 @@ class _RouteGuidanceCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: fg,
-                  ),
-                ),
+                Text(title, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: fg)),
                 const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: fg.withValues(alpha: 0.75),
-                  ),
-                ),
+                Text(subtitle, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: fg.withValues(alpha: 0.75))),
               ],
             ),
+          ),
+          // --- NUOVO PULSANTE MUTE A DESTRA ---
+          IconButton(
+            icon: Icon(
+              isVoiceEnabled ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+              color: fg.withValues(alpha: 0.7),
+            ),
+            onPressed: onToggleVoice,
           ),
         ],
       ),
@@ -1614,11 +1429,6 @@ class _RouteGuidanceCard extends StatelessWidget {
     if (!canPoint) {
       return Icon(Icons.explore_outlined, size: 26, color: fg);
     }
-    // Plain Transform rather than AnimatedRotation: [heading] is already the
-    // per-frame smoothed [_RunTrackingPageState._displayedHeading] (which
-    // interpolates the short way around 360°), so animating again here would
-    // only add lag — and AnimatedRotation would spin the long way round on
-    // every wrap past north.
     final relative = (guidance.targetBearingDegrees - heading!) * math.pi / 180;
     return Transform.rotate(
       angle: relative,
@@ -1626,9 +1436,6 @@ class _RouteGuidanceCard extends StatelessWidget {
     );
   }
 
-  /// Headline text — the next change of direction if there is one within
-  /// range, otherwise an explicit "carry on", which is more reassuring
-  /// mid-run than a bare distance.
   String _turnLabel(UnitFormatter units) {
     final distance = guidance.distanceToTurnMeters;
     final angle = guidance.turnAngleDegrees;
@@ -1638,11 +1445,6 @@ class _RouteGuidanceCard extends StatelessWidget {
     final verb = angle.abs() >= _sharpTurnDegrees ? 'Turn' : 'Bear';
     if (distance < _imminentTurnMeters) return '$verb $side now';
 
-    // Rounded to 10 of whatever unit is being shown: the underlying figure is
-    // a threshold crossing on a sampled polyline, so "in 80 m" is honest
-    // where "in 83 m" implies a precision this doesn't have. Rounding after
-    // the conversion (rather than converting a rounded metric figure) keeps
-    // the imperial reading a round number too.
     return '$verb $side in ${units.shortDistance(distance, roundTo: 10)}';
   }
 
@@ -1703,9 +1505,6 @@ class _ExpandedStatsBar extends StatelessWidget {
   final String distance;
   final String pace;
 
-  /// Passed in rather than read here so the caption can never disagree with
-  /// the already-formatted [pace] beside it — `'/mi'` under a figure computed
-  /// in km/h would be worse than no caption at all.
   final String rateUnitLabel;
 
   final int loopsCompleted;
@@ -1783,16 +1582,7 @@ class _ExpandedStatsBar extends StatelessWidget {
 
 // ── Finish summary dialog ────────────────────────────────────────────────────
 
-/// Owns its own [TextEditingController] and saving state so disposal happens
-/// through the normal State lifecycle. Disposing a controller manually right
-/// after `await showDialog(...)` returns is unsafe: that Future resolves the
-/// instant `Navigator.pop()` is called, while the dialog's `TextField` is
-/// still mounted and animating out — disposing the controller out from
-/// under it trips a framework assertion.
 class _RunSummaryDialog extends StatefulWidget {
-  /// The formatter the caller already used for [distance]/[avgPace]/etc.,
-  /// carried through so this dialog's own unit captions are guaranteed to
-  /// describe those exact strings.
   final UnitFormatter units;
 
   final String time;
@@ -1802,8 +1592,6 @@ class _RunSummaryDialog extends StatefulWidget {
   final String calories;
   final String elevation;
 
-  /// "--" when no watch reported a reading, which is most runs. Shown rather
-  /// than hidden so the row's absence never reads as a value of zero.
   final String avgHeartRate;
   final String maxHeartRate;
 
