@@ -20,7 +20,7 @@
         "firebase-debug.*.log",
         "*.local",
         "_verify_*.js",
-        "_wipe_user.js"
+        "_wipe_*.js"
       ]
     }
   ]
