@@ -44,6 +44,8 @@ class DashBadge extends StatelessWidget{
   Widget build(BuildContext context) {
     final double size = MediaQuery.widthOf(context) * dimFactor;
 
+    final double strokeWidth = ResponsiveSpacing().sm * 2 / 3;
+
     CachedNetworkImage image = CachedNetworkImage(
       imageUrl: badge.imageUrl,
       width: size,
@@ -74,6 +76,8 @@ class DashBadge extends StatelessWidget{
       behavior: HitTestBehavior.opaque,
       child: Column(
         mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.center,
         spacing: ResponsiveSpacing().sm,
         children: [
           CustomPaint(
@@ -81,7 +85,8 @@ class DashBadge extends StatelessWidget{
               progress: progress, 
               unlockedColor: Theme.of(context).colorScheme.primary, 
               trackColor: Theme.of(context).colorScheme.surfaceContainerHigh, 
-              progressColor: Theme.of(context).colorScheme.tertiary
+              progressColor: Theme.of(context).colorScheme.tertiary,
+              strokeWidth: strokeWidth
             ),
             
             child: Padding(
@@ -112,7 +117,7 @@ class DashBadge extends StatelessWidget{
           ),
 
           SizedBox(
-            width: size + (context.responsiveSpacing.sm * 2) + ResponsiveSpacing().lg,
+            width: size + (context.responsiveSpacing.sm * 2) + (strokeWidth * 2),
             child: Text(
               badge.title,
               maxLines: 2,
@@ -165,18 +170,19 @@ class _RingPainter extends CustomPainter {
   final Color unlockedColor;
   final Color trackColor;
   final Color progressColor;
+  final double strokeWidth;
 
   _RingPainter({
     required this.progress, 
     required this.unlockedColor, 
     required this.trackColor, 
-    required this.progressColor,
+    required this.progressColor, 
+    required this.strokeWidth,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
-    const strokeWidth = 6.0;
     final radius = ( size.width - strokeWidth ) / 2;
 
     final backgroundPaint = Paint()
