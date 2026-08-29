@@ -6,8 +6,11 @@ class DashSectionContainer extends StatelessWidget{
   final VoidCallback? onTap;
 
   final IconData? leadingIcon;
+  final bool leadingIconFilled;
   final String title;
   final bool hasForwardIcon;
+
+  final bool _applyFadingEdge;
 
   final Widget child;
 
@@ -15,15 +18,52 @@ class DashSectionContainer extends StatelessWidget{
     super.key, 
     this.onTap,
     this.leadingIcon,
+    this.leadingIconFilled = false,
     required this.title,
     this.hasForwardIcon = true,
     required this.child, 
-  });
+  }): _applyFadingEdge = false;
+
+  const DashSectionContainer.withFadeEdge({
+    super.key, 
+    this.onTap,
+    this.leadingIcon,
+    this.leadingIconFilled = false,
+    required this.title,
+    this.hasForwardIcon = true,
+    required this.child, 
+  }): _applyFadingEdge = true;
 
   @override
   Widget build(BuildContext context) {
     final TextStyle textStyle = Theme.of(context).textTheme.titleMedium!;
     final Color headerColor = Theme.of(context).colorScheme.secondary;
+
+    Widget finalChild = child;
+
+    if( _applyFadingEdge ){
+      finalChild = ShaderMask(
+        shaderCallback: (Rect bounds) {
+          return const LinearGradient(
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
+            colors: [
+              Colors.transparent, // 1. Sfuma in entrata a sinistra
+              Colors.white,       // 2. Diventa solido
+              Colors.white,       // 3. Resta solido
+              Colors.transparent, // 4. Sfuma in uscita a destra
+            ],
+            stops: [0.0, 0.03, 0.97, 1.0], 
+          ).createShader(bounds);
+        },
+        blendMode: BlendMode.dstIn,
+        child: SingleChildScrollView(
+          physics: const ClampingScrollPhysics(),
+          scrollDirection: Axis.horizontal,
+          child: child
+        )
+      );
+    }
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -53,7 +93,7 @@ class DashSectionContainer extends StatelessWidget{
                 if (hasForwardIcon) _buildForwardIcon(headerColor, textStyle)
               ],
             ),
-            child
+            finalChild
           ],
         )
       ),
@@ -67,6 +107,7 @@ class DashSectionContainer extends StatelessWidget{
       leadingIcon,
       size: textStyle.fontSize,
       color: headerColor,
+      fill: (leadingIconFilled) ? 1.0 : 0.0,
     );
   }
 
