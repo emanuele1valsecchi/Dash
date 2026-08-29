@@ -171,7 +171,7 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
                   child: ReorderableListView.builder(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     itemCount: _leaderboards.length,
-                    onReorder: _onReorder,
+                    onReorderItem: _onReorder,
 
                     proxyDecorator: (Widget child, int index, Animation<double> animation) {
                       return Material(
