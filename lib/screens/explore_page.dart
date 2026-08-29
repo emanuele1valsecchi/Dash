@@ -14,6 +14,7 @@ import '../services/claimed_area_repository.dart';
 import '../services/location_service.dart';
 import '../services/place_search_service.dart';
 import '../widgets/map/area_details_sheet.dart';
+import '../widgets/map/area_owner_bubbles_layer.dart';
 import '../widgets/map/claimed_areas_layer.dart';
 import 'leaderboard_page.dart';
 import '../widgets/map/enhanced_map_gestures.dart';
@@ -44,6 +45,14 @@ class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin
   List<ClaimedArea> _allAreas = [];
   // Il notifier si aspetta un LayerHitResult, non una semplice String
   final LayerHitNotifier<String> _areaHitNotifier = ValueNotifier(null);
+
+  /// Whether the camera is zoomed in far enough for owner bubbles to be
+  /// legible. Computed in `MapOptions.onPositionChanged` and passed down,
+  /// rather than the layer reading the ambient `MapCamera` itself — the same
+  /// approach `WaterFountainMarkerLayer` uses, for the same reason (reading
+  /// the camera from inside the layer does not reliably rebuild it here).
+  /// Only `setState`s when the flag actually flips, not on every pan frame.
+  bool _showOwnerBubbles = false;
 
   // ── Map settings ──────────────────────────────────────────────────────────
   bool _showOtherAreas = true;
@@ -446,6 +455,13 @@ class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin
             FocusScope.of(context).unfocus();
             handleAreaTap(context, _areaHitNotifier, _visibleAreas);
           },
+          onPositionChanged: (camera, _) {
+            final show =
+                camera.zoom >= AreaOwnerBubblesLayer.minZoomToShow;
+            if (show != _showOwnerBubbles) {
+              setState(() => _showOwnerBubbles = show);
+            }
+          },
         ),
         children: [
           TileLayer(
@@ -455,6 +471,15 @@ class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin
             tileProvider: CachedTileProvider.instance,
           ),
           ClaimedAreasLayer(areas: _visibleAreas, hitNotifier: _areaHitNotifier),
+          // Above the polygons so the badges are never painted over, but
+          // below the location dot and search pin, which are about *where
+          // you are* and should always win.
+          AreaOwnerBubblesLayer(
+            areas: _visibleAreas,
+            visible: _showOwnerBubbles,
+            onTapArea: (area) =>
+                showAreaDetailsSheet(context, _visibleAreas, area.id),
+          ),
           if (_currentPosition != null)
             MarkerLayer(
               markers: [

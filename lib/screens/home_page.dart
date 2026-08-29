@@ -21,7 +21,7 @@ import '../utils/unit_formatter.dart';
 import '../widgets/units_scope.dart';
 import '../services/water_fountain_service.dart';
 import 'route_create_page.dart';
-import 'route_search_page.dart';
+import 'route_library_page.dart';
 import 'package:dash_watch_protocol/dash_watch_protocol.dart';
 
 import 'run_tracking_page.dart';
@@ -867,7 +867,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _searchRoute() async {
     setState(() => _showRunOverlay = false);
     final runRoute = await Navigator.of(context).push<List<LatLng>>(
-      MaterialPageRoute(builder: (_) => const RouteSearchPage()),
+      MaterialPageRoute(builder: (_) => const RouteLibraryPage()),
     );
     if (runRoute != null && mounted) {
       await _pushRunTracking(plannedRoute: runRoute);
