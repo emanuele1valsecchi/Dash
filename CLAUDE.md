@@ -371,7 +371,89 @@ Keep this list current — update it whenever a feature moves between these buck
     mechanism available), so it keeps `InteractiveFlag.flingAnimation` disabled outright —
     losing its own pan momentum is the accepted trade there in exchange for not needing to
     wire up the full mechanism on a screen with a bounded, small-scale camera to begin with.
-- Route search/discovery by parameters ([lib/screens/route_search_page.dart](lib/screens/route_search_page.dart)). Its
+- **Route library** ([lib/screens/route_library_page.dart](lib/screens/route_library_page.dart)) — what the home screen's
+  "Search for a route" button now opens, in place of pushing `RouteSearchPage` directly.
+  Two swipeable sections in a `PageView`, chosen because parameter search on its own read
+  as "a bit useless" next to route creation: most people reach for a route they already
+  have rather than generating a new one, so the list of those is now the landing section
+  and the parameter search sits behind it.
+  1. **My Routes** ([lib/widgets/routes/saved_routes_section.dart](lib/widgets/routes/saved_routes_section.dart)) — the user's own
+     routes (`RouteRepository.fetchUserRoutes`) above a **Favourites** list
+     (`FavoriteRouteRepository.fetchFavorites`, i.e. other people's runs they favourited),
+     both as `DashRouteCard`s. One-time cached reads, never listeners, per the read-cost
+     rule; pull-to-refresh invalidates both caches (`RouteRepository.invalidateCache` was
+     added to match `FavoriteRouteRepository`'s). Tapping a card opens
+     [lib/screens/saved_route_detail_page.dart](lib/screens/saved_route_detail_page.dart) (whole route on an interactive map with
+     direction arrows and start/finish pins, distance/time/area-or-energy tiles, **Run**
+     and **Cancel**), which is also the only place a route can be **renamed** — a pencil
+     in its app bar. **Where that rename is written is not interchangeable between the two
+     lists, hence the `RouteSource` the detail page takes**: an owned route's name lives on
+     the `routes` doc (`RouteRepository.renameRoute`, permitted by the existing owner
+     `update` rule since a field-scoped update leaves the geometry comparisons intact),
+     while a favourite's lives on that user's own `favoriteRoutes` link
+     (`FavoriteRouteRepository.renameFavorite`, already present) — the shared route it
+     points at has no owner, is read by everyone who favourited the same run, and is denied
+     every client write. `DashRouteCard` deliberately shows **no leading glyph** next to the
+     name: it used to carry one per source (pencil / heart), which read as an affordance for
+     a rename the card doesn't offer. The rename prompt is its own
+     `StatefulWidget` (`_RenameRouteDialog`) purely so it can own its
+     `TextEditingController`, and **that is not style, it fixes a real crash reported from
+     the field**: the obvious "create the controller, `await showDialog(...)`, dispose it"
+     shape disposes the controller when the future completes, which is when the dialog
+     *starts* its exit transition — the `TextField` stays mounted and bound to it for the
+     rest of the animation, so tearing that subtree down then throws. The symptom is
+     misleading and worth recognising elsewhere: it surfaces as
+     `framework.dart` line ~6268 `dependents.isEmpty is not true`, which is
+     `InheritedElement.debugDeactivated`, because an exception raised while a subtree
+     deactivates leaves a dependent registered on an ancestor `InheritedElement`, which
+     then asserts on its own deactivation a moment later. **The reported assertion names
+     the victim, not the cause — look for something throwing during teardown.**
+     `personal_information_page.dart`'s `_updateEmailDialog` still has the original
+     shape and is the same crash waiting to happen.
+  2. **Find a Route** — `RouteSearchPage`, behaviourally unchanged.
+  **The `Run` contract is unchanged all the way up**: the detail page pops its own route
+  with the polyline, the section forwards it, and the library pops with it — exactly what
+  `RouteSearchPage` used to pop on its own, so `HomeScreen._searchRoute` only changed
+  which page it pushes.
+  Three non-obvious pieces:
+  - **The tab header is load-bearing, not decoration.** Section 2 is a full-screen
+    `flutter_map`, which claims horizontal drags for panning, so a swipe can never get
+    *out* of it (only from its bottom sheet). Tapping a tab always works. Don't remove the
+    header on the assumption swiping covers it.
+  - **Both sections are kept alive** (`AutomaticKeepAliveClientMixin`), or swiping away
+    from a half-filled search and back would silently reset it — and rebuild the map, GPS
+    subscription and claimed-area load each time. They are still built lazily, so section 2
+    costs nothing until first visited.
+  - **`RouteLibraryScope` is an `InheritedWidget`, and it has to be** — the same reason
+    `UnitsScope` is one (see "User-selectable units"). `RouteSearchPage` needs to know
+    whether it is embedded (hide its own floating back arrow, since the library header has
+    one) and whether it is the *visible* section, because **a route's pop is refused if any
+    registered `PopScope` refuses it** — an off-screen search form parked on step 2 would
+    otherwise swallow the back gesture on the My Routes section. A plain constructor flag
+    cannot carry that: a kept-alive but off-screen child does not receive rebuilt widget
+    configurations from its parent, so the flag would go stale at exactly the moment it
+    matters, whereas inherited-widget dependency marks the dependent *element* dirty
+    directly. Both readers treat "no scope" as full standalone behaviour, so
+    `RouteSearchPage` is still usable on its own.
+  Returning to section 1 calls `SavedRoutesSectionState.reload()` (exposed via a
+  `GlobalKey`, the `FormState`/`ScaffoldState` convention) so a route just saved from the
+  search section shows up — free when nothing invalidated the caches.
+  **Favourites credit their original runner** where possible, which the shared-route model
+  makes non-obvious: the shared `routes` doc deliberately has no `userId`, but it does carry
+  `sourceSessionId`, and `runningSessions/{id}.userId` is readable by any signed-in user, so
+  [lib/services/route_author_service.dart](lib/services/route_author_service.dart) (`RouteAuthorService.instance`, an app-lifetime
+  singleton `ChangeNotifier` alongside `UserAppearanceService`, which it delegates the
+  uid → username half to) resolves it in batched, process-cached lookups and repaints the
+  cards when they land — nothing ever blocks on it. **A route with no `sourceSessionId`
+  resolves to no author, and that is correct rather than a failure**: account deletion
+  strips that field precisely to break the link back to the deleted person, so this stops
+  naming them with no extra work.
+  **Not done, deliberately**: reconciling this list with `TempProfilePage`/`ProfilePage`,
+  which still build their own near-identical route lists (and, since they share
+  `DashRouteCard`, lost the same leading glyph).
+- Route search/discovery by parameters ([lib/screens/route_search_page.dart](lib/screens/route_search_page.dart)) — reached as the
+  route library's second section (see the bullet above), still a standalone page as far
+  as its own code is concerned. Its
   start/destination/stop address fields (`_AddressInputField`) use the same shared
   `PlaceSearchService` as the route-creation search bar (see above) for suggestions —
   biased/ranked toward the field's `near` (the user's current GPS position) — rather than
@@ -617,10 +699,9 @@ Keep this list current — update it whenever a feature moves between these buck
   `isLoop`/`loopAreaM2` come from the page's own `_isClosedCircuit` flag and
   `GeometryUtils.polygonAreaM2(route.polyline)`. The route is auto-named from its own
   stats (`"4.2 km loop"`/`"3.5 km route"`) rather than prompting for a name — renaming is
-  left to whatever eventually replaces `TempProfilePage`'s route list (see that bullet
-  above: it already reads `RouteRepository.fetchUserRoutes()`, so a route saved from
-  search shows up there today, view/delete only — no "Run" action wired up on that list
-  yet, still a gap). **Run now** pops the *entire* `RouteSearchPage` with
+  left to whatever eventually consolidates the several route lists that now exist
+  (`TempProfilePage`, `ProfilePage`, and the route library's own My Routes section — the
+  last of which does have a Run action, so the original gap here is closed). **Run now** pops the *entire* `RouteSearchPage` with
   the chosen route's polyline as the result (`Navigator.of(context).pop(route.polyline)`),
   exactly like route creation's "Save route and Run" pops `RouteCreatePage` with its
   merged polyline — same navigation shape on purpose, so finishing/discarding the run
@@ -1099,13 +1180,71 @@ Keep this list current — update it whenever a feature moves between these buck
   (one per disconnected piece, each with its own `holePointsList`) that all share the same
   `hitValue`, so tapping any fragment of a split area opens the same area's details. Shown
   on explore, route create/search, live run tracking, and the test run creator page:
-  - **Coloring is viewer-relative, computed client-side in `ClaimedAreasLayer`**, not a
-    stored property of the area (there is no `colorHex` field — an earlier per-user hashed
-    palette was removed since it doesn't make sense once color depends on who's looking):
-    the signed-in user's own areas are green (`ClaimedAreasLayer.myColor`, the app's
-    standard accent), every other user's areas are a single flat red
-    (`ClaimedAreasLayer.otherColor`). Explicitly a placeholder 2-tone scheme, expected to
-    change once there's a real design for distinguishing multiple other players.
+  - **Coloring is one color per owner**, from a fixed 10-entry palette
+    ([lib/utils/player_palette.dart](lib/utils/player_palette.dart), `PlayerPalette`). This replaced the earlier
+    two-tone "green = mine, red = everyone else" placeholder, whose problem was that it
+    made every rival identical: territory read as an undifferentiated hazard rather than
+    as *someone's*, so a steal could never be aimed at a particular player.
+    - **The color is a property of the owner, not of the viewer** — a given player looks
+      the same to everybody, including to themselves. The old scheme was deliberately
+      viewer-relative; that is now deliberately reversed, because "I took your purple
+      patch by the park" has to refer to a color the owner has actually seen, and because
+      a shared screenshot should mean the same thing to both people.
+    - **`profiles/{uid}.areaColorIndex` stores an *index*, never a hex string.**
+      `PlayerPalette` is the only place that maps index to `Color`, so the palette can be
+      re-tuned (dark mode, contrast, a hue that reads badly on the terrain basemap) with
+      no data migration at all.
+    - **Ownership moved off hue onto weight**: your own areas keep your palette color but
+      get a thicker border and a much more opaque fill (`ClaimedAreasLayer.myFillAlpha` /
+      `myBorderStrokeWidth`). Two reasons, both load-bearing — "is this mine?" is the
+      highest-frequency read on the map and must never depend on telling two similar hues
+      apart; and the previous green-vs-red scheme hung that same critical distinction on
+      the single worst color pair for the ~8% of men with red/green color vision
+      deficiency, which was a real accessibility defect, not a hypothetical one.
+    - **A missing `areaColorIndex` is a fully supported state, not an error.**
+      `PlayerPalette.colorFor` falls back to `indexForUid`, a 32-bit FNV-1a hash of the
+      uid. That is what made this shippable with no migration: every pre-existing area got
+      a stable color the moment the feature landed. FNV-1a rather than `String.hashCode`
+      specifically because Dart's string hash is not guaranteed stable across runs or
+      platforms, so a player could otherwise change color between restarts or between
+      Android and iOS.
+    - Appearances (color index, username, profile picture) come from
+      [lib/services/user_appearance_service.dart](lib/services/user_appearance_service.dart) (`UserAppearanceService.instance`, an
+      app-lifetime singleton `ChangeNotifier` like `LocationService`). It batches uid
+      lookups into `whereIn` queries (chunked at Firestore's 30-value cap), caches every
+      result for the process lifetime, de-duplicates in-flight requests, and caches
+      *negative* results too so a deleted account isn't re-queried on every pan — a
+      viewport can hold dozens of areas and naive per-area profile reads would be dozens
+      of reads per pan, which the read-cost rule under "Security & performance" forbids.
+      Layers render immediately from cache and repaint via the notifier when the rest
+      lands; nothing ever blocks on it.
+  - **Owner bubbles** ([lib/widgets/map/area_owner_bubbles_layer.dart](lib/widgets/map/area_owner_bubbles_layer.dart)) — a circular
+    profile picture ringed in the owner's palette color, floating over each claimed area,
+    **on the Explore page only** (the other four map screens are task-focused — planning a
+    route, running — where a layer of faces is clutter). Color says *that* two areas share
+    an owner; the bubble says *who*, with no tap. Small (26 px) and anchored to the
+    **northernmost vertex on the boundary** of the area's *largest* piece, centred on it so
+    it straddles the edge — deliberately on the perimeter rather than in the middle, since
+    a disc parked in the centre hides the very thing being labelled (the claim's shape,
+    which streets it spans, how it overlaps yours). An earlier version did use the
+    area-weighted centroid; anchoring to a real boundary vertex is strictly more robust,
+    because a centroid can land *outside* a concave or horseshoe-shaped polygon and leave
+    the badge floating over someone else's ground, whereas a vertex is on the shape by
+    definition — no containment check or fallback needed, and `GeometryUtils.polygonCentroid`
+    was deleted along with it. Northernmost (ties broken by longitude, since road-snapped
+    claims often have a flat top edge along a straight street) so the anchor is
+    deterministic: the same area pins to the same spot on every device and never shifts on
+    a pan. Markers
+    are keyed by area id for the same reason `WaterFountainMarkerLayer`'s are — flutter_map
+    culls off-screen markers each frame and reconciles the rest by list position when
+    unkeyed, which would swap one player's face onto another's territory mid-pan.
+    Zoom-gated at `minZoomToShow` (12.0) via an explicit `visible` flag the screen computes
+    in `MapOptions.onPositionChanged` and passes down — deliberately *not* the widget
+    reading the ambient `MapCamera`, which has repeatedly failed to trigger rebuilds in
+    this app. Capped at `maxBubbles` (40), largest areas first, so a dense viewport
+    degrades to "the biggest claims are labelled" instead of a wall of faces. Uses
+    `BoxShadow` on a `Container`, never `Icon.shadows` — see the `_SearchResultPin` note
+    under the Explore search bullet for why the latter strands its shadow during a pan.
   - **Every one of the five screens showing areas** (explore, route create, route search,
     run tracking, test run creator) offers the same ownership-filter toggle via the shared
     [lib/widgets/map/area_visibility_toggle.dart](lib/widgets/map/area_visibility_toggle.dart) (`AreaVisibilityToggle`) — a small
@@ -1427,6 +1566,16 @@ milestones:
   Firestore-independent functions specifically so they're unit-testable standalone
   (`functions/_verify_geo.js`, excluded from deploy — see `firebase.json`) without a live
   or emulated database; `index.js` is the thin transactional I/O wrapper around it.
+  `functions/_backfill_area_colors.js` is a one-off maintenance script following the
+  same not-deployed convention as `_wipe_*.js` (both are in `firebase.json`'s functions
+  `ignore` list) — it assigns `areaColorIndex` to profiles predating that field.
+  Deliberately a local Admin-SDK script rather than a callable: there is no admin role in
+  this project, so a deployed endpoint that rewrites other users' profiles would be
+  callable by anyone or need an ad-hoc uid allowlist. It assigns the **same FNV-1a uid
+  hash the client already falls back to**, not a fresh random value, so running it writes
+  down the color everyone was already seeing rather than reshuffling the map; it is
+  idempotent, and `test/player_palette_test.dart` pins the Dart and JS hashes to identical
+  outputs precisely so the two cannot drift.
   `functions/routeCascade.js` follows the same split for account deletion's route
   handling (`functions/_verify_routeCascade.js`, 13 checks) — worth its own tested unit
   specifically because deletion is irreversible: a wrong branch there permanently
@@ -1440,6 +1589,16 @@ See [firestore.rules](firestore.rules) for the authoritative, enforced version o
 
 - `profiles/{uid}` — doc ID = uid. `totalPoints` is server-only (client can never set/
   change it; Cloud Functions use the Admin SDK to bypass rules for this).
+  `areaColorIndex` (int, `0 <= i < PlayerPalette.size`) is the color this player's claimed
+  territory is drawn in on **everyone's** map — assigned at random by
+  `seedUserProfileAndBadges` on signup, and validated in `firestore.rules` (owner may set
+  it, but only to an in-range int, which leaves room for a future "change my color" picker
+  with no rules change). It is **not** trust-affecting, so unlike `totalPoints` it is not
+  server-only. Absent on any profile created before the field existed; the client falls
+  back to a uid hash, and `functions/_backfill_area_colors.js` persists that same hashed
+  value (see Project structure). The bound `10` appears in three places that must be kept
+  in step — `PlayerPalette.size`, `PALETTE_SIZE` in `functions/index.js`, and the literal
+  in `firestore.rules`.
   - `profiles/{uid}/badge_progress/{badgeId}` — self-read-only, seeded by
     `seedUserProfileAndBadges`; no client write.
 - `badges/{badgeId}` — shared reference data (title/description/image/order); signed-in
@@ -1496,7 +1655,8 @@ See [firestore.rules](firestore.rules) for the authoritative, enforced version o
   `createdAt`/`updatedAt` (client sync now keys off `updatedAt`, not `createdAt`, since
   areas mutate), `deleted` (tombstone flag; a client-visible "gone" signal in place of an
   actual delete, which a client with a stale cache would have no way to detect). No
-  `colorHex` — display color is viewer-relative (mine vs. not), computed client-side, not
+  `colorHex` — the drawn color belongs to the *owner* (`profiles/{uid}.areaColorIndex`),
+  is resolved client-side through `PlayerPalette`, and is not
   a property of the area. Owner may still `delete`.
 - `runningSessions/{sessionId}` — readable by any signed-in user, not just its owner (a
   deliberate exposure so a run-detail page can show another user's whole session and copy

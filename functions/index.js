@@ -214,6 +214,22 @@ async function dispatchPushNotification(userId, type, title, body, extraData = {
 // ==============================================================================
 // ── 1. PROFILE INITIALIZATION (Gen 1) ──
 // ==============================================================================
+/**
+ * How many colours a player's territory can be drawn in.
+ *
+ * **Keep in step with `PlayerPalette.size` in lib/utils/player_palette.dart.**
+ * Only the *index* is stored — the client owns the actual hues, so the palette
+ * can be re-tuned (dark mode, accessibility) without migrating any document.
+ * If this ever exceeds the client's palette size, the client falls back to a
+ * uid hash rather than crashing, but the stored value is then ignored.
+ */
+const PALETTE_SIZE = 10;
+
+/** A random palette index, assigned once when a profile is first created. */
+function randomAreaColorIndex() {
+  return Math.floor(Math.random() * PALETTE_SIZE);
+}
+
 exports.seedUserProfileAndBadges = functions
   .region('europe-west1')
   .auth.user().onCreate(async (user) => {
@@ -234,6 +250,11 @@ exports.seedUserProfileAndBadges = functions
         followersCount: 0,
         followingCount: 0,
         profileCompleted: false,
+        // The colour this player's claimed territory is drawn in, for
+        // everyone including themselves. Random rather than sequential so
+        // two people signing up together do not get adjacent (and on a small
+        // user base, likely neighbouring) colours.
+        areaColorIndex: randomAreaColorIndex(),
         createdAt: now,
         updatedAt: now,
       },

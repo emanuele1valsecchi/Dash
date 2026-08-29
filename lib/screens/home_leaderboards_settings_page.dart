@@ -51,7 +51,6 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
       loadedConfigs = decoded.map((e) => LeaderboardViewConfig.fromJson(e)).toList();
     }
 
-    // Cerchiamo le città reali dell'utente dal db per assicurarci di non perdere le nuove
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       final sessionsSnap = await FirebaseFirestore.instance

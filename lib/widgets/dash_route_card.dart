@@ -14,14 +14,28 @@ class DashRouteCard extends StatelessWidget{
 
   final RouteEntry entry;
   final VoidCallback onTap;
-  final VoidCallback onActionTap;
+
+  /// The top-right overlay button. Omitted entirely when [onActionTap] is
+  /// null, so a list with no per-card action doesn't show a button that
+  /// does nothing.
+  final VoidCallback? onActionTap;
+  final IconData actionIcon;
+  final double actionIconFill;
+
+  /// Optional second line under the route's name — used by the favourites
+  /// list to credit whoever originally ran the route (see
+  /// `RouteAuthorService`). Null when there is no one to credit.
+  final String? subtitle;
 
   const DashRouteCard({
-    super.key, 
+    super.key,
     this.heightFactor = 0.28,
-    required this.entry, 
-    required this.onTap, 
-    required this.onActionTap
+    required this.entry,
+    required this.onTap,
+    this.onActionTap,
+    this.actionIcon = Symbols.favorite_rounded,
+    this.actionIconFill = 0,
+    this.subtitle,
   });
 
   @override
@@ -46,12 +60,12 @@ class DashRouteCard extends StatelessWidget{
                   child: IgnorePointer(
                     child: Container(
                       color: Theme.of(context).cardColor,
-                      child: hasValidPolyline 
+                      child: hasValidPolyline
                         ? FlutterMap(
                             options: MapOptions(
                               initialCameraFit: CameraFit.bounds(
                                 bounds: LatLngBounds.fromPoints(route.routePolyline),
-                                padding: context.paddingXl + context.paddingMd, 
+                                padding: context.paddingXl + context.paddingMd,
                               ),
                               minZoom: MapStyle.minZoom,
                               interactionOptions: const InteractionOptions(
@@ -80,7 +94,7 @@ class DashRouteCard extends StatelessWidget{
                           child: Icon(
                             Symbols.route_rounded,
                             fill: 1,
-                            size: Theme.of(context).textTheme.displayLarge!.fontSize, 
+                            size: Theme.of(context).textTheme.displayLarge!.fontSize,
                             color: Theme.of(context).colorScheme.outline
                           )
                         ),
@@ -90,7 +104,7 @@ class DashRouteCard extends StatelessWidget{
 
                 _buildTopLeftName(context, route.name),
 
-                _buildTopRightActions(context),
+                if (onActionTap != null) _buildTopRightActions(context),
 
                 _buildBottomLeftData(context, route),
               ],
@@ -103,23 +117,38 @@ class DashRouteCard extends StatelessWidget{
 
   Widget _buildTopLeftName(BuildContext context, String routeName){
     final TextStyle textStyle = Theme.of(context).textTheme.bodyMedium!;
+    final String? creditLine = subtitle;
 
     return _OverlayContainer(
       position: _OverlayContainerPosition.topLeft,
-      child: Row(
+      // A long name (or an author line) must not run under the action button
+      // in the opposite corner, so the overlay is bounded rather than sized
+      // purely to its text.
+      maxWidthFactor: 0.6,
+      child: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.center,
-        mainAxisAlignment: MainAxisAlignment.center,
-        spacing: ResponsiveSpacing().sm,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Symbols.edit, 
-            size: textStyle.fontSize,
-          ),
+          // Name only — deliberately no leading glyph. It used to carry one
+          // per route source (a pencil for your own, a heart for a
+          // favourite), which read as an affordance for something this card
+          // does not offer: renaming happens on the detail page, and the
+          // top-right button is already the favourite/delete action.
           Text(
             routeName,
             style: textStyle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
+          if (creditLine != null)
+            Text(
+              creditLine,
+              style: Theme.of(context).textTheme.bodySmall!.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
         ],
       )
     );
@@ -127,11 +156,13 @@ class DashRouteCard extends StatelessWidget{
 
   Widget _buildTopRightActions(BuildContext context){
     return _OverlayContainer(
-      position: _OverlayContainerPosition.topRight, 
+      position: _OverlayContainerPosition.topRight,
       child: GestureDetector(
         onTap: onActionTap,
         child: Icon(
-          Symbols.favorite_rounded,
+          actionIcon,
+          fill: actionIconFill,
+          color: Theme.of(context).colorScheme.secondary,
         )
       )
     );
@@ -143,9 +174,10 @@ class DashRouteCard extends StatelessWidget{
     final timeLabel = timeMin < 60
         ? '${timeMin.round()} min'
         : '${(timeMin / 60).floor()}h ${(timeMin % 60).round()}min';
+    final loopColor = Theme.of(context).colorScheme.tertiary;
 
     return _OverlayContainer(
-      position: _OverlayContainerPosition.bottomLeft, 
+      position: _OverlayContainerPosition.bottomLeft,
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -159,18 +191,18 @@ class DashRouteCard extends StatelessWidget{
           const Icon(Icons.timer_outlined, size: 18),
           const SizedBox(width: 4),
           Text(timeLabel, style: const TextStyle(fontWeight: FontWeight.w500)),
-          
+
           if (route.isLoop) ...[
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 6.0),
               child: Text("·", style: TextStyle(fontWeight: FontWeight.bold)),
             ),
-            const Icon(Icons.loop_rounded, size: 18, color: Color(0xFF4A8C52)),
+            Icon(Icons.loop_rounded, size: 18, color: loopColor),
             const SizedBox(width: 4),
-            const Text('Loop', style: TextStyle(fontWeight: FontWeight.w500, color: Color(0xFF4A8C52))),
+            Text('Loop', style: TextStyle(fontWeight: FontWeight.w500, color: loopColor)),
           ],
         ]
-      ) 
+      )
     );
   }
 }
@@ -186,9 +218,16 @@ class _OverlayContainer extends StatelessWidget{
   final Widget child;
   final _OverlayContainerPosition position;
 
-  const _OverlayContainer({ 
+  /// Caps the overlay's width to this fraction of the screen, so its text
+  /// ellipsizes instead of colliding with the overlay in the opposite
+  /// corner. Null leaves it sized to its content, as every overlay was
+  /// before this existed.
+  final double? maxWidthFactor;
+
+  const _OverlayContainer({
     required this.position,
     required this.child,
+    this.maxWidthFactor,
   });
 
   @override
@@ -196,7 +235,7 @@ class _OverlayContainer extends StatelessWidget{
 
     final bool isTop = (position == _OverlayContainerPosition.topLeft) ||
       (position == _OverlayContainerPosition.topRight);
-    
+
     final bool isBottom = (position == _OverlayContainerPosition.bottomLeft) ||
       (position == _OverlayContainerPosition.bottomRight);
 
@@ -213,13 +252,20 @@ class _OverlayContainer extends StatelessWidget{
       left: isLeft ? edgeDistance : null,
       bottom: isBottom ? edgeDistance : null,
       right: isRight ? edgeDistance : null,
-      child: Container(
-        padding: context.paddingMd,
-        decoration: BoxDecoration(
-          color: Theme.of(context).cardColor.withAlpha(238),
-          borderRadius: getDashCardDecorationBorderRadius(context) / 2,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: maxWidthFactor == null
+              ? double.infinity
+              : MediaQuery.widthOf(context) * maxWidthFactor!,
         ),
-        child: child,
+        child: Container(
+          padding: context.paddingMd,
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor.withAlpha(238),
+            borderRadius: getDashCardDecorationBorderRadius(context) / 2,
+          ),
+          child: child,
+        ),
       )
     );
   }

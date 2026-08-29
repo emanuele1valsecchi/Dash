@@ -31,9 +31,27 @@ service cloud.firestore {
         || ( isSelf(uid)
              && request.resource.data.totalPoints == 0 );
 
+      // The colour this player's territory is drawn in on everyone's map.
+      // Only an index into the client's palette is stored, so it is not
+      // trust-affecting the way totalPoints is — but it is read by *other*
+      // users, so it still has to be a value the renderer can accept rather
+      // than arbitrary client input. Absent is allowed: profiles created
+      // before this field existed have not been backfilled, and the client
+      // falls back to a uid hash for those.
+      //
+      // Keep the bound in step with PALETTE_SIZE in functions/index.js and
+      // PlayerPalette.size in lib/utils/player_palette.dart.
+      function validAreaColorIndex() {
+        return !('areaColorIndex' in request.resource.data)
+          || ( request.resource.data.areaColorIndex is int
+               && request.resource.data.areaColorIndex >= 0
+               && request.resource.data.areaColorIndex < 10 );
+      }
+
       // On update, totalPoints must not be changed by the client.
       allow update: if isSelf(uid)
-        && request.resource.data.totalPoints == resource.data.totalPoints;
+        && request.resource.data.totalPoints == resource.data.totalPoints
+        && validAreaColorIndex();
 
       allow delete: if false; // disable client-side deletes
 
