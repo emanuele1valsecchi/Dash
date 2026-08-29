@@ -6,6 +6,7 @@ import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/screens/calendar_page.dart';
 import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
+import 'package:dash/widgets/home/leaderboard_section.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
@@ -28,7 +29,6 @@ import 'run_tracking_page.dart';
 import '../services/run_session_controller.dart';
 import '../services/wear_bridge.dart';
 import '../widgets/home/badge_progress_section.dart';
-import '../widgets/home/leaderboard_preview_card.dart';
 import '../widgets/home/start_run_overlay.dart';
 import '../widgets/home/monthly_stats_section.dart';
 import '../utils/leaderboard_order.dart';
@@ -60,8 +60,6 @@ class _HomePageState extends State<HomePage> {
 
   // Leaderboard Carousel
   List<LeaderboardPreviewData>? _leaderboards;
-  final PageController _pageController = PageController();
-  int _currentLeaderboardPage = 0;
 
   // State management for distance and last 30 days statistics
   double _monthlyMeters = 0.0;
@@ -120,7 +118,6 @@ class _HomePageState extends State<HomePage> {
     _statsSub?.cancel();
     _badgeProgressSub?.cancel();
     _globalSessionsSub?.cancel();
-    _pageController.dispose();
 
     super.dispose();
   }
@@ -287,103 +284,18 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildLeaderBoard(){
-    return Column(
-      children: [
-        const Row(
-          children: [
-            Icon(
-              Icons.bar_chart_rounded,
-              color: Color(0xFF4A554A),
-              size: 24,
-            ),
-            SizedBox(width: 8),
-            Text(
-              'Leaderboards',
-              style: TextStyle(
-                fontSize: 17,
-                fontWeight: FontWeight.w700,
-                color: Color(0xFF394137),
-              ),
-            ),
-          ],
-        ),
+    if (_leaderboards != null && _leaderboards!.isNotEmpty) {
+      return LeaderboardSection(
+        leaderboards: _leaderboards!,
+        onLeaderboardTap: _openLeaderboard,
+      );
+    }
 
-        const SizedBox(height: 14),
-
-        if (_leaderboards != null && _leaderboards!.isNotEmpty)
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox(
-                height: 255, 
-                child: PageView.builder(
-                  controller: _pageController,
-                  onPageChanged: (index) {
-                    setState(() => _currentLeaderboardPage = index);
-                  },
-                  itemCount: _leaderboards!.length,
-                  itemBuilder: (context, index) {
-                    final data = _leaderboards![index];
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 2), 
-                      child: LeaderboardPreviewCard(
-                        data: data,
-                        onTap: () => _openLeaderboard(data.city),
-                      ),
-                    );
-                  }
-                ),
-              ),
-
-              const SizedBox(height: 12),
-              
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(
-                  _leaderboards!.length,
-                  (index) {
-                    final dist = (index - _currentLeaderboardPage).abs();
-                    
-                    double width;
-                    double height;
-                    double margin;
-
-                    if (dist == 0) {
-                      width = 16; height = 6; margin = 4;
-                    } else if (dist <= 2) { 
-                      width = 6; height = 6; margin = 4;
-                    } else if (dist == 3) {
-                      width = 4; height = 4; margin = 3;
-                    } else {
-                      width = 0; height = 0; margin = 0;
-                    }
-
-                    return AnimatedContainer(
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeOutCubic,
-                      margin: EdgeInsets.symmetric(horizontal: margin),
-                      height: height,
-                      width: width,
-                      decoration: BoxDecoration(
-                        color: _currentLeaderboardPage == index
-                            ? const Color(0xFF4A8C52) 
-                            : const Color(0xFFD3D6CE), 
-                        borderRadius: BorderRadius.circular(3),
-                      ),
-                    );
-                  },
-                ),
-              )
-            ],
-          )
-        else
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 24),
-            child: Center(
-              child: CircularProgressIndicator(),
-            ),
-          ),
-      ]
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 24),
+      child: Center(
+        child: CircularProgressIndicator(),
+      ),
     );
   }
 
