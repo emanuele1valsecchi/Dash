@@ -4,40 +4,40 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
+import 'package:dash/screens/public_profile_page.dart';
 
 import '../widgets/units_scope.dart';
 import 'leaderboard_page.dart';
-//import 'home_screen.dart';
 import 'explore_page.dart';
 import 'badge_page.dart';
 
 // ==========================================
-// MODELLI DATI
+// data model for notifications
 // ==========================================
 enum NotificationType {
-  newFollower,         // Nuovo follower
-  newRoutePublished,   // Nuovo percorso pubblicato da seguito
-  leaderboardOvertake, // Sorpasso / cambio posizione
-  leaderboardCityEntry,// Ingresso nella leaderboard di una città
-  leaderboardGlobalEntry, // Ingresso nella leaderboard globale
-  areaStolen,          // Qualcuno ha sottratto la tua area
-  routeSaved,          // Qualcuno ha salvato il tuo percorso
-  routeRunFaster,      // Qualcuno ha corso più velocemente il tuo percorso
-  badgeUnlocked,       // Sblocco di un nuovo badge
+  newFollower,
+  newRoutePublished,
+  leaderboardOvertake,
+  leaderboardCityEntry,
+  leaderboardGlobalEntry,
+  areaStolen,
+  routeSaved,
+  routeRunFaster,
+  badgeUnlocked,
 }
 
 class NotificationItem {
   final String id;
   final NotificationType type;
-  final String boldText;    // Es: L'utente che ha compiuto l'azione
-  final String regularText; // L'azione ("ha salvato il tuo percorso")
+  final String boldText;
+  final String regularText;
   final DateTime createdAt;
   final bool isRead;
-  final String? imageUrl;   // Avatar utente
-  final String? routeId;    // Payload extra se clicchi sulla notifica
-  final String? actorId;    // Chi ha causato la notifica (utile per follow back)
-  final String? cityName;   // Payload extra per la leaderboard cittadina
-  final String? sessionId;  // Payload extra per l'area rubata
+  final String? imageUrl;
+  final String? routeId;
+  final String? actorId;
+  final String? cityName;
+  final String? sessionId;
 
   NotificationItem({
     required this.id,
@@ -53,34 +53,38 @@ class NotificationItem {
     this.sessionId,
   });
 
-  // Metodo per convertire un documento Firestore in un NotificationItem
+  // Method to convert a Firestore document to a NotificationItem
   factory NotificationItem.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>? ?? {};
-    
-    // Converti la stringa del DB nell'enum corretto (con un fallback di sicurezza)
-    NotificationType type = NotificationType.values.firstWhere(
+
+    final type = NotificationType.values.firstWhere(
       (e) => e.name == data['type'],
       orElse: () => NotificationType.newFollower,
     );
 
+    // System-generated notifications keep actorId as "system" in Firestore,
+    // but the actor name is hidden from the notification text in the UI.
+    final rawActorName = (data['actorName'] as String? ?? '').trim();
+    final boldText = rawActorName.toLowerCase() == 'system' ? '' : rawActorName;
+
     return NotificationItem(
       id: doc.id,
       type: type,
-      boldText: data['actorName'] ?? '',
-      regularText: data['message'] ?? '',
+      boldText: boldText,
+      regularText: data['message'] as String? ?? '',
       createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
-      isRead: data['isRead'] ?? false,
-      imageUrl: data['actorImageUrl'],
-      routeId: data['routeId'],
-      actorId: data['actorId'],
-      cityName: data['cityName'],
-      sessionId: data['sessionId'],
+      isRead: data['isRead'] as bool? ?? false,
+      imageUrl: data['actorImageUrl'] as String?,
+      routeId: data['routeId'] as String?,
+      actorId: data['actorId'] as String?,
+      cityName: data['cityName'] as String?,
+      sessionId: data['sessionId'] as String?,
     );
   }
 }
 
 // ==========================================
-// SCHERMATA NOTIFICHE
+// Notification Screen
 // ==========================================
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -93,7 +97,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   final String _currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  // Questa funzione marca una notifica come letta
+  // Marks a notification as read.
   Future<void> _markAsRead(String notificationId) async {
     try {
       await _db.collection('notifications').doc(notificationId).update({
@@ -101,21 +105,21 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         'readAt': FieldValue.serverTimestamp(),
       });
     } catch (e) {
-      debugPrint('Errore durante la marcatura come letta: $e');
+      debugPrint('Error marking notification as read: $e');
     }
   }
 
-  // Gestione rudimentale del follow-back
+  // Handles the follow-back action.
   Future<void> _handleFollowBack(String targetUserId) async {
     if (_currentUserId.isEmpty) return;
-    
+
     final followId = '${_currentUserId}_$targetUserId';
     final followRef = _db.collection('follows').doc(followId);
     final currentUserRef = _db.collection('profiles').doc(_currentUserId);
     final targetUserRef = _db.collection('profiles').doc(targetUserId);
 
     final batch = _db.batch();
-    
+
     batch.set(followRef, {
       'followerId': _currentUserId,
       'followingId': targetUserId,
@@ -127,10 +131,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     try {
       await batch.commit();
       if (mounted) {
-        context.showSuccessSnackBar("You follow this user to");
+        context.showSuccessSnackBar('You now follow this user');
       }
     } catch (e) {
-      debugPrint("Errore follow back: $e");
+      debugPrint('Error following user back: $e');
     }
   }
 
@@ -138,11 +142,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F6F0),
-      appBar: DashNavigationTopBar(
-        title: "Notification"
-      ),
-      body: _currentUserId.isEmpty 
-          ? const Center(child: Text("Non sei loggato."))
+      appBar: DashNavigationTopBar(title: 'Notifications'),
+      body: _currentUserId.isEmpty
+          ? const Center(child: Text('You are not logged in.'))
           : StreamBuilder<QuerySnapshot>(
               stream: _db
                   .collection('notifications')
@@ -152,21 +154,23 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   .snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
-                  return Center(child: Text('Errore: ${snapshot.error}'));
+                  return Center(child: Text('Error: ${snapshot.error}'));
                 }
 
                 if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator(color: Color(0xFF4A8C52)));
+                  return const Center(
+                    child: CircularProgressIndicator(color: Color(0xFF4A8C52)),
+                  );
                 }
 
                 final docs = snapshot.data?.docs ?? [];
-                
+
                 if (docs.isEmpty) {
                   return const Center(
                     child: Text(
                       'There\'s nothing new',
                       style: TextStyle(color: Color(0xFF8A9389), fontSize: 16),
-                    )
+                    ),
                   );
                 }
 
@@ -188,23 +192,36 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Widget _buildNotificationTile(NotificationItem item) {
-    // The date half stays locale-formatted; only the clock half follows the
-    // units setting, which `DateFormat`'s own `jm` pattern could not do —
-    // it reads the device locale, not the user's choice.
-    final dateStr = '${DateFormat("d MMMM yyyy").format(item.createdAt)}'
+    final dateStr =
+        '${DateFormat('d MMMM yyyy').format(item.createdAt)}'
         ' - ${Units.of(context).time(item.createdAt)}';
+
+    final messageText = item.boldText.isEmpty
+        ? item.regularText.trimLeft()
+        : item.regularText.startsWith(' ')
+        ? item.regularText
+        : ' ${item.regularText}';
 
     return InkWell(
       onTap: () {
         if (!item.isRead) {
           _markAsRead(item.id);
         }
-        
-        // ── GESTIONE NAVIGAZIONE IN BASE AL TIPO ──
+
         switch (item.type) {
           case NotificationType.newFollower:
-            if (item.actorId != null) {
-              // Navigator.of(context).push(MaterialPageRoute(builder: (_) => UserProfileScreen(userId: item.actorId!)));
+            final actorId = item.actorId;
+
+            if (actorId != null &&
+                actorId.isNotEmpty &&
+                actorId != 'system') {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => PublicProfilePage(
+                    userId: actorId,
+                  ),
+                ),
+              );
             }
             break;
 
@@ -240,24 +257,28 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           case NotificationType.leaderboardOvertake:
             Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => const LeaderboardScreen(cityFilter: 'Global Leaderboard'), 
+                builder: (_) =>
+                    const LeaderboardScreen(cityFilter: 'Global Leaderboard'),
               ),
             );
             break;
 
           case NotificationType.badgeUnlocked:
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => BadgePage(
-                  userId: FirebaseAuth.instance.currentUser!.uid
+            final currentUser = FirebaseAuth.instance.currentUser;
+            if (currentUser != null) {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => BadgePage(userId: currentUser.uid),
                 ),
-              ),
-            );
+              );
+            }
             break;
         }
       },
       child: Container(
-        color: item.isRead ? Colors.transparent : const Color(0xFFCAF0B8).withValues(alpha: 0.15),
+        color: item.isRead
+            ? Colors.transparent
+            : const Color(0xFFCAF0B8).withValues(alpha: 0.15),
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -281,11 +302,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                             text: item.boldText,
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
-                        TextSpan(
-                          text: item.regularText.startsWith(' ') 
-                              ? item.regularText 
-                              : ' ${item.regularText}',
-                        ),
+                        TextSpan(text: messageText),
                       ],
                     ),
                   ),
@@ -294,8 +311,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                     dateStr,
                     style: TextStyle(
                       fontSize: 13,
-                      color: item.isRead ? const Color(0xFF8A9389) : const Color(0xFF4A8C52),
-                      fontWeight: item.isRead ? FontWeight.normal : FontWeight.w600,
+                      color: item.isRead
+                          ? const Color(0xFF8A9389)
+                          : const Color(0xFF4A8C52),
+                      fontWeight: item.isRead
+                          ? FontWeight.normal
+                          : FontWeight.w600,
                     ),
                   ),
                 ],
@@ -310,7 +331,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Widget _buildLeadingIcon(NotificationItem item) {
-    Widget innerIcon = const SizedBox(); // Fallback sicuro
+    Widget innerIcon = const SizedBox();
 
     switch (item.type) {
       case NotificationType.newFollower:
@@ -321,9 +342,13 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             backgroundImage: NetworkImage(item.imageUrl!),
           );
         }
-        innerIcon = const Icon(Icons.person_add_alt_1_rounded, color: Colors.white, size: 22);
+        innerIcon = const Icon(
+          Icons.person_add_alt_1_rounded,
+          color: Colors.white,
+          size: 22,
+        );
         break;
-      
+
       case NotificationType.newRoutePublished:
       case NotificationType.routeSaved:
       case NotificationType.routeRunFaster:
@@ -334,21 +359,37 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             backgroundImage: NetworkImage(item.imageUrl!),
           );
         }
-        innerIcon = const Icon(Icons.map_rounded, color: Colors.white, size: 22);
+        innerIcon = const Icon(
+          Icons.map_rounded,
+          color: Colors.white,
+          size: 22,
+        );
         break;
 
       case NotificationType.leaderboardOvertake:
       case NotificationType.leaderboardCityEntry:
-      case NotificationType.leaderboardGlobalEntry: 
-        innerIcon = const Icon(Icons.bar_chart_rounded, color: Colors.white, size: 24);
+      case NotificationType.leaderboardGlobalEntry:
+        innerIcon = const Icon(
+          Icons.bar_chart_rounded,
+          color: Colors.white,
+          size: 24,
+        );
         break;
 
       case NotificationType.areaStolen:
-        innerIcon = const Icon(Icons.share_location_rounded, color: Colors.white, size: 24);
+        innerIcon = const Icon(
+          Icons.share_location_rounded,
+          color: Colors.white,
+          size: 24,
+        );
         break;
 
-      case NotificationType.badgeUnlocked: // ECCO DOVE ANDAVA MESSO!
-        innerIcon = const Icon(Icons.workspace_premium_rounded, color: Colors.white, size: 24);
+      case NotificationType.badgeUnlocked:
+        innerIcon = const Icon(
+          Icons.workspace_premium_rounded,
+          color: Colors.white,
+          size: 24,
+        );
         break;
     }
 
