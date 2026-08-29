@@ -41,6 +41,8 @@ class ProfileBadgeSection extends StatelessWidget {
       ],
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.max,
         children: displayBadges.map((badge) {
           return DashBadge(
             badge: badge, 
