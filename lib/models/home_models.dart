@@ -47,7 +47,7 @@ class MonthlyStatData {
   final String value;
   final IconData icon;
   final double progress;
-  final String bottomText; // Es: "Best overall: 10 km/h" o "New Record established"
+  final String bottomText;
 
   const MonthlyStatData({
     required this.title,

@@ -23,6 +23,8 @@ class BadgePage extends StatefulWidget {
 }
 
 class _BadgePageState extends State<BadgePage> {
+  static const int _badgesColumn = 3;
+
   bool _isLoading = true;
   List<HomeBadgeUiModel> _badges = [];
   StreamSubscription<QuerySnapshot>? _badgeSub;
@@ -52,24 +54,27 @@ class _BadgePageState extends State<BadgePage> {
       body: _isLoading
         ? const Center(child: CircularProgressIndicator())
         : GridView.builder(
-            padding: context.paddingMd,
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              crossAxisSpacing: ResponsiveSpacing().sm,
-              mainAxisSpacing: ResponsiveSpacing().lg,
-              childAspectRatio: 0.8
-            ),
-            itemCount: _badges.length,
-            itemBuilder: (context, index) {
-              final badge = _badges[index];
-              return DashBadge(
+          padding: context.paddingMd,
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: _badgesColumn,
+            crossAxisSpacing: ResponsiveSpacing().sm,
+            mainAxisSpacing: ResponsiveSpacing().lg,
+            childAspectRatio: 0.8
+          ),
+          itemCount: _badges.length,
+          itemBuilder: (context, index) {
+            final badge = _badges[index];
+            return Align(
+              alignment: Alignment.topCenter,
+              child: DashBadge(
                 badge: badge,
                 progress: badge.progress,
                 dimFactor: 0.16,
                 clickable: true,
-              );
-            },
-          ),
+              ) 
+            );
+          },
+        ),
     );
 	}
 
