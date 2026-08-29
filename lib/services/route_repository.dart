@@ -208,6 +208,31 @@ class RouteRepository {
     return list;
   }
 
+  /// Renames an owned route.
+  ///
+  /// `firestore.rules` lets an owner update `name` provided the geometry
+  /// fields come back unchanged, which a field-scoped `update` satisfies —
+  /// the untouched fields are carried into `request.resource.data` as they
+  /// already were.
+  ///
+  /// **A shared session route cannot be renamed through here**, and the rules
+  /// enforce that rather than relying on this method: it has no owner, so
+  /// every client write to it is denied. A favourite's name is per-user and
+  /// lives on that user's own `favoriteRoutes` link — see
+  /// `FavoriteRouteRepository.renameFavorite`.
+  Future<void> renameRoute(String id, String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return;
+    await _db.collection('routes').doc(id).update({'name': trimmed});
+    _cache = null;
+  }
+
+  /// Drops the cached routes so the next [fetchUserRoutes] re-reads from
+  /// Firestore — mirrors [FavoriteRouteRepository.invalidateCache], and
+  /// exists for the same reason: a pull-to-refresh needs a way to say "I
+  /// know the cache is warm, fetch anyway".
+  void invalidateCache() => _cache = null;
+
   /// Deletes a route from Firestore and removes it from the local cache.
   Future<void> deleteRoute(String id) async {
     await _db.collection('routes').doc(id).delete();

@@ -9,6 +9,8 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
+import 'route_library_page.dart';
+
 import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
 import '../services/claimed_area_repository.dart';
@@ -1712,8 +1714,23 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
 
   @override
   Widget build(BuildContext context) {
+    // This page is also the route library's second section (see
+    // `RouteLibraryScope`). Embedded, the library header already provides a
+    // back arrow, so a second floating one would just be two back buttons on
+    // the same screen.
+    final embedded = RouteLibraryScope.isEmbedded(context);
+
+    // A route's pop is refused if *any* registered PopScope refuses it, so
+    // this one must stand down while the user is looking at the other
+    // section — otherwise a search form parked on step 2 would swallow the
+    // back gesture on a screen it isn't even showing on.
+    final visible = RouteLibraryScope.isSectionVisible(
+      context,
+      RouteLibraryPage.searchSection,
+    );
+
     return PopScope(
-      canPop: _formStep == 0 && !_isResultsMode,
+      canPop: !visible || (_formStep == 0 && !_isResultsMode),
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         _handleSystemBack();
@@ -1724,7 +1741,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
             _buildMap(),
             if (_isLoadingLocation) _buildLoadingOverlay(),
             _buildSheet(),
-            _buildBackButton(),
+            if (!embedded) _buildBackButton(),
             _buildMapButtons(),
             _buildPinPickingBanner(),
           ],

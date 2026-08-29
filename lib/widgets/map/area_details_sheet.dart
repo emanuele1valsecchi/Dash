@@ -1,12 +1,12 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 
 import '../../screens/run_session_detail_page.dart';
 import '../../services/claimed_area_repository.dart';
 import '../../services/profile_service.dart';
+import '../../services/user_appearance_service.dart';
+import '../../utils/player_palette.dart';
 import '../units_scope.dart';
-import 'claimed_areas_layer.dart';
 
 /// Opens [AreaDetailsSheet] for the area with the given id, if it's still in
 /// [areas] (it always should be — ids come from a hit-test against polygons
@@ -123,9 +123,15 @@ class _AreaDetailsSheetState extends State<AreaDetailsSheet> {
                     height: 14,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: area.userId == FirebaseAuth.instance.currentUser?.uid
-                          ? ClaimedAreasLayer.myColor
-                          : ClaimedAreasLayer.otherColor,
+                      // The owner's own palette colour, matching the polygon
+                      // on the map exactly — this dot is how a user connects
+                      // "that purple blob" to a username.
+                      color: PlayerPalette.colorFor(
+                        uid: area.userId,
+                        colorIndex: UserAppearanceService.instance
+                            .get(area.userId)
+                            ?.colorIndex,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 10),
