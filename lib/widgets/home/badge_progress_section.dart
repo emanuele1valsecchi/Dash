@@ -1,4 +1,3 @@
-import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/widgets/badge/dash_badge.dart';
 import 'package:dash/widgets/dash_section_container.dart';
 import 'package:flutter/material.dart';
@@ -15,45 +14,25 @@ class BadgeProgressSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DashSectionContainer(
+
+    return DashSectionContainer.withFadeEdge(
       leadingIcon: Symbols.workspace_premium_rounded,
       title: "Badge Progress", 
       hasForwardIcon: false,
-      child: SizedBox(
-        height: 185,
-        child: ShaderMask(
-          shaderCallback: (Rect bounds) {
-            return const LinearGradient(
-              begin: Alignment.centerLeft,
-              end: Alignment.centerRight,
-              colors: [
-                Colors.transparent, // 1. Sfuma in entrata a sinistra
-                Colors.white,       // 2. Diventa solido
-                Colors.white,       // 3. Resta solido
-                Colors.transparent, // 4. Sfuma in uscita a destra
-              ],
-              // I valori indicano le percentuali (0.0 = 0%, 1.0 = 100%)
-              // Qui la sfumatura dura solo per il 5% a sinistra e il 5% a destra
-              stops: [0.0, 0.03, 0.97, 1.0], 
-            ).createShader(bounds);
-          },
-          blendMode: BlendMode.dstIn,
-          child: ListView.separated(
-            physics: const ClampingScrollPhysics(),
-            scrollDirection: Axis.horizontal,
-            itemCount: badges.length,
-            separatorBuilder: (_, _) => SizedBox(
-              width: ResponsiveSpacing().md
-            ),
-            itemBuilder: (context, index) {
-              final badge = badges[index];
-              return DashBadge(
-                badge: badge,
-                progress: badge.progress,
-                clickable: true,
-              );
-            },
-          ),
+      child: SingleChildScrollView(
+        physics: const ClampingScrollPhysics(),
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: List.generate(badges.length, (i){
+            return DashBadge(
+              badge: badges[i],
+              progress: badges[i].progress,
+              clickable: true,
+            );
+          }),
         ),
       )
     );
