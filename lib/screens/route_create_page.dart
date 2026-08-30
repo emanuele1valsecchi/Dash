@@ -17,6 +17,7 @@ import '../services/place_search_service.dart';
 import '../services/route_repository.dart';
 import '../services/routing_service.dart';
 import '../utils/geometry_utils.dart';
+import '../widgets/save_route_dialog.dart';
 import '../widgets/units_scope.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
@@ -50,10 +51,6 @@ class _RouteSnapshot {
 // ── Tool enum ──────────────────────────────────────────────────────────────────
 
 enum _Tool { pinDrop, freeDraw }
-
-// ── Done-dialog action ────────────────────────────────────────────────────────
-
-enum _SaveAction { saveOnly, saveAndRun }
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 
@@ -1758,11 +1755,12 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   /// Writes the route to Firestore. Returns whether it succeeded; the caller
   /// decides what happens next (plain save vs. save-and-run), since a success
   /// snackbar only makes sense for one of those two flows.
-  Future<bool> _saveRoute(List<LatLng> poly) async {
+  Future<bool> _saveRoute(List<LatLng> poly, {required bool isPublic}) async {
     if (_isPublishing) return false;
     setState(() => _isPublishing = true);
     try {
       await RouteRepository.instance.publishRoute(
+        isPublic: isPublic,
         name: _trackNameCtrl.text,
         waypoints: List<LatLng>.from(_waypoints),
         routePolyline: poly,
@@ -1790,107 +1788,29 @@ class _RouteCreatePageState extends State<RouteCreatePage>
 
   Future<void> _handleDonePressed() async {
     if (_isPublishing) return;
-    final action = await _showSaveOptionsDialog();
-    if (action == null || !mounted) return;
+    final choice = await showSaveRouteDialog(context);
+    if (choice == null || !mounted) return;
 
     final poly = _mergedPolyline();
-    final ok = await _saveRoute(poly);
+    final ok = await _saveRoute(poly, isPublic: choice.isPublic);
     if (!ok || !mounted) return;
 
-    if (action == _SaveAction.saveOnly) {
-      context.showSuccessSnackBar("Route published successfully");
+    if (choice.action == SaveRouteAction.save) {
+      // Leave the page. Staying on a map that still shows the route the user
+      // just filed away reads as "nothing happened" — the snackbar alone was
+      // too easy to miss. Popping with null means the caller (HomeScreen)
+      // starts no run, so this lands back on the home screen. The snackbar
+      // survives the pop: ScaffoldMessenger sits above the route, not inside
+      // this page's Scaffold.
+      context.showSuccessSnackBar(
+        choice.isPublic ? "Route saved and published" : "Route saved",
+      );
+      Navigator.of(context).pop();
     } else {
       // Save route and Run — hand the polyline back so the caller can push
       // straight into RunTrackingPage with it as a guide line.
       Navigator.of(context).pop(poly);
     }
-  }
-
-  Future<_SaveAction?> _showSaveOptionsDialog() {
-    return showDialog<_SaveAction>(
-      context: context,
-      builder: (ctx) => Dialog(
-        backgroundColor: const Color(0xFFF5F6EF),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(22, 24, 22, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Save route',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF2A3028),
-                ),
-              ),
-              const SizedBox(height: 10),
-              const Text(
-                'What would you like to do with this route?',
-                style: TextStyle(
-                  fontSize: 14,
-                  height: 1.4,
-                  color: Color(0xFF5E655C),
-                ),
-              ),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () =>
-                      Navigator.of(ctx).pop(_SaveAction.saveAndRun),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFCAF0B8),
-                    foregroundColor: const Color(0xFF2E7D32),
-                    elevation: 0,
-                    padding: const EdgeInsets.symmetric(vertical: 13),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text(
-                    'Save route and Run',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton(
-                  onPressed: () => Navigator.of(ctx).pop(_SaveAction.saveOnly),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF5E655C),
-                    side: const BorderSide(color: Color(0xFFCFCFCF)),
-                    padding: const EdgeInsets.symmetric(vertical: 13),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text(
-                    'Save route',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 4),
-              SizedBox(
-                width: double.infinity,
-                child: TextButton(
-                  onPressed: () => Navigator.of(ctx).pop(),
-                  child: const Text(
-                    'Cancel',
-                    style: TextStyle(color: Color(0xFF5E655C)),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────

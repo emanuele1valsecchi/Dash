@@ -6,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 // Assicurati che questo import combaci con la cartella del tuo progetto
 import '../config/map_style.dart';
+import '../utils/run_estimates.dart';
 import '../widgets/units_scope.dart';
 
 class SessionDetailScreen extends StatelessWidget {
@@ -28,7 +29,8 @@ class SessionDetailScreen extends StatelessWidget {
     final name = sessionData['name'] ?? 'Untitled run';
     final distanceMeters = (sessionData['distanceMeters'] as num?)?.toDouble() ?? 0.0;
     final durationMs = (sessionData['durationMs'] as num?)?.toInt() ?? 0;
-    final calories = (sessionData['caloriesBurned'] as num?)?.toDouble() ?? 0.0;
+    // Derived, not stored — see `caloriesForDistance`.
+    final calories = caloriesForDistance(distanceMeters);
     final points = (sessionData['pointsEarned'] as num?)?.toInt() ?? 0;
     
     // Controlliamo avgPaceMinPerKm se esiste, altrimenti fallback su maxPaceMinPerKm

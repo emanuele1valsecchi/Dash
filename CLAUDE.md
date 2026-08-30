@@ -371,6 +371,210 @@ Keep this list current — update it whenever a feature moves between these buck
     mechanism available), so it keeps `InteractiveFlag.flingAnimation` disabled outright —
     losing its own pan momentum is the accepted trade there in exchange for not needing to
     wire up the full mechanism on a screen with a bounded, small-scale camera to begin with.
+- **Per-route visibility (public/private).** An owned route is private unless its author
+  publishes it; a public one appears on their profile for everyone else.
+  - **The flag is `isPublic`, not a new `isPrivate`** — deliberately, and this is worth not
+    re-litigating. `isPublic` already existed on every route, is already written by every
+    writer, and already carries the same meaning for a *shared session route*
+    (`isPublic: true` is what lets everyone who favourited a run read the one shared copy).
+    Both cases say "readable by someone other than the owner". A second, opposite-polarity
+    boolean on the same collection would make `isPublic: false, isPrivate: false`
+    meaningless, and — the deciding argument — **absent must mean private**: every route
+    written before this feature has `isPublic: false`, so they all default to private with
+    no migration, whereas an absent `isPrivate` would have silently published all of them.
+  - `firestore.rules` reads it as `resource.data.get('isPublic', false)`, so a document
+    predating the field is private rather than an evaluation error. `create` and `update`
+    both require `isPublic is bool`, so a route can never become public through a missing
+    or malformed field. The read rule is back to owner-or-public — this is the shape the
+    earlier "any signed-in user may read any route" widening was a placeholder for.
+  - `fetchRoutesForUser(uid, publicOnly: true)` for anyone else's profile. **The extra
+    `where` is not a filter, it is what makes the query permissible**: Firestore rejects a
+    query it cannot prove is safe, so without it the whole query is denied rather than
+    returning a subset. Two equality filters need no composite index (Firestore merges
+    single-field ones).
+  - **The choice is made once, at save time, and is permanent.** It is offered by a dialog
+    shared by route creation and route search ([lib/widgets/save_route_dialog.dart](lib/widgets/save_route_dialog.dart)) so a
+    setting that decides who can see something is worded and defaulted identically wherever
+    it is made; **private is the default**, so dismissing the dialog without reading it
+    gives the safer outcome, and the dialog says outright that it cannot be changed later.
+  - **Permanence is enforced by `firestore.rules`, not by the absence of a button.** The
+    `update` rule pins `isPublic` (compared via `get(..., false)` on both sides, so a
+    document predating the field can still be renamed). There is no `setRouteVisibility`
+    anywhere — deliberately: whether a route somebody may already have seen quietly
+    disappears is not a client's call, and a rule that only holds while nobody builds a
+    toggle is not a rule. A user who changes their mind deletes the route and saves it
+    again, which is honest: the new route is a new document.
+  - **Permanence is what settles "what if someone favourited it and then it goes private?"
+    — the situation cannot arise.** Nothing can hold a live reference to someone else's
+    *owned* route in the first place (favouriting copies a completed *run* into a separate
+    shared document — `favoriteSession`), and now a public route cannot become private
+    either. If a "favourite someone's route" flow is ever added it should still copy the
+    geometry the same way, since deleting a route remains possible and a live reference
+    would break on that.
+  - **Saving a route leaves the page** in both flows — route creation pops with null (so
+    `HomeScreen` starts no run) and route search pops the whole library, both landing back
+    on the home screen. Staying put on a map still showing the route just filed away read
+    as "nothing happened"; the snackbar alone was too easy to miss. It survives the pop
+    because `ScaffoldMessenger` sits above the route, not inside either page's `Scaffold`.
+    Route search only pops on a *successful* save (`_saveRoute` returns a bool for exactly
+    this) — a failure must leave the results in front of the user to retry from.
+  - `SavedRouteDetailPage` states the visibility read-only (`RouteVisibilityInfo`, shared
+    with the dialog so both describe the same state in the same words), owner-only and only
+    for an owned route. It renders as a single line there (`showLabel: false`) — with
+    nothing to set, a bold "Private" heading only repeats the sentence under it. Your own route cards carry a padlock when private, on the profile
+    and in the route library; a visitor never sees a private route at all, so no badge
+    there.
+  - **Open question this raises, not yet decided**: `deleteMyAccount`'s route cascade
+    preserves an owned route with `isPublic == true` (clearing `userId`) and deletes the
+    rest — a branch that was dead until now, because nothing was ever public. With real
+    public routes it goes live, so a deleted user's published routes would survive as
+    ownerless documents still carrying the names they gave them, referenced by nobody.
+    Deleting them outright is probably right; it changes tested behaviour
+    (`_verify_routeCascade.js`), so it is flagged rather than changed.
+- **Private run metrics, and energy as a derived value.** Two different problems that
+  looked like one, and the distinction is the whole point:
+  - **Heart rate is genuinely private, so it moved.** `runningSessions` docs are readable
+    by every signed-in user (deliberately — see that collection's read rule), and
+    **Firestore cannot restrict individual fields of a document that is readable at all**,
+    so heart rate sitting on the session doc was public no matter what the UI drew. It now
+    lives in `runningSessions/{sessionId}/private/metrics` (`RunPrivateMetrics` in
+    [lib/services/run_session_repository.dart](lib/services/run_session_repository.dart)), whose rule grants the owner only.
+    **Rules do not cascade into subcollections** without a recursive wildcard, so the
+    parent's `allow read: if isSignedIn()` does not reach it. The private doc denormalizes
+    `userId` so the rule authorizes off its own data rather than a `get()` on the parent —
+    a `get()` inside a rule is a billed read on every evaluation. `saveSession` writes the
+    session and the private doc in one `WriteBatch` (hence a locally-created `doc()` ref
+    instead of `add()`, since the ID is needed to address the subcollection), and writes no
+    private doc at all for a phone-only run — absence reads the same as "no watch". The
+    parent's create/update rules now *reject* `avgHeartRateBpm`/`maxHeartRateBpm` outright
+    (`noPublicHeartRate`), so a client cannot put them back on the public document.
+  - **Energy is not private and cannot be made so, so it stopped being stored.** Every
+    writer has always computed exactly `distanceKm * 70`, and distance is public — a
+    "private" copy would be security theatre while adding a second source of truth. It is
+    now derived at every read site from one constant ([lib/utils/run_estimates.dart](lib/utils/run_estimates.dart)'s
+    `caloriesForDistance`, mirrored server-side by [functions/estimates.js](functions/estimates.js), which
+    `routeCascade.js`'s planned-route estimate now shares). `caloriesBurned` is gone from
+    `saveSession`, from `RunSession` (a getter now), from the home screen's monthly
+    aggregate (the average of `distance * k` is `k * average distance`, so it needs no
+    extra field and no extra read), from the calendar's session detail, from `userStats`
+    accumulation, and from `favoriteSession`'s `estimatedCalories`. Hiding the tile from
+    other users is a courtesy, not a boundary, and the code says so.
+  - **Deleting a document does not delete its subcollections.** `deleteMyAccount` and
+    `clearUserProgress` both call `deletePrivateSessionMetrics` *before* removing the
+    sessions — afterwards there is nothing left to enumerate them from, and the orphaned
+    docs would still hold a deleted user's heart rate while being unreachable by any query.
+  - **[functions/_migrate_private_metrics.js](functions/_migrate_private_metrics.js) — already run against production
+    (`dash-efb1d`), on 2026-08-30.** It moves heart rate off the public session doc into
+    the subcollection and strips `caloriesBurned`; it is idempotent, dry-run by default
+    (`--commit` to apply), and not deployed (same `_`-prefix convention as
+    `_backfill_*`/`_verify_*`, matched by `_migrate_*` in `firebase.json`'s ignore list).
+    Credentials follow `_backfill_area_colors.js`: a service-account key at
+    `uploader/serviceAccountKey.json` (gitignored) or `GOOGLE_APPLICATION_CREDENTIALS`,
+    falling back to ADC with the project id read from `.firebaserc`. **That run found 11
+    sessions and zero heart-rate records** — no watch run had ever been saved — so the
+    privacy half was a no-op and only the calories cleanup applied.
+    `RunSession.legacyAvgHeartRateBpm`/`legacyMaxHeartRateBpm` and the fallback in
+    `RunSessionDetailPage._buildStats` are therefore already dead against current data, but
+    are **kept until the new rules are deployed**: an app build predating this change would
+    still write heart rate onto the public document, and `noPublicHeartRate` is what stops
+    it. Delete all three once the rules are live and old builds are gone.
+- **Profile "Runs" and "Routes" rows** ([lib/widgets/profile/profile_activity_sections.dart](lib/widgets/profile/profile_activity_sections.dart),
+  `ProfileActivitySections`) — one widget rendering both rows, used verbatim by
+  [lib/screens/profile_page.dart](lib/screens/profile_page.dart) and [lib/screens/public_profile_page.dart](lib/screens/public_profile_page.dart); the
+  only difference between them is the `userId` loaded and whose voice the empty states
+  speak in. Replaces the single "Activities" section both pages used to build separately.
+  Each row scrolls **horizontally** (cards at 78% of screen width, so the next one peeks
+  in — the only cue the row scrolls), so a profile stays one screen tall however much the
+  person has run. A run opens `RunSessionDetailPage` (the same page the Explore map's area
+  contributions lead to); a route opens `SavedRouteDetailPage` (the same page the route
+  library leads to). Neither is a new screen.
+  - **Another user's routes are visible now, but only the ones they published** — see the
+    per-route visibility bullet above. The row for someone else queries
+    `fetchRoutesForUser(uid, publicOnly: true)`; your own row uses the cached
+    `fetchUserRoutes()` and includes your private routes, padlocked.
+  - **The rename pencil is gated on real ownership, not on the caller's say-so.**
+    `SavedRouteDetailPage` is reached from a stranger's profile now, so `_canRename`
+    checks `SavedRoute.userId == currentUser.uid` for an owned route rather than trusting
+    the `RouteSource` it was handed — otherwise a visitor would be offered a write the
+    rules are guaranteed to deny. `SavedRoute` gained a `userId` field for exactly this
+    (null on a shared session route, which stores it as an explicit null). A *favourite*
+    is still always renameable, because that name lives on the viewer's own link.
+  - **The Run button on a route detail page is live from a profile too**, including on
+    someone else's route — that's much of the point of showing it. Rather than routing
+    the popped polyline back through the home screen (the route library's contract, which
+    suits a flow the user is passing *through*), the section starts the run itself via a
+    new shared `pushRunTracking` helper in [lib/screens/run_tracking_page.dart](lib/screens/run_tracking_page.dart), which
+    `HomeScreen._pushRunTracking` now delegates to as well — "what a finished run reports
+    to the user" is one convention, not per-caller taste.
+  - **Reads are one-time, not listeners.** Both pages previously opened `snapshots()`
+    streams on `routes`, `favoriteRoutes` and a `created` collection per profile visit,
+    against the read-cost rule. They now use `RunSessionRepository.fetchUserSessions(userId:)`
+    and `RouteRepository.fetchRoutesForUser` (the signed-in user's own routes still go
+    through the cached `fetchUserRoutes`). Both profile pages gained **pull-to-refresh**
+    to close the staleness that swap introduces — a profile lives in the bottom-nav shell,
+    so without it a route saved elsewhere in the app wouldn't appear until relaunch. It
+    reaches the rows through a `GlobalKey<ProfileActivitySectionsState>`, which is why
+    that `State` is public (the `FormState`/`ScaffoldState` convention).
+  - **Three things were dropped**, deliberately: *favourites* (they have a dedicated
+    section in the route library now, and another user's `favoriteRoutes` are not readable
+    — nor should "what has this person favourited" become public without asking); the
+    `created` collection, which **has no `match` block in `firestore.rules` at all**, so
+    every read of it was denied and that listener never returned anything; and the bug
+    where the `created` listener assigned its results to `_favoriteRoutes`.
+  - **Failure is tracked per row, not per widget.** The two rows come from different
+    collections with different rules, and an earlier version shared one `_failed` flag
+    behind a fail-fast `Future.wait` — so a single permission error (typically `routes`,
+    if the widened read rule hasn't been deployed) reported "Could not load" under *both*
+    headings even though the runs had come back fine. They now settle independently.
+  - `DashRouteCard`'s map/overlay shell was extracted to
+    [lib/widgets/dash_map_card.dart](lib/widgets/dash_map_card.dart) (`DashMapCard`) so [lib/widgets/dash_run_card.dart](lib/widgets/dash_run_card.dart)
+    (`DashRunCard`, a completed run: date subtitle, distance/time/area) can look identical
+    without a second copy of it. Both are now thin adapters deciding only which numbers to
+    show. A card's `heightFactor` is nullable — null means "fill the height given", which
+    is what a horizontal row wants, since there the cross axis is already tightly
+    constrained. The stats strip uses `bodySmall` with 16px icons and a tighter padding,
+    and every label is `Flexible` + ellipsis: three stats plus icons and separators do not
+    fit across a card that is only 78% of the screen wide, which overflowed. The sizes
+    make it fit in practice; the `Flexible` is the actual guarantee, for an unusually long
+    value or a large text-scale setting.
+  - `RunSessionDetailPage` was **reworked to be the same page as `SavedRouteDetailPage`**
+    — `DashNavigationTopBar` titled with the run's name, one context line (runner · date ·
+    loops), a large interactive `RoutePreviewMap`, a grid of `DashStatTile`s, one primary
+    action at the bottom. Palette colours throughout; the old hardcoded
+    `Color(0xFF4A8C52)`/`Colors.white` treatment, the floating circular back button, the
+    expand/collapse map toggle and the `_StatPill`/`_FavoriteButton` widgets are all gone.
+    Two shared widgets were extracted so the two pages can't drift apart:
+    [lib/widgets/map/route_preview_map.dart](lib/widgets/map/route_preview_map.dart) (`RoutePreviewMap` — fitted interactive
+    map, direction arrows, start/finish pins, no fill) and [lib/widgets/dash_stat_tile.dart](lib/widgets/dash_stat_tile.dart)
+    (`DashStatTile`). A run gets **two rows of three** tiles rather than the route page's
+    single row, since it has measurements a planned route doesn't: distance, time, avg
+    pace-or-speed, elevation, area, laid out three to a row by a helper that pads the last
+    row with empty `Expanded`s so a partial row's tiles keep a full row's width.
+    **Body metrics are owner-only** — energy and heart rate describe the *runner*, not the
+    route, unlike everything else on the page, so a visitor sees only the shape of the run.
+    This is enforced, not just hidden; see "Private run metrics" below. It also stopped using a `FutureBuilder` and
+    holds the session in state instead — a builder around the body can't reach the
+    `Scaffold.appBar` above it, and the app bar's title is the run's name. This applies to
+    the Explore-map entry point too; it is one page.
+  - Its favourite button is relabelled **"Turn into a Route"** / "Remove from Routes" (was
+    "Add to favourites" / "Unfavourite") and sits in the slot the route page puts Run in.
+    Same action, same toggle — favouriting a run *is* copying its path into a route the
+    viewer can go and run, and the old wording described the bookkeeping rather than the
+    outcome. It keeps the **same route glyph in both states**, filled once the route
+    exists, rather than swapping in an "unsave" bookmark for the second state, which read
+    as a different, unrelated action.
+  - **A route's card on your own profile carries both of its management actions**: the name
+    gets a pencil (rename in place) and the corner gets a trash can (delete, confirmed).
+    Both are absent on someone else's profile, matching the rules — only an owner may
+    update or delete. This is the app's only delete-a-route affordance.
+  - **A route can be renamed straight from its card**: the name is tappable, opening the
+    same prompt the detail page uses. That prompt moved
+    to [lib/widgets/rename_route_dialog.dart](lib/widgets/rename_route_dialog.dart) (`showRenameRouteDialog`) so both entry
+    points share one copy — including the controller-lifetime fix documented above, which
+    is exactly the kind of thing that would be got wrong in a second copy.
+    `DashMapCard.onTitleTap` is null by default, and the pencil only renders when it is
+    set, so a card never advertises an edit the viewer cannot perform — another user's
+    profile shows no pencil, matching the rule that only an owner may update a route.
 - **Route library** ([lib/screens/route_library_page.dart](lib/screens/route_library_page.dart)) — what the home screen's
   "Search for a route" button now opens, in place of pushing `RouteSearchPage` directly.
   Two swipeable sections in a `PageView`, chosen because parameter search on its own read
@@ -382,7 +586,11 @@ Keep this list current — update it whenever a feature moves between these buck
      (`FavoriteRouteRepository.fetchFavorites`, i.e. other people's runs they favourited),
      both as `DashRouteCard`s. One-time cached reads, never listeners, per the read-cost
      rule; pull-to-refresh invalidates both caches (`RouteRepository.invalidateCache` was
-     added to match `FavoriteRouteRepository`'s). Tapping a card opens
+     added to match `FavoriteRouteRepository`'s). **Only favourites carry a card action
+     here** (the heart, to un-favourite). Deleting an owned route deliberately does *not*
+     live on this page — it is on the profile's Routes row instead: this list exists to
+     pick something to run, and a delete button on every card in a "choose a route" list is
+     the wrong thing to have under your thumb. Tapping a card opens
      [lib/screens/saved_route_detail_page.dart](lib/screens/saved_route_detail_page.dart) (whole route on an interactive map with
      direction arrows and start/finish pins, distance/time/area-or-energy tiles, **Run**
      and **Cancel**), which is also the only place a route can be **renamed** — a pencil
@@ -1481,10 +1689,15 @@ Keep this list current — update it whenever a feature moves between these buck
   - An **owned** route (planned by hand or saved from search) is **deleted** unless
     `isPublic == true`, in which case it's preserved but with `userId` cleared. The old
     "published routes are intentionally preserved" behaviour preserved *everything*,
-    which was ineffective: `publishRoute` always writes `isPublic: false` and the read
-    rule only lets a non-owner read a route when it's true, so those documents were
-    unreadable by everyone forever — a deleted user's personal data kept at cost with
-    nobody able to see it.
+    which was ineffective: `publishRoute` always writes `isPublic: false` and, at the
+    time, the read rule only let a non-owner read a route when it was true, so those
+    documents were unreadable by everyone forever — a deleted user's personal data kept
+    at cost with nobody able to see it. **That original justification is now stale** (the
+    read rule is a bare `isSignedIn()`, so `isPublic` no longer gates reads at all — see
+    the `routes` entry under Data model), but the *behaviour* is still right, and more
+    obviously so: a non-public route is visible on its owner's profile while the account
+    exists, so deleting it on account deletion is exactly what a user asking to be
+    forgotten expects.
   - **Ordering matters and is load-bearing**: the cascade runs *before* anything is
     deleted, because a shared route is found by its document ID being its source
     session's ID, and once the `runningSessions` docs are gone there is no way left to
@@ -1605,8 +1818,14 @@ See [firestore.rules](firestore.rules) for the authoritative, enforced version o
   read, no client write.
 - `nicknames/{nickname}` — uniqueness index; doc ID is the nickname itself, value holds
   the owning `uid`.
-- `routes/{routeId}` — owned by `userId`; geometry (`routePolyline`, `waypoints`,
-  `distanceMeters`) is immutable after create, only name/visibility can be updated.
+- `routes/{routeId}` — owned by `userId`; readable by its owner or, when
+  `isPublic == true`, by any signed-in user. Geometry (`routePolyline`, `waypoints`,
+  `distanceMeters`) is immutable after create, and so is `isPublic` — **only the name is
+  updatable**, and only by the owner. **`isPublic` is the author's own public/private
+  choice, made once when the route is saved and permanent afterwards** — see the per-route
+  visibility bullet above for why it is that field and not a new `isPrivate`, why absent
+  means private, and why permanence is enforced in the rules rather than by omitting a
+  button.
   `waypoints` means specifically "the points the user tapped out by hand" and is only
   populated for hand-planned routes from `route_create_page.dart`, where it carries real
   information the road-snapped `routePolyline` can't reconstruct (kept for an eventual
@@ -1679,7 +1898,15 @@ See [firestore.rules](firestore.rules) for the authoritative, enforced version o
   slightly would change a score the client must not be able to influence. That leaves a very
   long multi-loop run still theoretically able to approach the 1 MiB ceiling via
   `closedLoops` alone; if that ever bites, fix it server-side rather than by simplifying loop
-  geometry on the client. `territoryCity`/`territoryBroad`/`territoryBroadType`,
+  geometry on the client.
+  **Heart rate is NOT on this document** — it lives in the owner-only
+  `runningSessions/{sessionId}/private/metrics` subcollection, since everything here is
+  world-readable to signed-in users and Firestore cannot hide individual fields of a
+  readable document; the create/update rules actively reject `avgHeartRateBpm`/
+  `maxHeartRateBpm` here. **`caloriesBurned` is not stored either**, in any collection: it
+  is `distanceMeters / 1000 * 70` and is derived on read. See "Private run metrics" above
+  for both, including the migration that removes them from existing documents.
+  `territoryCity`/`territoryBroad`/`territoryBroadType`,
   `totalAreaM2`/`stolenAreaM2`, `xpFromDistance`/`xpFromArea`/`xpFromStolenArea`, and
   `pointsProcessed` are all server-only the same way (client must omit them on create;
   `firestore.rules` enforces this via `noServerOnlyFields` on create and a

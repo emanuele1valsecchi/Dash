@@ -6,16 +6,13 @@ import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/models/home_badge_ui_model.dart';
 import 'package:dash/screens/share_profile_page.dart';
 import 'package:dash/services/badge_service.dart';
-import 'package:dash/services/route_repository.dart';
 import 'package:dash/services/storage_service.dart';
 import 'package:dash/widgets/dash_action_button.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
-import 'package:dash/widgets/dash_route_card.dart';
-import 'package:dash/widgets/dash_section_container.dart';
 import 'package:dash/widgets/profile/bio_text_box.dart';
+import 'package:dash/widgets/profile/profile_activity_sections.dart';
 import 'package:dash/widgets/profile/profile_badge_section.dart';
 import 'package:dash/widgets/profile/profile_header.dart';
-import 'package:dash/widgets/profile/route_source.dart';
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
@@ -44,18 +41,14 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
   String _profileImageUrl = '';
 
   List<HomeBadgeUiModel> _badges = [];
-  List<RouteEntry> _ownedRoutes = [];
-  List<RouteEntry> _favoriteRoutes = [];
-  List<RouteEntry> _createdRoutes = [];
-
-  List<RouteEntry> get _allRoutes => [..._ownedRoutes, ..._favoriteRoutes, ..._createdRoutes]
-    ..sort((a, b) => b.route.createdAt.compareTo(a.route.createdAt));
 
   StreamSubscription<DocumentSnapshot>? _profileSub;
   StreamSubscription<QuerySnapshot>? _badgeSub;
-  StreamSubscription<QuerySnapshot>? _ownedRoutesSub;
-  StreamSubscription<QuerySnapshot>? _favoriteRoutesSub;
-  StreamSubscription<QuerySnapshot>? _createdRoutesSub;
+
+  /// Lets pull-to-refresh re-read the Runs/Routes rows, which are one-time
+  /// cached reads rather than listeners (see `ProfileActivitySections`).
+  final GlobalKey<ProfileActivitySectionsState> _activityKey =
+      GlobalKey<ProfileActivitySectionsState>();
 
   final StorageService _storageService = StorageService();
   
@@ -66,16 +59,12 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
     super.initState();
     _startProfileStream();
     _startBadgesStream();
-    _startRoutesStream();
   }
 
   @override
   void dispose() {
     _profileSub?.cancel();
     _badgeSub?.cancel();
-    _ownedRoutesSub?.cancel();
-    _favoriteRoutesSub?.cancel();
-    _createdRoutesSub?.cancel();
     super.dispose();
   }
 
@@ -125,28 +114,40 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
       );
     }
 
-    return SingleChildScrollView(
-      padding: EdgeInsets.symmetric(horizontal: ResponsiveSpacing().md),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        spacing: ResponsiveSpacing().lg,
-        children: [
-          ProfileHeader(
-            name: _name,
-            surname: _surname,
-            email: _email,
-            profileImageUrl: _profileImageUrl,
-            followers: _followers,
-            following: _following,
-          ),
-          if (_bio.isNotEmpty) BioTextBox(bio: _bio),
-          _buildActionButtons(),
-          ProfileBadgeSection(
-            badges: _badges,
-            userId: widget.userId,
-          ),
-          _buildActivitiesSection(),
-        ],
+    return RefreshIndicator(
+      onRefresh: () async => await _activityKey.currentState?.reload(),
+      color: contextTheme.colorScheme.tertiary,
+      child: SingleChildScrollView(
+        padding: EdgeInsets.symmetric(horizontal: ResponsiveSpacing().md),
+        // Always scrollable, so the pull gesture works even when the profile
+        // is short enough not to overflow.
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          spacing: ResponsiveSpacing().lg,
+          children: [
+            ProfileHeader(
+              name: _name,
+              surname: _surname,
+              email: _email,
+              profileImageUrl: _profileImageUrl,
+              followers: _followers,
+              following: _following,
+            ),
+            if (_bio.isNotEmpty) BioTextBox(bio: _bio),
+            _buildActionButtons(),
+            ProfileBadgeSection(
+              badges: _badges,
+              userId: widget.userId,
+            ),
+            ProfileActivitySections(
+              key: _activityKey,
+              userId: widget.userId,
+              isCurrentUser: false,
+              displayName: _name,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -174,64 +175,7 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
     );
   }
 
-  Widget _buildActivitiesSection() {
-    return DashSectionContainer(
-      title: "Activities",
-      child: _allRoutes.isEmpty
-          ? _buildEmptyState()
-          : ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _allRoutes.length,
-              itemBuilder: (context, i) => DashRouteCard(
-                entry: _allRoutes[i],
-                onTap: () {
-                  // TODO: navigate to info path
-                },
-                onActionTap: () {},
-              ),
-            ),
-    );
-  }
-
-  Widget _buildEmptyState() {
-    ThemeData contextTheme = Theme.of(context);
-
-    TextStyle bodyLargeTextStyle = contextTheme.textTheme.bodyLarge!.copyWith(
-      color: contextTheme.colorScheme.outlineVariant,
-    );
-
-    return Center(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        mainAxisAlignment: MainAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        spacing: ResponsiveSpacing().sm,
-        children: [
-          Icon(
-            Symbols.route_rounded,
-            size: contextTheme.textTheme.displayLarge!.fontSize,
-            color: contextTheme.colorScheme.outlineVariant,
-            fill: 1,
-          ),
-          Text(
-            'No activities yet',
-            style: bodyLargeTextStyle.copyWith(fontWeight: FontWeight.bold),
-          ),
-          SizedBox(
-            width: MediaQuery.widthOf(context) * 2 / 3,
-            child: Text(
-              '$_name hasn\'t completed or favorited any routes yet.',
-              textAlign: TextAlign.center,
-              style: bodyLargeTextStyle,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _shareProfilePage(){    
+  void _shareProfilePage(){
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -336,102 +280,6 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
       }
 
       if (mounted) setState(() => _badges = updatedBadges);
-    });
-  }
-
-  void _startRoutesStream() {
-    final db = FirebaseFirestore.instance;
-
-    _ownedRoutesSub = db
-        .collection('routes')
-        .where('userId', isEqualTo: widget.userId)
-        .snapshots()
-        .listen((snap) {
-      final owned = snap.docs.map((doc) {
-        return RouteEntry(SavedRoute.fromDoc(doc), RouteSource.owned);
-      }).toList();
-
-      if (mounted) {
-        setState(() {
-          _ownedRoutes = owned;
-        });
-      }
-    });
-
-    _favoriteRoutesSub = db
-        .collection('favoriteRoutes')
-        .where('userId', isEqualTo: widget.userId)
-        .snapshots()
-        .listen((snap) async {
-      final favorites = <RouteEntry>[];
-
-      for (final doc in snap.docs) {
-        final data = doc.data();
-        final String? routeId = data['routeId'];
-        if (routeId == null) continue;
-
-        try {
-          final routeSnap = await db.collection('routes').doc(routeId).get();
-          if (routeSnap.exists) {
-            favorites.add(
-              RouteEntry(
-                SavedRoute.fromSharedRoute(
-                  routeSnap,
-                  name: data['name'] ?? 'Favourited run',
-                ),
-                RouteSource.favorite,
-              ),
-            );
-          }
-        } catch (e) {
-          debugPrint('Skipping live public favourite $routeId: $e');
-        }
-      }
-
-      if (mounted) {
-        setState(() {
-          _favoriteRoutes = favorites;
-        });
-      }
-    });
-
-    _createdRoutesSub = db
-        .collection("created")
-        .where("userId", isEqualTo: widget.userId)
-        .snapshots()
-        .listen((snap) async {
-      final created = <RouteEntry>[];
-
-      for (final doc in snap.docs) {
-        final data = doc.data();
-        final String? routeId = data['routeId'];
-
-        if (routeId == null) continue;
-
-        try {
-          final routeSnap = await db.collection('routes').doc(routeId).get();
-
-          if (routeSnap.exists) {
-            created.add(
-              RouteEntry(
-                SavedRoute.fromSharedRoute(
-                  routeSnap,
-                  name: data['name'] ?? 'Created run',
-                ),
-                RouteSource.created,
-              ),
-            );
-          }
-        } catch (e) {
-          debugPrint('Skipping live public created $routeId: $e');
-        }
-      }
-
-      if (mounted) {
-        setState(() {
-          _createdRoutes = created; // Note: In your original code this was a typo assigning to _favoriteRoutes
-        });
-      }
     });
   }
 }

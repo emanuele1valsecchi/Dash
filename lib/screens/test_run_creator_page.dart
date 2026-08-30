@@ -852,7 +852,6 @@ class _TestRunCreatorPageState extends State<TestRunCreatorPage> with TickerProv
         duration: Duration(minutes: _manualMinutes!),
         avgPaceMinPerKm: avgPace,
         maxPaceMinPerKm: avgPace,
-        caloriesBurned: _estimatedCalories,
         elevationDifferenceMeters: 0.0,
         loopsCompleted: _loopPolygons.length,
         path: poly,
