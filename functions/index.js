@@ -7,6 +7,7 @@ const geo = require('./geo');
 const territory = require('./territory');
 const routing = require('./routing');
 const routeCascade = require('./routeCascade');
+const { caloriesForDistance } = require('./estimates');
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { getAuth } = require('firebase-admin/auth');
 
@@ -301,7 +302,9 @@ exports.onRunningSessionCompleted = onDocumentUpdated(
 
     const currentDistance = Number(sessionData.distanceMeters || 0);
     const currentDuration = Number(sessionData.durationMs || 0); 
-    const currentCalories = Number(sessionData.caloriesBurned || 0);
+    // Derived, not read: energy is not stored on the session (or anywhere) —
+    // it is distance * CALORIES_PER_KM. See lib/utils/run_estimates.dart.
+    const currentCalories = caloriesForDistance(currentDistance);
     const currentLoops = Number(sessionData.loopsCompleted || 0);
     const currentAreaM2 = Number(sessionData.totalAreaM2 || 0);
     
@@ -1338,6 +1341,11 @@ exports.clearUserProgress = functions
         `[clearUserProgress] Step 2 found=${sessionsSnap.size}`
       );
 
+      // Subcollections do not go with their parent — sweep the private body
+      // metrics first, while the session IDs are still enumerable. Same
+      // reasoning as in deleteMyAccount.
+      await deletePrivateSessionMetrics(sessionsSnap.docs.map((d) => d.id));
+
       await deleteDocumentsInBatches(sessionsSnap.docs);
 
       console.log("[clearUserProgress] Step 2 OK");
@@ -1537,6 +1545,41 @@ async function anonymizeSessionDerivedRoutes(sessionIds) {
  * route rather than as a document still carrying a deleted user's ID.
  * Everything else is deleted.
  */
+/**
+ * Deletes the `private` subcollection under each of `sessionIds`.
+ *
+ * Firestore does not cascade: removing `runningSessions/{id}` leaves
+ * `runningSessions/{id}/private/*` in place, orphaned but intact — and those
+ * documents are exactly the ones holding a deleted user's heart rate. Nothing
+ * would ever surface them again, which makes this easy to forget and bad to
+ * get wrong.
+ *
+ * Listed rather than assumed to be the single `metrics` document, so a second
+ * private document added later is swept too without anyone having to remember
+ * to update this.
+ */
+async function deletePrivateSessionMetrics(sessionIds) {
+  let deleted = 0;
+
+  for (const sessionId of sessionIds) {
+    const privateSnap = await db
+      .collection("runningSessions")
+      .doc(sessionId)
+      .collection("private")
+      .get();
+
+    if (privateSnap.empty) continue;
+
+    await deleteDocumentsInBatches(privateSnap.docs);
+    deleted += privateSnap.size;
+  }
+
+  console.log(
+    `[deleteMyAccount] Deleted ${deleted} private metric doc(s) across ` +
+    `${sessionIds.length} session(s)`
+  );
+}
+
 async function anonymizeOrDeleteOwnedRoutes(uid) {
   const ownedSnap = await db
     .collection("routes")
@@ -1702,7 +1745,10 @@ exports.favoriteSession = functions
     // Derived here, from the session, rather than trusted from the caller.
     const distanceMeters = Number(session.distanceMeters) || 0;
     const estimatedTimeMin = (Number(session.durationMs) || 0) / 60000;
-    const estimatedCalories = Number(session.caloriesBurned) || 0;
+    // Derived from the session's distance, not read off it — energy is not
+    // stored (see ./estimates). This also keeps a shared route free of any
+    // body metric belonging to the person who originally ran it.
+    const estimatedCalories = caloriesForDistance(distanceMeters);
     const isLoop = (Number(session.loopsCompleted) || 0) > 0;
     const loopAreaM2 = Number(session.totalAreaM2) || 0;
 
@@ -1798,6 +1844,14 @@ exports.deleteMyAccount = functions
 
       await anonymizeSessionDerivedRoutes(ownSessionIds);
       await anonymizeOrDeleteOwnedRoutes(uid);
+
+      // Body metrics live in a subcollection under each session
+      // (runningSessions/{id}/private), and **deleting a document does not
+      // delete its subcollections** — those would survive as orphans, still
+      // holding this user's heart rate, unreachable through any query. They
+      // have to be swept explicitly, and before the parent sessions go, since
+      // afterwards there is nothing left to enumerate them from.
+      await deletePrivateSessionMetrics(ownSessionIds);
 
       // Delete user-owned documents from top-level collections.
       const collectionsToDelete = [

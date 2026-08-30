@@ -48,6 +48,38 @@ class RunSummary {
   });
 }
 
+/// Pushes [RunTrackingPage] and reports how the run ended.
+///
+/// Lives here, next to the page and the [RunSummary] it returns, because
+/// "what a finished run should say to the user" is one convention rather than
+/// per-caller taste: every entry point into a run — the home screen's three
+/// buttons, and a route opened from a profile — must report a discarded run
+/// and a saved one the same way.
+Future<void> pushRunTracking(
+  BuildContext context, {
+  List<LatLng>? plannedRoute,
+}) async {
+  final navigator = Navigator.of(context);
+  final summary = await navigator.push<RunSummary>(
+    MaterialPageRoute(
+      builder: (_) => RunTrackingPage(plannedRoute: plannedRoute),
+    ),
+  );
+  if (summary == null || !context.mounted) return;
+
+  if (!summary.saved) {
+    context.showWarningSnackBar("Run discarded");
+    return;
+  }
+
+  final distance = Units.current.distanceMajor(summary.distanceMeters);
+  final minutes = summary.elapsed.inMinutes;
+  final loopsText = summary.loopsCompleted > 0
+      ? ', ${summary.loopsCompleted} loop${summary.loopsCompleted == 1 ? '' : 's'} closed'
+      : '';
+  context.showSuccessSnackBar('Run saved — $distance in $minutes min$loopsText');
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 class RunTrackingPage extends StatefulWidget {

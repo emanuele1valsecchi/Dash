@@ -127,6 +127,23 @@ service cloud.firestore {
     //     since the run it was copied from is already readable by any
     //     signed-in user (see the runningSessions read rule below).
     match /routes/{routeId} {
+      // A route is readable by its owner, or by anyone once its owner has
+      // made it public. `isPublic` is the author's own choice, set when the
+      // route is saved and flippable afterwards from the route detail page —
+      // it is what decides whether the route shows up on their profile for
+      // other people (see `ProfileActivitySections`).
+      //
+      // Read as `get('isPublic', false)` rather than `resource.data.isPublic`
+      // so a document written before the field existed is treated as private
+      // instead of tripping an evaluation error on a missing key. Defaulting
+      // to *private* is the whole point: nobody has opted in retroactively.
+      //
+      // The same flag also carries the older meaning it already had — a
+      // shared session route (the ownerless copy of a run that favourites
+      // point at) is written `isPublic: true` by the `favoriteSession` Cloud
+      // Function so every user who favourited that run can read it. Both
+      // cases say the same thing: "readable by someone other than the owner".
+      //
       // `resource == null` (document does not exist) is allowed through so a
       // direct get() on a missing route returns an empty snapshot instead of
       // failing the whole read with permission-denied — dereferencing a null
@@ -137,7 +154,7 @@ service cloud.firestore {
       allow read: if isSignedIn()
         && (resource == null
             || resource.data.userId == request.auth.uid
-            || resource.data.isPublic == true);
+            || resource.data.get('isPublic', false) == true);
 
       // Owned routes only — a shared session route has no owner, so this
       // denies creating one. Only the favoriteSession Cloud Function can.
@@ -145,13 +162,35 @@ service cloud.firestore {
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.createdAt == request.time
         && request.resource.data.distanceMeters is number
-        && request.resource.data.isLoop is bool;
+        && request.resource.data.isLoop is bool
+        // Visibility must be stated explicitly and must be a boolean, so a
+        // route can never end up public through a missing or malformed field.
+        && request.resource.data.isPublic is bool;
 
-      // Owner may rename or toggle visibility. Geometry is immutable.
+      // Owner may rename. Geometry and visibility are both immutable.
+      //
+      // **`isPublic` is pinned, which is what makes the public/private choice
+      // permanent** — it is decided once, at create, and there is no toggle
+      // anywhere in the app. Enforcing it here rather than by simply not
+      // building the toggle is the point: a client is not the thing that gets
+      // to decide whether a route someone else may already have seen quietly
+      // disappears, or whether a private one is suddenly published.
+      //
+      // A user who changes their mind deletes the route and saves it again,
+      // which is honest — the new route is a new document, and nothing else
+      // references it (favouriting copies a *run*, never an owned route).
+      //
       // A shared session route has no owner, so this denies every client
       // write to one — including from the user who originally created it.
+      //
+      // Compared via get(..., false) on both sides, like the read rule: a
+      // document predating the field would otherwise make this an evaluation
+      // error and deny renaming it. Absent on both sides compares equal, and
+      // adding `isPublic: true` to such a document still fails.
       allow update: if isOwner(resource.data)
         && request.resource.data.userId == resource.data.userId
+        && request.resource.data.get('isPublic', false)
+             == resource.data.get('isPublic', false)
         && request.resource.data.routePolyline == resource.data.routePolyline
         && request.resource.data.waypoints == resource.data.waypoints
         && request.resource.data.distanceMeters == resource.data.distanceMeters;
@@ -198,23 +237,27 @@ service cloud.firestore {
       allow read: if isSignedIn();
       // Heart rate comes from a companion watch — the only device that can
       // measure it — so unlike points/territory it is legitimately
-      // client-written, in the same category as distance and calories. It is
-      // not trust-bearing: heart rate appears nowhere in the XP formula.
-      //
-      // Validated rather than merely permitted. `create` filters by denylist
-      // (noServerOnlyFields), so these would have been accepted with no rule at
-      // all and with no constraint on what they contained. Absent is valid —
-      // most runs have no watch — but present means a plausible bpm.
+      // client-written. It is not trust-bearing: heart rate appears nowhere in
+      // the XP formula. Absent is valid — most runs have no watch — but
+      // present means a plausible bpm.
       function validHeartRate(data, field) {
         return !(field in data)
           || (data[field] is int && data[field] > 0 && data[field] <= 250);
       }
 
+      // Heart rate no longer belongs on THIS document — it lives in the
+      // owner-only `private` subcollection below, because everything here is
+      // world-readable to signed-in users. These two clauses now exist to stop
+      // a client putting it back: a run created with either field is rejected
+      // outright rather than silently publishing a body metric.
+      function noPublicHeartRate(data) {
+        return !('avgHeartRateBpm' in data) && !('maxHeartRateBpm' in data);
+      }
+
       allow create: if isSignedIn()
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.pointsEarned == 0
-        && validHeartRate(request.resource.data, 'avgHeartRateBpm')
-        && validHeartRate(request.resource.data, 'maxHeartRateBpm')
+        && noPublicHeartRate(request.resource.data)
         && noServerOnlyFields(request.resource.data, serverOnlyRunFields());
       // Client may finalize the session (set endTime, stats) but cannot
       // change ownership, points, or any server-only field (Cloud Function
@@ -225,9 +268,60 @@ service cloud.firestore {
       allow update: if isOwner(resource.data)
         && request.resource.data.userId == resource.data.userId
         && request.resource.data.pointsEarned == resource.data.pointsEarned
+        && noPublicHeartRate(request.resource.data)
         && !request.resource.data.diff(resource.data).affectedKeys()
              .hasAny(serverOnlyRunFields());
       allow delete: if false;
+
+      // ---------- runningSessions/{id}/private ----------
+      // Body metrics: what a run cost the person, as opposed to where it went.
+      //
+      // **This subcollection exists because the parent document is readable by
+      // every signed-in user** (see the read rule above, and why that exposure
+      // is deliberate). Firestore cannot restrict individual fields of a
+      // document that is readable at all, so anything genuinely private has to
+      // live at a path with its own rule — hiding a widget in the app is not
+      // privacy, it is decoration.
+      //
+      // Rules do NOT cascade into subcollections without a recursive wildcard,
+      // so `allow read: if isSignedIn()` above does not reach here; this block
+      // is the only thing granting access, and it grants it to the owner only.
+      //
+      // `userId` is denormalized onto each document so the rule can authorize
+      // without a get() on the parent session — a get() inside a rule is a
+      // billed read on every evaluation.
+      //
+      // Energy is deliberately NOT stored here (or anywhere): it is
+      // distance * 70 kcal/km, and distance is public, so a private copy would
+      // protect nothing while adding a second source of truth. See
+      // `lib/utils/run_estimates.dart`.
+      match /private/{docId} {
+        // Note there is deliberately no `resource == null` escape hatch here,
+        // unlike the favoriteRoutes rule below. A missing document has no
+        // userId to check, so reading one is an evaluation error and denies —
+        // including for its own owner, which is the normal case for a
+        // phone-only run. That is the stronger choice: if absence read as an
+        // empty snapshot while presence read as denied, any signed-in user
+        // could tell which of someone else's runs carry watch data. Denying
+        // both leaks nothing. `RunSessionRepository.fetchPrivateMetrics`
+        // treats permission-denied as "no metrics" for exactly this reason.
+        allow read: if isSignedIn()
+          && resource.data.userId == request.auth.uid;
+        allow create: if isSignedIn()
+          && request.resource.data.userId == request.auth.uid
+          && validHeartRate(request.resource.data, 'avgHeartRateBpm')
+          && validHeartRate(request.resource.data, 'maxHeartRateBpm');
+        allow update: if isSignedIn()
+          && resource.data.userId == request.auth.uid
+          && request.resource.data.userId == resource.data.userId
+          && validHeartRate(request.resource.data, 'avgHeartRateBpm')
+          && validHeartRate(request.resource.data, 'maxHeartRateBpm');
+        // Deleting your own is allowed; account deletion also sweeps these
+        // (see `deleteMyAccount` — a subcollection is not removed with its
+        // parent).
+        allow delete: if isSignedIn()
+          && resource.data.userId == request.auth.uid;
+      }
     }
 
     // ---------- userStats ----------
