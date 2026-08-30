@@ -2,7 +2,7 @@
   "relation": ["delegate_permission/common.handle_all_urls"],
   "target": {
     "namespace": "android_app",
-    "package_name": "com.yourcompany.dash",
+    "package_name": "com.example.dash",
     "sha256_cert_fingerprints": [
       "97:81:34:78:BB:60:57:11:F2:72:85:76:F3:7E:1C:3B:D0:2F:1C:0B:80:BA:A8:E6:F6:D6:3F:B6:1D:6A:36:F7",
       "5E:8C:1C:34:F7:3E:7C:A5:E3:D7:CA:F8:9D:62:5D:10:A5:5B:47:CB:82:C3:B9:BE:0D:F6:7E:9F:4F:B7:55:A5",
