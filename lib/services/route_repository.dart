@@ -8,12 +8,37 @@ import 'package:latlong2/latlong.dart';
 /// A single user-created route as stored in Firestore.
 class SavedRoute {
   final String id;
+
+  /// Who owns this route, or **null for a shared session route** — the
+  /// ownerless doc many users' favourites point at (see
+  /// `FavoriteRouteRepository`), which stores `userId` as an explicit null
+  /// rather than omitting it.
+  ///
+  /// Read by UI that has to decide whether the *viewer* may act on a route
+  /// they can see: any signed-in user can now read any route (profiles show
+  /// other people's), but only its owner may rename or delete it.
+  final String? userId;
+
   final String name;
   final double distanceMeters;
   final double estimatedTimeMin;
   final double estimatedCalories;
   final bool isLoop;
   final double loopAreaM2;
+
+  /// Whether anyone other than the owner may see this route.
+  ///
+  /// For an *owned* route this is the author's choice, made once when the
+  /// route is saved and **permanent thereafter** — there is no toggle, and
+  /// `firestore.rules` pins the field on update rather than leaving that to
+  /// the UI. It decides whether the route appears on their profile for other
+  /// people. For a *shared session route* it is always true, which is what
+  /// lets every user who favourited that run read the one shared copy.
+  ///
+  /// **Defaults to false for a document written before the field existed** —
+  /// private is the safe reading of "the author never opted in", and
+  /// `firestore.rules` makes the same assumption.
+  final bool isPublic;
   final List<LatLng> routePolyline;
   final DateTime createdAt;
 
@@ -28,12 +53,14 @@ class SavedRoute {
 
   const SavedRoute({
     required this.id,
+    required this.userId,
     required this.name,
     required this.distanceMeters,
     required this.estimatedTimeMin,
     required this.estimatedCalories,
     required this.isLoop,
     required this.loopAreaM2,
+    required this.isPublic,
     required this.routePolyline,
     required this.createdAt,
     this.sourceSessionId,
@@ -75,12 +102,15 @@ class SavedRoute {
 
     return SavedRoute(
       id: id,
+      userId: d['userId'] as String?,
       name: nameOverride ?? d['name'] as String? ?? 'Unnamed route',
       distanceMeters: (d['distanceMeters'] as num?)?.toDouble() ?? 0.0,
       estimatedTimeMin: (d['estimatedTimeMin'] as num?)?.toDouble() ?? 0.0,
       estimatedCalories: (d['estimatedCalories'] as num?)?.toDouble() ?? 0.0,
       isLoop: d['isLoop'] as bool? ?? false,
       loopAreaM2: (d['loopAreaM2'] as num?)?.toDouble() ?? 0.0,
+      // Missing means private — matching `firestore.rules`' own default.
+      isPublic: d['isPublic'] as bool? ?? false,
       routePolyline: toLatLngs('routePolyline'),
       // Server timestamps may be null immediately after write on the same client.
       createdAt: d['createdAt'] != null
@@ -134,6 +164,14 @@ class RouteRepository {
     required double estimatedCalories,
     required bool isLoop,
     required double loopAreaM2,
+    /// Whether other people may see this route on the author's profile.
+    /// **Defaults to private** — publishing is an explicit choice, and a
+    /// caller that forgets to ask cannot accidentally expose one.
+    ///
+    /// This is the only place it is ever set: the choice is permanent, and
+    /// `firestore.rules` pins `isPublic` on update. A user who changes their
+    /// mind deletes the route and saves it again.
+    bool isPublic = false,
     String? sourceSessionId,
   }) async {
     final startLocality = routePolyline.isEmpty
@@ -152,7 +190,7 @@ class RouteRepository {
       'estimatedCalories': estimatedCalories,
       'isLoop': isLoop,
       'loopAreaM2': loopAreaM2,
-      'isPublic': false,
+      'isPublic': isPublic,
       'startLocality': startLocality,
       'createdAt': FieldValue.serverTimestamp(),
       'sourceSessionId': ?sourceSessionId,
@@ -198,14 +236,39 @@ class RouteRepository {
   /// first load or after a write/delete.
   Future<List<SavedRoute>> fetchUserRoutes() async {
     if (_cache != null) return _cache!;
-    final snap = await _db
-        .collection('routes')
-        .where('userId', isEqualTo: _uid)
-        .get();
-    final list = snap.docs.map(SavedRoute.fromDoc).toList()
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final list = await fetchRoutesForUser(_uid);
     _cache = list;
     return list;
+  }
+
+  /// Routes owned by [userId] — **any** user, not only the signed-in one, so
+  /// a profile page can show someone else's routes.
+  ///
+  /// [publicOnly] must be true whenever [userId] is not the signed-in user.
+  /// It is not merely a filter: `firestore.rules` only lets a non-owner read a
+  /// route with `isPublic == true`, and Firestore rejects a query it cannot
+  /// prove is safe — so without the extra `where` the whole query is denied
+  /// rather than returning a subset. Two equality filters need no composite
+  /// index; Firestore merges the single-field ones.
+  ///
+  /// Deliberately uncached, unlike [fetchUserRoutes]: this fetches an
+  /// arbitrary other user's list on demand, which isn't something worth
+  /// holding a warm cache of (same reasoning as
+  /// `RunSessionRepository.fetchSessionById`). Callers looking at the signed-in
+  /// user's own routes should go through [fetchUserRoutes] to get the cache.
+  Future<List<SavedRoute>> fetchRoutesForUser(
+    String userId, {
+    bool publicOnly = false,
+  }) async {
+    var query = _db.collection('routes').where('userId', isEqualTo: userId);
+    if (publicOnly) {
+      query = query.where('isPublic', isEqualTo: true);
+    }
+    final snap = await query.get();
+    // Sorted client-side (newest first) to avoid a composite index on
+    // (userId, createdAt).
+    return snap.docs.map(SavedRoute.fromDoc).toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
   }
 
   /// Renames an owned route.

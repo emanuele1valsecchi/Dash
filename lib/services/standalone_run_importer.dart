@@ -82,7 +82,6 @@ class StandaloneRunImporter {
       distanceMeters: distanceMeters,
       duration: duration,
       avgPaceMinPerKm: avgPace,
-      caloriesBurned: km * 70.0,
       elevationDifferenceMeters: _elevationOf(rawFixes),
       loopsCompleted: loops.length,
       path: points,

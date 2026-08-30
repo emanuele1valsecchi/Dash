@@ -71,7 +71,11 @@ class DashBadge extends StatelessWidget{
 
     return GestureDetector(
       onTap: clickable
-        ? () => showBadgeOverlay(context: context, badge: badge, progress: progress)
+        ? () => showBadgeOverlay(
+          context: context, 
+          badge: badge, 
+          progress: progress
+          )
         : null,
       behavior: HitTestBehavior.opaque,
       child: Column(

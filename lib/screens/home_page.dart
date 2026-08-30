@@ -18,7 +18,7 @@ import '../services/badge_service.dart';
 import '../services/location_service.dart';
 import '../services/storage_service.dart';
 import '../services/unit_preferences.dart';
-import '../utils/unit_formatter.dart';
+import '../utils/run_estimates.dart';
 import '../widgets/units_scope.dart';
 import '../services/water_fountain_service.dart';
 import 'route_create_page.dart';
@@ -56,7 +56,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  bool _showRunOverlay = false;
+  final GlobalKey _fabKey = GlobalKey();
 
   // Leaderboard Carousel
   List<LeaderboardPreviewData>? _leaderboards;
@@ -71,7 +71,7 @@ class _HomePageState extends State<HomePage> {
   /// them from `build` — formatting them at fetch time would have frozen
   /// whatever units were active when the Firestore query ran, and refreshing
   /// them would have meant re-querying.
-  _MonthlyStatsRaw? _monthlyRaw; 
+  MonthlyStatsRaw? _monthlyRaw; 
 
   final StorageService _storageService = StorageService();
 
@@ -124,6 +124,8 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    ColorScheme contextColorScheme = Theme.of(context).colorScheme;
+
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: DashNavigationTopBar(
@@ -138,76 +140,89 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
-      body: Stack(
-        children: [
-          SafeArea(
-            child: ScrollConfiguration(
-              behavior: const _NoOverscrollBehavior(),
-              child: NotificationListener<OverscrollIndicatorNotification>(
-                onNotification: (notification) {
-                  notification.disallowIndicator();
-                  return true;
-                },
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: RefreshIndicator(
-                        color: Theme.of(context).colorScheme.onPrimaryContainer,
-                        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                        onRefresh: () async {
-                          await _applyLeaderboardPreferences();
-                        },
-                        child: SingleChildScrollView(
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          padding: const EdgeInsets.fromLTRB(20, 16, 20, 84),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              _buildGreetingText(),
-                              const SizedBox(height: 12),
-                              _buildAchievementText(),
-                              const SizedBox(height: 24),
-                              _buildLeaderBoard(),
-                              const SizedBox(height: 28),
-                              _buildBadgesSection(),
-                              const SizedBox(height: 28),
-
-                              MonthlyStatsSection(
-                                stats: _buildMonthlyStats(Units.of(context))
-                              ),
-                              
-                              const SizedBox(height: 8),
-                            ],
-                          ),
-                        ),
+      body: SafeArea(
+        child: ScrollConfiguration(
+          behavior: const _NoOverscrollBehavior(),
+          child: NotificationListener<OverscrollIndicatorNotification>(
+            onNotification: (notification) {
+              notification.disallowIndicator();
+              return true;
+            },
+            child: Column(
+              children: [
+                Expanded(
+                  child: RefreshIndicator(
+                    color: contextColorScheme.onPrimaryContainer,
+                    backgroundColor: contextColorScheme.primaryContainer,
+                    onRefresh: () async {
+                      await _applyLeaderboardPreferences();
+                    },
+                    child: SingleChildScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 84),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        spacing: ResponsiveSpacing().xl,
+                        children: [
+                          _buildGreetingText(context),
+                          _buildAchievementText(),
+                          _buildLeaderBoard(),
+                          _buildBadgesSection(),
+                          MonthlyStatsSection( rawStats: _monthlyRaw ),
+                        ],
                       ),
                     ),
-                  ],
+                  ),
                 ),
-              ),
+              ],
             ),
           ),
-          StartRunOverlay(
-            isOpen: _showRunOverlay,
-            onClose: () => setState(() => _showRunOverlay = false),
+        ),
+      ),
+
+      floatingActionButton: FloatingActionButton(
+        key: _fabKey,
+        heroTag: null,
+        onPressed: _showStartMenu,
+        backgroundColor: contextColorScheme.primaryContainer,
+        elevation: 2,
+        child: Icon(
+          Symbols.directions_run_rounded,
+          color: contextColorScheme.onPrimaryContainer,
+          size: Theme.of(context).textTheme.displaySmall!.fontSize,
+        ),
+      ),
+    );
+  }
+
+  void _showStartMenu() {
+    final RenderBox? fabRenderBox = _fabKey.currentContext?.findRenderObject() as RenderBox?;
+    
+    if (fabRenderBox == null) return;
+
+    final fabPosition = fabRenderBox.localToGlobal(Offset.zero);
+    final fabRect = fabPosition & fabRenderBox.size;
+
+    Navigator.of(context, rootNavigator: true).push(
+      PageRouteBuilder(
+        opaque: false, 
+        transitionDuration: const Duration(milliseconds: 300),
+        reverseTransitionDuration: const Duration(milliseconds: 300),
+        pageBuilder: (context, animation, secondaryAnimation) {
+          return StartRunOverlay(
+            animation: animation,
+            fabRect: fabRect, 
             onSearchRoute: _searchRoute,
             onCreateRoute: _createRoute,
             onStartRun: _startRunNow,
-          ),
-        ],
+          );
+        },
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return child;
+        },
       ),
-      floatingActionButton: !_showRunOverlay
-          ? FloatingActionButton(
-              onPressed: () => setState(() => _showRunOverlay = true),
-              backgroundColor: const Color(0xFFCAF0B8),
-              elevation: 2,
-              child: const Icon(
-                Icons.directions_run_rounded,
-                color: Color(0xFF425143),
-                size: 30,
-              ),
-            )
-          : null,
     );
   }
 
@@ -238,17 +253,13 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildGreetingText(){
+  Widget _buildGreetingText(BuildContext context){
     final greetingText =
         _greetingName.trim().isEmpty ? 'Hi!' : 'Hi $_greetingName!';
 
     return Text(
       greetingText,
-      style: const TextStyle(
-        fontSize: 28,
-        fontWeight: FontWeight.w500,
-        color: Color(0xFF2A3028),
-      ),
+      style: Theme.of(context).textTheme.displaySmall
     );
   }
 
@@ -391,7 +402,6 @@ class _HomePageState extends State<HomePage> {
       final bestCalories = (bestOverall['maxCaloriesBurned'] as num?)?.toDouble() ?? 0.0;
 
       double totalMeters = 0;
-      double totalCalories = 0;
       int totalDurationMs = 0;
       double sumMaxSpeedsKmh = 0.0;
 
@@ -400,9 +410,8 @@ class _HomePageState extends State<HomePage> {
 
       for (var doc in currentMonthDocs) {
         final data = doc.data();
-        
+
         totalMeters += (data['distanceMeters'] as num?)?.toDouble() ?? 0.0;
-        totalCalories += (data['caloriesBurned'] as num?)?.toDouble() ?? 0.0;
         totalDurationMs += (data['durationMs'] as num?)?.toInt() ?? 0;
 
         double pace = (data['maxPaceMinPerKm'] as num?)?.toDouble() ?? 0.0;
@@ -413,7 +422,11 @@ class _HomePageState extends State<HomePage> {
 
       double avgDistanceMeters = completedActivities > 0 ? totalMeters / completedActivities : 0.0;
       double avgDurationMs = completedActivities > 0 ? totalDurationMs / completedActivities : 0.0;
-      double avgCalories = completedActivities > 0 ? totalCalories / completedActivities : 0.0;
+      // Derived from the distance already summed above rather than read per
+      // session: energy is not stored (see `caloriesForDistance`), and the
+      // average of `distance * k` is `k * average distance` exactly, so this
+      // needs no extra field and no extra read.
+      double avgCalories = caloriesForDistance(avgDistanceMeters);
       double avgMaxSpeedKmh = completedActivities > 0 ? sumMaxSpeedsKmh / completedActivities : 0.0;
 
       double avgSpeed30d = 0.0;
@@ -438,7 +451,7 @@ class _HomePageState extends State<HomePage> {
       if (mounted) {
         setState(() {
           _monthlyMeters = totalMeters;
-          _monthlyRaw = _MonthlyStatsRaw(
+          _monthlyRaw = MonthlyStatsRaw(
             avgDurationMs: avgDurationMs,
             bestDurationMs: bestDurationMs,
             avgMaxSpeedKmh: avgMaxSpeedKmh,
@@ -461,80 +474,6 @@ class _HomePageState extends State<HomePage> {
       debugPrint('Error loading statistics: $e');
       if (mounted) setState(() => _isLoadingKm = false);
     }
-  }
-
-  List<MonthlyStatData> _buildMonthlyStats(UnitFormatter units) {
-    final raw = _monthlyRaw;
-    if (raw == null) return const [];
-
-    final rateWord = units.rateLabel.toLowerCase();
-
-    return [
-      MonthlyStatData(
-        title: 'Average\nsession time',
-        value: raw.avgDurationStr,
-        icon: Icons.timer_outlined,
-        progress: raw.bestDurationMs > 0
-            ? (raw.avgDurationMs / raw.bestDurationMs).clamp(0.0, 1.0)
-            : 0.0,
-        bottomText: raw.bestDurationMs > 0
-            ? 'Best overall: ${Duration(milliseconds: raw.bestDurationMs).inMinutes} min'
-            : 'No records yet',
-      ),
-      MonthlyStatData(
-        title: 'Average best\n$rateWord',
-        value: units.rateFromSpeedKmh(raw.avgMaxSpeedKmh),
-        icon: Icons.speed_rounded,
-        progress: raw.bestSpeedKmh > 0
-            ? (raw.avgMaxSpeedKmh / raw.bestSpeedKmh).clamp(0.0, 1.0)
-            : 0.0,
-        bottomText: raw.bestSpeedKmh > 0
-            ? 'Best overall: ${units.rateFromSpeedKmh(raw.bestSpeedKmh)}'
-            : 'No records yet',
-      ),
-      MonthlyStatData(
-        title: 'Average\n$rateWord',
-        value: units.rateFromSpeedKmh(raw.avgSpeedKmh),
-        icon: Icons.shutter_speed_rounded,
-        progress: raw.bestAvgSpeedKmh > 0
-            ? (raw.avgSpeedKmh / raw.bestAvgSpeedKmh).clamp(0.0, 1.0)
-            : 0.0,
-        bottomText: raw.bestAvgSpeedKmh > 0
-            ? 'Best overall: ${units.rateFromSpeedKmh(raw.bestAvgSpeedKmh)}'
-            : 'No records yet',
-      ),
-      MonthlyStatData(
-        title: 'Average\ndistance',
-        value: raw.avgDistanceMeters > 0
-            ? units.distance(raw.avgDistanceMeters, decimals: 1)
-            : '--',
-        icon: Icons.swap_horiz_rounded,
-        progress: raw.bestDistanceMeters > 0
-            ? (raw.avgDistanceMeters / raw.bestDistanceMeters).clamp(0.0, 1.0)
-            : 0.0,
-        bottomText: raw.bestDistanceMeters > 0
-            ? 'Best overall: ${units.distance(raw.bestDistanceMeters, decimals: 1)}'
-            : 'No records yet',
-      ),
-      MonthlyStatData(
-        title: 'Completed\nactivities',
-        value: '${raw.completedActivities}',
-        icon: Icons.directions_run_rounded,
-        progress: raw.activitiesProgress,
-        bottomText: 'Previous 30 days: ${raw.previousCompletedActivities}',
-      ),
-      MonthlyStatData(
-        title: 'Average\ncalories',
-        value: raw.avgCalories > 0 ? units.energy(raw.avgCalories) : '--',
-        icon: Icons.local_fire_department_rounded,
-        progress: raw.bestCalories > 0
-            ? (raw.avgCalories / raw.bestCalories).clamp(0.0, 1.0)
-            : 0.0,
-        bottomText: raw.bestCalories > 0
-            ? 'Best overall: ${units.energy(raw.bestCalories)}'
-            : 'No records yet',
-      ),
-    ];
   }
 
   void _startLeaderboardStream() {
@@ -777,7 +716,6 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _searchRoute() async {
-    setState(() => _showRunOverlay = false);
     final runRoute = await Navigator.of(context).push<List<LatLng>>(
       MaterialPageRoute(builder: (_) => const RouteLibraryPage()),
     );
@@ -787,7 +725,6 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _createRoute() async {
-    setState(() => _showRunOverlay = false);
     final runRoute = await Navigator.of(context).push<List<LatLng>>(
       MaterialPageRoute(builder: (_) => const RouteCreatePage()),
     );
@@ -797,31 +734,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _startRunNow() async {
-    setState(() => _showRunOverlay = false);
     await _pushRunTracking();
   }
 
-  Future<void> _pushRunTracking({List<LatLng>? plannedRoute}) async {
-    final summary = await Navigator.of(context).push<RunSummary>(
-      MaterialPageRoute(
-        builder: (_) => RunTrackingPage(plannedRoute: plannedRoute),
-      ),
-    );
-    if (summary == null || !mounted) return;
-
-    if (!summary.saved) {
-      context.showWarningSnackBar("Run discarded");
-      return;
-    }
-
-    final distance = Units.current.distanceMajor(summary.distanceMeters);
-    final minutes = summary.elapsed.inMinutes;
-    final loopsText = summary.loopsCompleted > 0
-        ? ', ${summary.loopsCompleted} loop${summary.loopsCompleted == 1 ? '' : 's'} closed'
-        : '';
-    context.showSuccessSnackBar(
-        'Run saved — $distance in $minutes min$loopsText');
-  }
+  /// Delegates to the shared launcher in `run_tracking_page.dart` so every
+  /// entry point into a run — here, and a route opened from a profile —
+  /// reports the outcome identically.
+  Future<void> _pushRunTracking({List<LatLng>? plannedRoute}) =>
+      pushRunTracking(context, plannedRoute: plannedRoute);
 
   void _onWatchCommand(WatchCommand command) {
     if (command != WatchCommand.start) return;
@@ -840,38 +760,4 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     context.showInformationSnackBar(message);
   }
-}
-
-class _MonthlyStatsRaw {
-  const _MonthlyStatsRaw({
-    required this.avgDurationMs,
-    required this.bestDurationMs,
-    required this.avgMaxSpeedKmh,
-    required this.bestSpeedKmh,
-    required this.avgSpeedKmh,
-    required this.bestAvgSpeedKmh,
-    required this.avgDistanceMeters,
-    required this.bestDistanceMeters,
-    required this.completedActivities,
-    required this.previousCompletedActivities,
-    required this.activitiesProgress,
-    required this.avgCalories,
-    required this.bestCalories,
-    required this.avgDurationStr,
-  });
-
-  final double avgDurationMs;
-  final int bestDurationMs;
-  final double avgMaxSpeedKmh;
-  final double bestSpeedKmh;
-  final double avgSpeedKmh;
-  final double bestAvgSpeedKmh;
-  final double avgDistanceMeters;
-  final double bestDistanceMeters;
-  final int completedActivities;
-  final int previousCompletedActivities;
-  final double activitiesProgress;
-  final double avgCalories;
-  final double bestCalories;
-  final String avgDurationStr;
 }
