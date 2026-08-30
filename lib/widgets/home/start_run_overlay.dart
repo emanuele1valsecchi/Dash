@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/widgets/dash_action_button.dart';
+import 'package:dash/widgets/dash_floating_action_button.dart';
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
@@ -109,12 +110,9 @@ class StartRunOverlay extends StatelessWidget {
                 top: fabRect.top,
                 width: fabRect.width,
                 height: fabRect.height,
-                child: FloatingActionButton(
-                  heroTag: null,
+                child: DashFloatingActionButton(
                   onPressed: () => Navigator.of(context).pop(),
-                  backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                  elevation: 2, 
-                  child: _buildAnimatedIcon(context, curvedAnim),
+                  child: _buildAnimatedIcon(curvedAnim),
                 ),
               ),
             ],
@@ -124,7 +122,7 @@ class StartRunOverlay extends StatelessWidget {
     );
   }
 
-  Widget _buildAnimatedIcon(BuildContext context, Animation<double> anim) {
+  Widget _buildAnimatedIcon(Animation<double> anim) {
     return Transform.rotate(
       angle: anim.value * math.pi,
       child: Stack(
@@ -132,19 +130,11 @@ class StartRunOverlay extends StatelessWidget {
         children: [
           Opacity(
             opacity: (1.0 - anim.value).clamp(0.0, 1.0),
-            child: Icon(
-              Symbols.directions_run_rounded,
-              color: Theme.of(context).colorScheme.onPrimaryContainer,
-              size: Theme.of(context).textTheme.displaySmall!.fontSize,
-            ),
+            child: const Icon(Symbols.directions_run_rounded),
           ),
           Opacity(
             opacity: anim.value.clamp(0.0, 1.0),
-            child: Icon(
-              Symbols.close_rounded,
-              color: Theme.of(context).colorScheme.onPrimaryContainer,
-              size: Theme.of(context).textTheme.displaySmall!.fontSize,
-            ),
+            child: const Icon(Symbols.close_rounded),
           ),
         ],
       ),

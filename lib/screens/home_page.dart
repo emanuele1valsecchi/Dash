@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/screens/calendar_page.dart';
 import 'package:dash/extensions/dash_snackbar.dart';
+import 'package:dash/widgets/dash_floating_action_button.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:dash/widgets/home/leaderboard_section.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -158,18 +159,24 @@ class _HomePageState extends State<HomePage> {
                     },
                     child: SingleChildScrollView(
                       physics: const AlwaysScrollableScrollPhysics(),
-                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 84),
+                      padding: context.paddingMd,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisAlignment: MainAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
                         spacing: ResponsiveSpacing().xl,
                         children: [
-                          _buildGreetingText(context),
-                          _buildAchievementText(),
+                          _buildEntranceText(context),
                           _buildLeaderBoard(),
                           _buildBadgesSection(),
                           MonthlyStatsSection( rawStats: _monthlyRaw ),
+                          Visibility(
+                            visible: false,
+                            maintainSize: true,
+                            maintainAnimation: true,
+                            maintainState: true,
+                            child: _buildFab(context, isDummy: true),
+                          )
                         ],
                       ),
                     ),
@@ -181,18 +188,7 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
 
-      floatingActionButton: FloatingActionButton(
-        key: _fabKey,
-        heroTag: null,
-        onPressed: _showStartMenu,
-        backgroundColor: contextColorScheme.primaryContainer,
-        elevation: 2,
-        child: Icon(
-          Symbols.directions_run_rounded,
-          color: contextColorScheme.onPrimaryContainer,
-          size: Theme.of(context).textTheme.displaySmall!.fontSize,
-        ),
-      ),
+      floatingActionButton: _buildFab(context),
     );
   }
 
@@ -252,43 +248,54 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _buildGreetingText(BuildContext context){
+  Widget _buildEntranceText(BuildContext context){
+    final TextStyle greetingTextStyle = Theme.of(context).textTheme.displaySmall!;
+    final TextStyle achievementTextStyle = Theme.of(context).textTheme.titleMedium!;
+
     final greetingText =
         _greetingName.trim().isEmpty ? 'Hi!' : 'Hi $_greetingName!';
+    
+    final distanceText = _isLoadingKm
+        ? '-- ${Units.of(context).distanceUnitLabel}'
+        : Units.of(context).distanceMajor(
+            _monthlyMeters,
+            decimals: 1);
 
-    return Text(
-      greetingText,
-      style: Theme.of(context).textTheme.displaySmall
-    );
-  }
-
-  Widget _buildAchievementText(){
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      spacing: ResponsiveSpacing().sm,
       children: [
-      Text(
-        _isLoadingKm
-            ? '-- ${Units.of(context).distanceUnitLabel}'
-            : Units.of(context).distanceMajor(
-                _monthlyMeters,
-                decimals: 1),
-        style: const TextStyle(
-          fontSize: 28,
-          fontWeight: FontWeight.w800,
-          color: Color(0xFF1F3020),
+        Text(
+          greetingText,
+          style: greetingTextStyle
         ),
-      ),
-      const SizedBox(width: 10),
-      const Padding(
-        padding: EdgeInsets.only(bottom: 4),
-        child: Text(
-          'ran in the last 30 days',
-          style: TextStyle(
-            fontSize: 16,
-            color: Color(0xFF5E655C),
-          ),
+
+        Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(
+                text: distanceText,
+                style: achievementTextStyle.copyWith(
+                  fontSize: achievementTextStyle.fontSize! * 2,
+                  fontWeight: FontWeight.bold
+                ),
+              ),
+              
+              WidgetSpan(
+                alignment: PlaceholderAlignment.baseline,
+                baseline: TextBaseline.alphabetic,
+                child: SizedBox(width: ResponsiveSpacing().md),
+              ),
+              
+              TextSpan(
+                text: 'ran in the last 30 days',
+                style: achievementTextStyle,
+              ),
+            ],
+          )
         ),
-      ),
       ],
     );
   }
@@ -321,6 +328,16 @@ class _HomePageState extends State<HomePage> {
 
     return BadgeProgressSection(
       badges: _badges,
+    );
+  }
+
+  Widget _buildFab(BuildContext context, {bool isDummy = false}) {
+    return DashFloatingActionButton(
+      key: isDummy ? null : _fabKey,
+      onPressed: isDummy ? null : _showStartMenu,
+      elevation: isDummy ? 0 : 2,
+      // The icon styling is now handled entirely by the parent widget
+      child: const Icon(Symbols.directions_run_rounded),
     );
   }
 
