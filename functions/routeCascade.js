@@ -19,8 +19,10 @@
  * A scrubbed route should read exactly like a hand-planned route of the same
  * length rather than like a record of somebody's actual run.
  */
+const { CALORIES_PER_KM } = require("./estimates");
+
 const PLANNED_MIN_PER_KM = 9.0;
-const PLANNED_KCAL_PER_KM = 70.0;
+const PLANNED_KCAL_PER_KM = CALORIES_PER_KM;
 
 /**
  * True when `route` is a shared, ownerless route — the canonical copy of one

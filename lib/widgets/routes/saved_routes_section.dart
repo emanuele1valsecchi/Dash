@@ -137,24 +137,6 @@ class SavedRoutesSectionState extends State<SavedRoutesSection> {
     await reload();
   }
 
-  Future<void> _deleteOwnedRoute(SavedRoute route) async {
-    final confirmed = await _confirm(
-      title: 'Delete route?',
-      message: '"${route.name}" will be removed from your routes.',
-      confirmLabel: 'Delete',
-    );
-    if (confirmed != true) return;
-
-    try {
-      await RouteRepository.instance.deleteRoute(route.id);
-      if (!mounted) return;
-      setState(() => _owned = _owned.where((r) => r.id != route.id).toList());
-    } catch (e) {
-      debugPrint('Could not delete route ${route.id}: $e');
-      if (mounted) context.showErrorSnackBar('Could not delete that route');
-    }
-  }
-
   Future<void> _unfavoriteRoute(SavedRoute route) async {
     final confirmed = await _confirm(
       title: 'Remove from favourites?',
@@ -288,14 +270,19 @@ class SavedRoutesSectionState extends State<SavedRoutesSection> {
           heightFactor: _cardHeightFactor,
           entry: RouteEntry(route, source),
           subtitle: author == null ? null : 'by $author',
-          actionIcon: isFavorite
-              ? Symbols.favorite_rounded
-              : Symbols.delete_rounded,
-          actionIconFill: isFavorite ? 1 : 0,
+          actionIcon: Symbols.favorite_rounded,
+          actionIconFill: 1,
+          // Both lists here are the signed-in user's own, so a padlock on a
+          // private route is meaningful — this is where they would look to
+          // check what they have published.
+          showPrivateBadge: !isFavorite,
           onTap: () => _openRoute(route, source, authorName: author),
-          onActionTap: () => isFavorite
-              ? _unfavoriteRoute(route)
-              : _deleteOwnedRoute(route),
+          // Only favourites carry an action here. **Deleting an owned route
+          // lives on the profile's Routes row instead** — this page is where
+          // you come to pick something to run, and a delete button sitting on
+          // every card in a "choose a route" list is the wrong thing to have
+          // under your thumb.
+          onActionTap: isFavorite ? () => _unfavoriteRoute(route) : null,
         );
       },
     );

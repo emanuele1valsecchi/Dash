@@ -20,6 +20,7 @@ import '../services/route_repository.dart';
 import '../services/routing_service.dart';
 import '../utils/geometry_utils.dart';
 import '../utils/unit_formatter.dart';
+import '../widgets/save_route_dialog.dart';
 import '../widgets/units_scope.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
@@ -1607,7 +1608,12 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
 
     switch (action) {
       case _RouteSheetAction.save:
-        await _saveRoute(route);
+        // Leave the page on success, like route creation's plain Save —
+        // staying on the results map reads as "nothing happened". Only on
+        // success: a failed save must leave the user where they are, with the
+        // results still in front of them to retry from.
+        final saved = await _saveRoute(route);
+        if (saved && mounted) Navigator.of(context).pop();
       case _RouteSheetAction.runNow:
         // Mirrors route creation's "Save route and Run": pop this whole page
         // with the chosen route's polyline so the caller (HomeScreen) pushes
@@ -1627,12 +1633,22 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   /// favourited run's whole path — `waypoints` is written empty rather than
   /// as a second copy of the polyline, which doubled the stored document for
   /// a field nothing reads back.
-  Future<void> _saveRoute(_FoundRoute route) async {
+  /// Returns whether the route was actually saved — the caller only leaves the
+  /// page on success, and a cancelled prompt is not a success.
+  Future<bool> _saveRoute(_FoundRoute route) async {
+    // Same prompt route creation uses, minus its "Save and Run" option — the
+    // results sheet already has a separate Run now button. Sharing the dialog
+    // keeps the visibility choice worded and defaulted identically wherever a
+    // route is saved from.
+    final choice = await showSaveRouteDialog(context, offerRun: false);
+    if (choice == null || !mounted) return false;
+
     final name = '${Units.current.distanceMajor(route.distanceKm * 1000, decimals: 1)} '
         '${_isClosedCircuit ? 'loop' : 'route'}';
     try {
       await RouteRepository.instance.publishRoute(
         name: name,
+        isPublic: choice.isPublic,
         waypoints: const [],
         routePolyline: route.polyline,
         distanceMeters: route.distanceKm * 1000,
@@ -1643,9 +1659,13 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
             _isClosedCircuit ? GeometryUtils.polygonAreaM2(route.polyline) : 0,
       );
 
+      // Shown before the caller pops: ScaffoldMessenger sits above the route,
+      // so the snackbar outlives this page.
       if (mounted) context.showSuccessSnackBar("Route saved!");
+      return true;
     } catch (e) {
       if (mounted) context.showErrorSnackBar("Failed to save route");
+      return false;
     }
   }
 

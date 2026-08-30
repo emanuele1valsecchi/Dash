@@ -21,7 +21,8 @@
         "*.local",
         "_verify_*.js",
         "_wipe_*.js",
-        "_backfill_*.js"
+        "_backfill_*.js",
+        "_migrate_*.js"
       ]
     }
   ],

@@ -8,6 +8,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../utils/geometry_utils.dart';
 import '../utils/route_progress.dart';
+import '../utils/run_estimates.dart';
 import 'location_service.dart';
 import 'run_foreground_service.dart';
 import 'run_session_repository.dart';
@@ -246,7 +247,10 @@ class RunSessionController extends ChangeNotifier {
     return minutes / km;
   }
 
-  double get caloriesBurned => (_distanceMeters / 1000.0) * 70.0;
+  /// Live energy estimate for the run so far. Shown during and just after a
+  /// run; deliberately never persisted, since it is a pure function of the
+  /// distance that is (see `RunSessionRepository.saveSession`).
+  double get caloriesBurned => caloriesForDistance(_distanceMeters);
 
   double get elevationDifferenceMeters =>
       _hasAltitudeSample ? (_maxAltitude - _minAltitude) : 0.0;
@@ -669,7 +673,6 @@ class RunSessionController extends ChangeNotifier {
       duration: _stopwatch.elapsed,
       avgPaceMinPerKm: avgPaceMinPerKm,
       maxPaceMinPerKm: _bestPaceMinPerKm,
-      caloriesBurned: caloriesBurned,
       elevationDifferenceMeters: elevationDifferenceMeters,
       loopsCompleted: loopsCompleted,
       path: path,

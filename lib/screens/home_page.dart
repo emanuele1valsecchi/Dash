@@ -18,6 +18,7 @@ import '../services/badge_service.dart';
 import '../services/location_service.dart';
 import '../services/storage_service.dart';
 import '../services/unit_preferences.dart';
+import '../utils/run_estimates.dart';
 import '../widgets/units_scope.dart';
 import '../services/water_fountain_service.dart';
 import 'route_create_page.dart';
@@ -401,7 +402,6 @@ class _HomePageState extends State<HomePage> {
       final bestCalories = (bestOverall['maxCaloriesBurned'] as num?)?.toDouble() ?? 0.0;
 
       double totalMeters = 0;
-      double totalCalories = 0;
       int totalDurationMs = 0;
       double sumMaxSpeedsKmh = 0.0;
 
@@ -410,9 +410,8 @@ class _HomePageState extends State<HomePage> {
 
       for (var doc in currentMonthDocs) {
         final data = doc.data();
-        
+
         totalMeters += (data['distanceMeters'] as num?)?.toDouble() ?? 0.0;
-        totalCalories += (data['caloriesBurned'] as num?)?.toDouble() ?? 0.0;
         totalDurationMs += (data['durationMs'] as num?)?.toInt() ?? 0;
 
         double pace = (data['maxPaceMinPerKm'] as num?)?.toDouble() ?? 0.0;
@@ -423,7 +422,11 @@ class _HomePageState extends State<HomePage> {
 
       double avgDistanceMeters = completedActivities > 0 ? totalMeters / completedActivities : 0.0;
       double avgDurationMs = completedActivities > 0 ? totalDurationMs / completedActivities : 0.0;
-      double avgCalories = completedActivities > 0 ? totalCalories / completedActivities : 0.0;
+      // Derived from the distance already summed above rather than read per
+      // session: energy is not stored (see `caloriesForDistance`), and the
+      // average of `distance * k` is `k * average distance` exactly, so this
+      // needs no extra field and no extra read.
+      double avgCalories = caloriesForDistance(avgDistanceMeters);
       double avgMaxSpeedKmh = completedActivities > 0 ? sumMaxSpeedsKmh / completedActivities : 0.0;
 
       double avgSpeed30d = 0.0;
@@ -734,27 +737,11 @@ class _HomePageState extends State<HomePage> {
     await _pushRunTracking();
   }
 
-  Future<void> _pushRunTracking({List<LatLng>? plannedRoute}) async {
-    final summary = await Navigator.of(context).push<RunSummary>(
-      MaterialPageRoute(
-        builder: (_) => RunTrackingPage(plannedRoute: plannedRoute),
-      ),
-    );
-    if (summary == null || !mounted) return;
-
-    if (!summary.saved) {
-      context.showWarningSnackBar("Run discarded");
-      return;
-    }
-
-    final distance = Units.current.distanceMajor(summary.distanceMeters);
-    final minutes = summary.elapsed.inMinutes;
-    final loopsText = summary.loopsCompleted > 0
-        ? ', ${summary.loopsCompleted} loop${summary.loopsCompleted == 1 ? '' : 's'} closed'
-        : '';
-    context.showSuccessSnackBar(
-        'Run saved — $distance in $minutes min$loopsText');
-  }
+  /// Delegates to the shared launcher in `run_tracking_page.dart` so every
+  /// entry point into a run — here, and a route opened from a profile —
+  /// reports the outcome identically.
+  Future<void> _pushRunTracking({List<LatLng>? plannedRoute}) =>
+      pushRunTracking(context, plannedRoute: plannedRoute);
 
   void _onWatchCommand(WatchCommand command) {
     if (command != WatchCommand.start) return;
