@@ -2,6 +2,7 @@ import 'package:dash/extensions/responsive_border_radius.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/models/home_badge_ui_model.dart';
 import 'package:dash/widgets/badge/dash_badge.dart';
+import 'package:dash/widgets/dash_action_button.dart';
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
@@ -132,19 +133,12 @@ class _BadgeStatusIndicator extends StatelessWidget {
         ),
       );
     } else {
-      return FilledButton.icon(
-        onPressed: () {
-          // TODO: Navigate to challenge screen
-          Navigator.of(context).pop();
+      return DashActionButton(
+        onPressed: (){
+          // TODO: Navigate to challenge
         },
-        style: FilledButton.styleFrom(
-          backgroundColor: Colors.green.shade100,
-          foregroundColor: Colors.green.shade800,
-          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
-        ),
-        icon: const Icon(Symbols.play_arrow, size: 20),
-        label: const Text("Complete it now",
-            style: TextStyle(fontWeight: FontWeight.bold)),
+        label: "Complete it now",
+        icon: Symbols.play_arrow_rounded
       );
     }
   }

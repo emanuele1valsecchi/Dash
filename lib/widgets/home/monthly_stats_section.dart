@@ -28,7 +28,10 @@ class MonthlyStatsSection extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           spacing: ResponsiveSpacing().md,
           children: List.generate(stats.length, (i){
-            return StatisticTachometer(stat: stats[i]);
+            return StatisticTachometer(
+              stat: stats[i],
+              allStats: stats,
+            );
           }),
         ),
       )

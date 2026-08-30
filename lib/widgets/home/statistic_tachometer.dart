@@ -6,10 +6,12 @@ import 'package:flutter/material.dart';
 
 class StatisticTachometer extends StatelessWidget{
   final MonthlyStatData stat;
+  final List<MonthlyStatData> allStats;
 
   const StatisticTachometer({
     super.key, 
-    required this.stat
+    required this.stat,
+    required this.allStats,
   });
 
   @override
@@ -25,59 +27,107 @@ class StatisticTachometer extends StatelessWidget{
 
     return Column(
       mainAxisAlignment: MainAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      spacing: ResponsiveSpacing().sm,
       children: [
-        Stack(
-          alignment: Alignment.center,
-          children: [
-            CustomPaint(
-              size: const Size(130, 130),
-              painter: _GaugePainter(
-                progress: stat.progress, 
-                strokeWidth: ResponsiveSpacing().sm,
-                trackColor: Theme.of(context).colorScheme.surfaceContainerHigh,
-                progressColor: Theme.of(context).colorScheme.tertiary,
-              ),
-            ),
-            Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              mainAxisSize: MainAxisSize.min,
-              spacing: ResponsiveSpacing().sm,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  mainAxisSize: MainAxisSize.min,
-                  spacing: ResponsiveSpacing().sm,
+        CustomPaint(
+          painter: _GaugePainter(
+            progress: stat.progress, 
+            strokeWidth: ResponsiveSpacing().sm,
+            trackColor: Theme.of(context).colorScheme.surfaceContainerHigh,
+            progressColor: Theme.of(context).colorScheme.tertiary,
+          ),
+          child: IntrinsicWidth(
+            child: AspectRatio(
+              aspectRatio: 1.0,
+              child: Padding(
+                padding: EdgeInsets.all(ResponsiveSpacing().lg),
+                child: Stack(
+                  alignment: Alignment.center,
                   children: [
-                    Icon(
-                      stat.icon, 
-                      size: minorTextStyle.fontSize! * 2, 
-                      color: minorTextStyle.color
+                    ExcludeSemantics(
+                      child: Visibility(
+                        visible: false,
+                        maintainSize: true,
+                        maintainAnimation: true,
+                        maintainState: true,
+                        child: Stack(
+                          children: allStats.map((stat) {
+                            return _buildInnerContent(stat, statTextStyle, minorTextStyle);
+                          }).toList(),
+                        ),
+                      ),
                     ),
-
-                    Text(
-                      stat.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: minorTextStyle,
-                    ),
+                    
+                    _buildInnerContent(stat, statTextStyle, minorTextStyle),
                   ],
                 ),
-
-                Text(
-                  stat.value,
-                  style: statTextStyle,
+              ),
+            ),
+          ),
+        ),
+        
+        Stack(
+          alignment: Alignment.topCenter,
+          children: [
+            ExcludeSemantics(
+              child: Visibility(
+                visible: false,
+                maintainSize: true,
+                maintainAnimation: true,
+                maintainState: true,
+                child: Stack(
+                  children: allStats.map((stat) {
+                    return Text(
+                      stat.bottomText,
+                      textAlign: TextAlign.center,
+                      style: minorTextStyle,
+                    );
+                  }).toList(),
                 ),
-              ],
+              ),
+            ),
+            Text(
+              stat.bottomText,
+              textAlign: TextAlign.center,
+              style: minorTextStyle,
             ),
           ],
         ),
+      ],
+    );
+  }
 
+  Widget _buildInnerContent(MonthlyStatData itemData, TextStyle statStyle, TextStyle minorStyle) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      mainAxisSize: MainAxisSize.min,
+      spacing: ResponsiveSpacing().sm,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          spacing: ResponsiveSpacing().sm,
+          children: [
+            Icon(
+              itemData.icon, 
+              size: minorStyle.fontSize! * 1.5, 
+              color: minorStyle.color
+            ),
+            Text(
+              itemData.title,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: minorStyle,
+            ),
+          ],
+        ),
         Text(
-          stat.bottomText,
-          textAlign: TextAlign.center,
-          style: minorTextStyle,
+          itemData.value,
+          style: statStyle,
         ),
       ],
     );
@@ -121,7 +171,6 @@ class _GaugePainter extends CustomPainter {
     canvas.drawArc(rect, startAngle, sweepAngle, false, trackPaint);
 
     if (progress > 0) {
-      // Garantiamo che il valore rimanga entro i limiti
       final validProgress = progress.clamp(0.0, 1.0);
       canvas.drawArc(rect, startAngle, sweepAngle * validProgress, false, progressPaint);
     }
