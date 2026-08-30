@@ -2,14 +2,23 @@ import 'package:flutter/material.dart';
 
 class DashActionButton extends StatelessWidget{
   final String? label;
+  final double? labelSize;
+
   final IconData? icon;
+  final double? iconSize;
+  final double? iconFill;
 
   final Function()? onPressed;
 
+
+
   const DashActionButton({
     super.key, 
-    this.label, 
+    this.label,
+    this.labelSize, 
     this.icon, 
+    this.iconSize,
+    this.iconFill = 0.0,
     required this.onPressed
   }): assert(
     label != null || icon != null,
@@ -19,7 +28,10 @@ class DashActionButton extends StatelessWidget{
   @override
   Widget build(BuildContext context) {
     ThemeData contextTheme = Theme.of(context);
-    TextStyle textStyle = contextTheme.textTheme.bodyMedium!;
+
+    TextStyle textStyle = contextTheme.textTheme.bodyMedium!.copyWith(
+      fontSize: labelSize
+    );
 
     final ButtonStyle style = ElevatedButton.styleFrom(
       foregroundColor: contextTheme.colorScheme.secondary,
@@ -32,7 +44,8 @@ class DashActionButton extends StatelessWidget{
     if ( icon != null ){
       buttonIcon = Icon(
         icon,
-        size: textStyle.fontSize,
+        size: iconSize ?? textStyle.fontSize,
+        fill: iconFill ?? 0.0,
         weight: 700,
       );
 
@@ -40,10 +53,7 @@ class DashActionButton extends StatelessWidget{
         return IconButton(
           onPressed: onPressed, 
           icon: buttonIcon,
-          style: style.copyWith(
-            padding: const WidgetStatePropertyAll<EdgeInsetsGeometry>(EdgeInsets.all(1)),
-            shape: const WidgetStatePropertyAll<OutlinedBorder>(CircleBorder())
-          ),
+          style: style
         );
       }
     }

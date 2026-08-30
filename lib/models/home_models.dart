@@ -57,3 +57,37 @@ class MonthlyStatData {
     required this.bottomText,
   });
 }
+
+class MonthlyStatsRaw {
+  final double avgDurationMs;
+  final int bestDurationMs;
+  final double avgMaxSpeedKmh;
+  final double bestSpeedKmh;
+  final double avgSpeedKmh;
+  final double bestAvgSpeedKmh;
+  final double avgDistanceMeters;
+  final double bestDistanceMeters;
+  final int completedActivities;
+  final int previousCompletedActivities;
+  final double activitiesProgress;
+  final double avgCalories;
+  final double bestCalories;
+  final String avgDurationStr;
+  
+  const MonthlyStatsRaw({
+    required this.avgDurationMs,
+    required this.bestDurationMs,
+    required this.avgMaxSpeedKmh,
+    required this.bestSpeedKmh,
+    required this.avgSpeedKmh,
+    required this.bestAvgSpeedKmh,
+    required this.avgDistanceMeters,
+    required this.bestDistanceMeters,
+    required this.completedActivities,
+    required this.previousCompletedActivities,
+    required this.activitiesProgress,
+    required this.avgCalories,
+    required this.bestCalories,
+    required this.avgDurationStr,
+  });
+}
