@@ -34,13 +34,12 @@ class SettingsPage extends StatelessWidget {
     );
 
     if (confirm == true) {
-      // 1. Scollega l'utente da Firebase
       await FirebaseAuth.instance.signOut();
       
       if (context.mounted) {
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(
-            builder: (context) => const LoginScreen(), // <-- Corretto qui!
+            builder: (context) => const LoginScreen(), 
           ),
           (route) => false,
         );
@@ -59,7 +58,7 @@ class SettingsPage extends StatelessWidget {
         children: [
           const SizedBox(height: 8),
           
-          // --- SEZIONE ACCOUNT ---
+          // --- ACCOUNT SECTION ---
           _buildSectionHeader(context, 'ACCOUNT'),
           _buildSettingsTile(
             context,
@@ -88,7 +87,7 @@ class SettingsPage extends StatelessWidget {
 
           const SizedBox(height: 16),
 
-          // --- SEZIONE PREFERENZE ---
+          // --- PREFERENCES SECTION ---
           _buildSectionHeader(context, 'PREFERENCES'),
           _buildSettingsTile(
             context,
