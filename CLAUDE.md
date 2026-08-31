@@ -1339,21 +1339,24 @@ Keep this list current — update it whenever a feature moves between these buck
   one-time async server computation, not an ongoing feed.
   `RunSessionRepository.saveSession` returns the new doc's ID (was `Future<void>`) specifically
   so callers have something to point this listener at.
-- **Calendar / own-session history** ([lib/screens/calendar_screen.dart](lib/screens/calendar_screen.dart),
-  [lib/screens/session_detail_screen.dart](lib/screens/session_detail_screen.dart)) — a pre-existing flow not previously listed here.
-  The calendar screen queries `runningSessions` directly, filtered to the signed-in user's
-  own `userId` (this collection is fully readable by any signed-in user — see the
-  run-session detail page bullet above — but "my activity history" is inherently
-  self-scoped regardless), grouped by day; tapping an activity opens `SessionDetailScreen` with
-  that full session doc (as a raw `Map<String, dynamic>`, not a typed model) and its
-  polyline already in hand — a locked map preview plus a `GridView` of stat cards
-  (distance/duration/pace/calories/points/loops). Distinct from, and not to be confused
-  with, `RunSessionDetailPage` (see the run-session detail page bullet above): that one is
-  reached from *other* users' contributions on the Explore map, only ever has the limited
-  fields denormalized onto an `AreaContribution` (no live doc access is possible there), and
-  adds a username header and the favourite-as-route button neither of which apply to "a
-  session you already know is your own". The two intentionally stayed separate rather than
-  being merged into one screen handling both shapes of input.
+- **Calendar / own-session history** ([lib/screens/calendar_page.dart](lib/screens/calendar_page.dart)) — queries
+  `runningSessions` directly, filtered to the signed-in user's own `userId` (this
+  collection is fully readable by any signed-in user — see the run-session detail page
+  bullet above — but "my activity history" is inherently self-scoped regardless), grouped
+  by day. Tapping a day's activity opens **`RunSessionDetailPage`** — the same page the
+  Explore map's area contributions and a profile's Runs row lead to, so a run looks
+  identical wherever it is reached from. The slide-up page transition the list has always
+  used is kept; only the destination changed.
+  - The calendar holds `RunSession` objects rather than raw `Map<String, dynamic>`s,
+    **because the detail page is addressed by document id and `doc.data()` does not
+    contain one**. That also deleted the screen's private `_extractPolyline`, which was a
+    second copy of the GeoPoint parsing `RunSession.fromDoc` already does.
+  - **`session_detail_page.dart`'s `SessionDetailScreen` is now unreferenced.** It was the
+    calendar's own near-duplicate of the run detail page — a locked map preview plus a
+    `GridView` of stat cards — kept separate back when the shared page could only render
+    the limited fields denormalized onto an `AreaContribution`. That stopped being true
+    once it started fetching the whole session by id, so the split no longer earns
+    anything. The file is left in place rather than deleted, to be removed deliberately.
 - **What actually gets stored**: `claimedAreas.polygon` is a MultiPolygon-with-holes — an
   area can be more than one disconnected piece after a steal splits it, and/or have a hole
   where someone carved out its middle. Firestore disallows directly-nested arrays, so it's

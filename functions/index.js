@@ -867,6 +867,10 @@ exports.checkProfileBadges = onDocumentUpdated(
     if (after.followingCount >= 1) {
       await unlockEventBadge(uid, 'im_following_you', `Congratulations! You unlocked the 'I'm following you' badge!`);
     }
+
+    if (after.followersCount >= 1) {
+      await unlockEventBadge(uid, 'my_shadow', `Congratulations! You unlocked the 'My Shadow' badge!`);
+    }
     
     return null;
   }

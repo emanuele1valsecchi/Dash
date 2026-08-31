@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
@@ -5,6 +6,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import 'package:dash/screens/public_profile_page.dart';
+import 'package:dash/services/route_repository.dart';
+import 'package:dash/screens/saved_route_detail_page.dart';
+import 'package:dash/widgets/profile/route_source.dart';
+import 'package:dash/screens/run_session_detail_page.dart';
 
 import '../widgets/units_scope.dart';
 import 'leaderboard_page.dart';
@@ -53,7 +58,6 @@ class NotificationItem {
     this.sessionId,
   });
 
-  // Method to convert a Firestore document to a NotificationItem
   factory NotificationItem.fromFirestore(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>? ?? {};
 
@@ -62,8 +66,6 @@ class NotificationItem {
       orElse: () => NotificationType.newFollower,
     );
 
-    // System-generated notifications keep actorId as "system" in Firestore,
-    // but the actor name is hidden from the notification text in the UI.
     final rawActorName = (data['actorName'] as String? ?? '').trim();
     final boldText = rawActorName.toLowerCase() == 'system' ? '' : rawActorName;
 
@@ -97,7 +99,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   final String _currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  // Marks a notification as read.
   Future<void> _markAsRead(String notificationId) async {
     try {
       await _db.collection('notifications').doc(notificationId).update({
@@ -106,35 +107,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       });
     } catch (e) {
       debugPrint('Error marking notification as read: $e');
-    }
-  }
-
-  // Handles the follow-back action.
-  Future<void> _handleFollowBack(String targetUserId) async {
-    if (_currentUserId.isEmpty) return;
-
-    final followId = '${_currentUserId}_$targetUserId';
-    final followRef = _db.collection('follows').doc(followId);
-    final currentUserRef = _db.collection('profiles').doc(_currentUserId);
-    final targetUserRef = _db.collection('profiles').doc(targetUserId);
-
-    final batch = _db.batch();
-
-    batch.set(followRef, {
-      'followerId': _currentUserId,
-      'followingId': targetUserId,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    batch.update(currentUserRef, {'followingCount': FieldValue.increment(1)});
-    batch.update(targetUserRef, {'followersCount': FieldValue.increment(1)});
-
-    try {
-      await batch.commit();
-      if (mounted) {
-        context.showSuccessSnackBar('You now follow this user');
-      }
-    } catch (e) {
-      debugPrint('Error following user back: $e');
     }
   }
 
@@ -203,7 +175,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         : ' ${item.regularText}';
 
     return InkWell(
-      onTap: () {
+      onTap: () async {
         if (!item.isRead) {
           _markAsRead(item.id);
         }
@@ -211,15 +183,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         switch (item.type) {
           case NotificationType.newFollower:
             final actorId = item.actorId;
-
-            if (actorId != null &&
-                actorId.isNotEmpty &&
-                actorId != 'system') {
+            if (actorId != null && actorId.isNotEmpty && actorId != 'system') {
               Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (_) => PublicProfilePage(
-                    userId: actorId,
-                  ),
+                  builder: (_) => PublicProfilePage(userId: actorId),
                 ),
               );
             }
@@ -228,8 +195,48 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           case NotificationType.routeSaved:
           case NotificationType.newRoutePublished:
           case NotificationType.routeRunFaster:
-            if (item.routeId != null) {
-              // Navigator.of(context).push(MaterialPageRoute(builder: (_) => RouteDetailsScreen(routeId: item.routeId!)));
+            
+            // CASE 1: RUNNING SESSION 
+            if (item.sessionId != null && item.sessionId!.isNotEmpty) {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => RunSessionDetailPage(
+                    sessionId: item.sessionId!,
+                    userId: item.actorId ?? '', 
+                  ),
+                ),
+              );
+            } 
+            // CASE 2: IT'S A SAVED/PLANNED ROUTE
+            else if (item.routeId != null && item.routeId!.isNotEmpty) {
+              try {
+                final routeDoc = await FirebaseFirestore.instance
+                    .collection('routes')
+                    .doc(item.routeId)
+                    .get();
+
+                if (routeDoc.exists && mounted) {
+                  final data = routeDoc.data() ?? {};
+                  final dbName = data['name'] as String? ?? 'Shared Route';
+
+                  final route = SavedRoute.fromSharedRoute(
+                    routeDoc,
+                    name: dbName,
+                  );
+
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => SavedRouteDetailPage(
+                        route: route,
+                        source: RouteSource.owned,
+                        authorName: item.boldText.isNotEmpty ? item.boldText : null,
+                      ),
+                    ),
+                  );
+                }
+              } catch (e) {
+                debugPrint('Errore nel caricamento della route: $e');
+              }
             }
             break;
 
@@ -257,8 +264,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           case NotificationType.leaderboardOvertake:
             Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) =>
-                    const LeaderboardScreen(cityFilter: 'Global Leaderboard'),
+                builder: (_) => const LeaderboardScreen(cityFilter: 'Global Leaderboard'),
               ),
             );
             break;
@@ -401,24 +407,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Widget _buildTrailingWidget(NotificationItem item) {
-    if (item.type == NotificationType.newFollower && item.actorId != null) {
-      return GestureDetector(
-        onTap: () => _handleFollowBack(item.actorId!),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            color: const Color(0xFFCAF0B8),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: const Text(
-            'Follow back',
-            style: TextStyle(
-              color: Color(0xFF2E4029),
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        ),
+    if (item.type == NotificationType.newFollower && item.actorId != null && _currentUserId.isNotEmpty) {
+      return _FollowToggleWidget(
+        currentUserId: _currentUserId,
+        targetUserId: item.actorId!,
       );
     }
 
@@ -426,6 +418,100 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       Icons.chevron_right_rounded,
       color: Color(0xFF8A9389),
       size: 24,
+    );
+  }
+}
+
+// ==========================================
+// Dynamic Follow Toggle Button
+// ==========================================
+class _FollowToggleWidget extends StatefulWidget {
+  final String currentUserId;
+  final String targetUserId;
+
+  const _FollowToggleWidget({
+    required this.currentUserId,
+    required this.targetUserId,
+  });
+
+  @override
+  State<_FollowToggleWidget> createState() => _FollowToggleWidgetState();
+}
+
+class _FollowToggleWidgetState extends State<_FollowToggleWidget> {
+  bool _isFollowing = false;
+  bool _isLoading = true;
+  StreamSubscription<DocumentSnapshot>? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    final followId = '${widget.currentUserId}_${widget.targetUserId}';
+    _sub = FirebaseFirestore.instance.collection('follows').doc(followId).snapshots().listen((doc) {
+      if (mounted) {
+        setState(() {
+          _isFollowing = doc.exists;
+          _isLoading = false;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _toggleFollow() async {
+    final followId = '${widget.currentUserId}_${widget.targetUserId}';
+    final followRef = FirebaseFirestore.instance.collection('follows').doc(followId);
+
+    try {
+      if (_isFollowing) {
+        await followRef.delete();
+      } else {
+        await followRef.set({
+          'followerId': widget.currentUserId,
+          'followingId': widget.targetUserId,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        context.showErrorSnackBar('Failed to update follow status.');
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const SizedBox(
+        width: 24, 
+        height: 24, 
+        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4A8C52))
+      );
+    }
+
+    return GestureDetector(
+      onTap: _toggleFollow,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: _isFollowing ? Colors.transparent : const Color(0xFFCAF0B8),
+          border: _isFollowing ? Border.all(color: const Color(0xFF8A9389)) : null,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Text(
+          _isFollowing ? 'Stop following' : 'Follow back',
+          style: TextStyle(
+            color: _isFollowing ? const Color(0xFF8A9389) : const Color(0xFF2E4029),
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ),
     );
   }
 }
