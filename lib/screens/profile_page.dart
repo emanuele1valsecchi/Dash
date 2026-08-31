@@ -154,6 +154,7 @@ class _ProfilePageState extends State<ProfilePage> {
         ),
 
         DashActionButton(
+          // TODO: Show the search user page
           onPressed: () => context.showInformationSnackBar("Add friend"),
           icon: Symbols.person_add_rounded,
         )

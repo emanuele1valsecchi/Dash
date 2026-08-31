@@ -13,6 +13,7 @@ import 'package:dash/widgets/profile/bio_text_box.dart';
 import 'package:dash/widgets/profile/profile_activity_sections.dart';
 import 'package:dash/widgets/profile/profile_badge_section.dart';
 import 'package:dash/widgets/profile/profile_header.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
@@ -32,6 +33,9 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
   bool _isLoading = true;
   bool _userNotFound = false;
 
+  bool _isFollowing = false;
+  bool _isLoadingFollowState = true;
+
   String _name = '';
   String _surname = '';
   String _email = '';
@@ -44,6 +48,7 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
 
   StreamSubscription<DocumentSnapshot>? _profileSub;
   StreamSubscription<QuerySnapshot>? _badgeSub;
+  StreamSubscription<DocumentSnapshot>? _followSub;
 
   /// Lets pull-to-refresh re-read the Runs/Routes rows, which are one-time
   /// cached reads rather than listeners (see `ProfileActivitySections`).
@@ -59,12 +64,14 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
     super.initState();
     _startProfileStream();
     _startBadgesStream();
+    _startFollowStream();
   }
 
   @override
   void dispose() {
     _profileSub?.cancel();
     _badgeSub?.cancel();
+    _followSub?.cancel();
     super.dispose();
   }
 
@@ -152,20 +159,23 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
     );
   }
 
-  Widget _buildActionButtons() {    
+  Widget _buildActionButtons() { 
+    final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+    final isSelf = currentUserId == widget.userId;
+
     return Row(
       spacing: ResponsiveSpacing().sm,
       children: [
-        Expanded(
-          child: DashActionButton(
-            onPressed: () {
-              // TODO: Implement Follow functionality
-              context.showInformationSnackBar('Follow feature coming soon!');
-            },
-            icon: Symbols.person_add_rounded,
-            label: "Follow",
-          )
-        ),
+        if (!isSelf)
+          Expanded(
+            child: DashActionButton(
+              onPressed: _isLoadingFollowState ? () {} : _toggleFollow,
+              icon: _isFollowing 
+                  ? Symbols.person_remove_rounded 
+                  : Symbols.person_add_rounded,
+              label: _isFollowing ? "Remove from Friend" : "Add as friend",
+            )
+          ),
 
         DashActionButton(
           onPressed: _shareProfilePage,
@@ -190,7 +200,6 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
   }
 
   void _startProfileStream() {
-    // Notice we use widget.userId instead of the current user
     _profileSub = FirebaseFirestore.instance
         .collection('profiles')
         .doc(widget.userId)
@@ -281,5 +290,53 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
 
       if (mounted) setState(() => _badges = updatedBadges);
     });
+  }
+
+  void _startFollowStream() {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) return;
+
+    // Use a composite ID to prevent duplicate follow records
+    final followId = '${currentUser.uid}_${widget.userId}';
+
+    _followSub = FirebaseFirestore.instance
+        .collection('follows')
+        .doc(followId)
+        .snapshots()
+        .listen((doc) {
+      if (mounted) {
+        setState(() {
+          _isFollowing = doc.exists;
+          _isLoadingFollowState = false;
+        });
+      }
+    });
+  }
+
+  Future<void> _toggleFollow() async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) return;
+
+    // Prevent following yourself
+    if (currentUser.uid == widget.userId) return;
+
+    final followId = '${currentUser.uid}_${widget.userId}';
+    final followRef = FirebaseFirestore.instance.collection('follows').doc(followId);
+
+    try {
+      if (_isFollowing) {
+        await followRef.delete();
+      } else {
+        await followRef.set({
+          'followerId': currentUser.uid,
+          'followingId': widget.userId,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        context.showErrorSnackBar('Failed to update follow status.');
+      }
+    }
   }
 }

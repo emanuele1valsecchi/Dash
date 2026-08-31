@@ -1,8 +1,8 @@
 const functions = require("firebase-functions/v1"); // Gen 1 Module
-const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore"); // Gen 2 Module
+const { onDocumentCreated, onDocumentUpdated, onDocumentWritten } = require("firebase-functions/v2/firestore"); // Gen 2 Module
 const admin = require('firebase-admin');
 const { getFirestore, FieldValue, GeoPoint, Timestamp } = require('firebase-admin/firestore');
-const { getMessaging } = require('firebase-admin/messaging'); // <-- Add this new line!
+const { getMessaging } = require('firebase-admin/messaging');
 const geo = require('./geo');
 const territory = require('./territory');
 const routing = require('./routing');
@@ -924,6 +924,46 @@ exports.checkRouteBadges = onDocumentCreated(
 
     if (homeCity && city !== homeCity) {
         await unlockEventBadge(uid, 'spy', "Congratulations! You unlocked the 'Spy' badge!");
+    }
+
+    return null;
+  }
+);
+
+exports.onFollowToggle = onDocumentWritten(
+  {
+    document: "follows/{followId}",
+    region: "europe-west1"
+  },
+  async (event) => {
+    const before = event.data.before;
+    const after = event.data.after;
+    const batch = db.batch();
+
+    // 1. Follow Created (Document didn't exist, now it does)
+    if (!before.exists && after.exists) {
+      const data = after.data();
+      const followerRef = db.collection("profiles").doc(data.followerId);
+      const followingRef = db.collection("profiles").doc(data.followingId);
+
+      batch.update(followerRef, { followingCount: FieldValue.increment(1) });
+      batch.update(followingRef, { followersCount: FieldValue.increment(1) });
+      
+      console.log(`[Follow Added] User ${data.followerId} followed ${data.followingId}`);
+      return batch.commit();
+    }
+
+    // 2. Follow Deleted (Unfollow - Document existed, now it doesn't)
+    if (before.exists && !after.exists) {
+      const data = before.data();
+      const followerRef = db.collection("profiles").doc(data.followerId);
+      const followingRef = db.collection("profiles").doc(data.followingId);
+
+      batch.update(followerRef, { followingCount: FieldValue.increment(-1) });
+      batch.update(followingRef, { followersCount: FieldValue.increment(-1) });
+      
+      console.log(`[Follow Removed] User ${data.followerId} unfollowed ${data.followingId}`);
+      return batch.commit();
     }
 
     return null;
