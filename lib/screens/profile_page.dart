@@ -1,10 +1,10 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/models/home_badge_ui_model.dart';
 import 'package:dash/screens/edit_profile_page.dart';
+import 'package:dash/screens/search_friend_page.dart';
 import 'package:dash/screens/share_profile_page.dart';
 import 'package:dash/services/badge_service.dart';
 import 'package:dash/services/storage_service.dart';
@@ -154,8 +154,7 @@ class _ProfilePageState extends State<ProfilePage> {
         ),
 
         DashActionButton(
-          // TODO: Show the search user page
-          onPressed: () => context.showInformationSnackBar("Add friend"),
+          onPressed: _searchFriend,
           icon: Symbols.person_add_rounded,
         )
       ],
@@ -185,6 +184,15 @@ class _ProfilePageState extends State<ProfilePage> {
           surname: _surname,
           profileImageUrl: _profileImageUrl,
         ),
+      ),
+    );
+  }
+
+  void _searchFriend() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const SearchFriendPage(),
       ),
     );
   }
