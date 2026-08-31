@@ -4,13 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
-import 'session_detail_page.dart';
-import '../config/map_style.dart';
+import 'run_session_detail_page.dart';
+import '../services/run_session_repository.dart';
+import '../widgets/dash_run_card.dart';
 import '../services/unit_preferences.dart';
 import '../widgets/units_scope.dart';
-import '../services/cached_tile_provider.dart';
 
 class CalendarScreen extends StatefulWidget {
   const CalendarScreen({super.key});
@@ -20,10 +18,18 @@ class CalendarScreen extends StatefulWidget {
 }
 
 class _CalendarScreenState extends State<CalendarScreen> {
+  /// Fraction of the screen's height each run card takes, matching the route
+  /// library's own vertical list — a full-width card in a scrolling column.
+  static const double _cardHeightFactor = 0.28;
+
   DateTime _focusedDay = DateTime.now();
   DateTime? _selectedDay;
 
-  Map<DateTime, List<Map<String, dynamic>>> _activityDays = {};
+  /// Sessions grouped by day, as the typed [RunSession] model rather than raw
+  /// Firestore maps — the detail page this screen opens is addressed by
+  /// document *id*, which `doc.data()` does not contain. Using the model also
+  /// means the path is parsed once, by the same code every other screen uses.
+  Map<DateTime, List<RunSession>> _activityDays = {};
   bool _isLoading = true;
 
   @override
@@ -46,21 +52,20 @@ class _CalendarScreenState extends State<CalendarScreen> {
           .where('userId', isEqualTo: user.uid)
           .get();
 
-      final Map<DateTime, List<Map<String, dynamic>>> loadedDays = {};
+      final Map<DateTime, List<RunSession>> loadedDays = {};
 
       for (var doc in querySnapshot.docs) {
-        final data = doc.data();
-        final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
+        // Skipped rather than filed under "now": a session whose server
+        // timestamp hasn't landed yet has no day to belong to, and the old
+        // raw-map version skipped it for the same reason.
+        if (doc.data()['createdAt'] == null) continue;
 
-        if (createdAt != null) {
-          final normalizedDay = DateTime(createdAt.year, createdAt.month, createdAt.day);
-          
-          if (loadedDays.containsKey(normalizedDay)) {
-            loadedDays[normalizedDay]!.add(data);
-          } else {
-            loadedDays[normalizedDay] = [data];
-          }
-        }
+        final session = RunSession.fromDoc(doc);
+        final createdAt = session.createdAt;
+        final normalizedDay =
+            DateTime(createdAt.year, createdAt.month, createdAt.day);
+
+        loadedDays.putIfAbsent(normalizedDay, () => []).add(session);
       }
 
       if (mounted) {
@@ -75,21 +80,46 @@ class _CalendarScreenState extends State<CalendarScreen> {
     }
   }
 
-  List<Map<String, dynamic>> _getEventsForDay(DateTime day) {
+  List<RunSession> _getEventsForDay(DateTime day) {
     final normalizedDay = DateTime(day.year, day.month, day.day);
     return _activityDays[normalizedDay] ?? [];
   }
 
-  List<LatLng> _extractPolyline(Map<String, dynamic> data) {
-    final path = data['path'] as List<dynamic>?;
-    if (path == null) return [];
+  /// Opens the shared run detail page — the same screen the Explore map's area
+  /// contributions and a profile's Runs row lead to, so a run looks the same
+  /// wherever it is reached from.
+  ///
+  /// Keeps the slide-up transition this list has always used; only the
+  /// destination changed (it was `SessionDetailScreen`). The page takes ids
+  /// rather than the data this screen already holds, and re-reads the session
+  /// itself — one document read in exchange for one page instead of two.
+  void _openSession(RunSession session) {
+    final userId = FirebaseAuth.instance.currentUser?.uid;
+    if (userId == null) return;
 
-    return path.map((point) {
-      if (point is GeoPoint) {
-        return LatLng(point.latitude, point.longitude);
-      }
-      return const LatLng(0, 0);
-    }).where((latLng) => latLng.latitude != 0 && latLng.longitude != 0).toList();
+    Navigator.push(
+      context,
+      PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            RunSessionDetailPage(
+          sessionId: session.id,
+          userId: userId,
+        ),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          const begin = Offset(0.0, 1.0);
+          const end = Offset.zero;
+          const curve = Curves.easeInOutQuart;
+
+          var tween =
+              Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
+
+          return SlideTransition(
+            position: animation.drive(tween),
+            child: child,
+          );
+        },
+      ),
+    );
   }
 
   @override
@@ -236,48 +266,21 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             itemCount: selectedDayActivities.length,
                             itemBuilder: (context, index) {
                               final session = selectedDayActivities[index];
-                              
-                              final name = session['name'] ?? 'Untitled run';
-                              final distanceMeters = (session['distanceMeters'] as num?)?.toDouble() ?? 0.0;
-                              final durationMs = (session['durationMs'] as num?)?.toInt() ?? 0;
-                              final loopsCompleted = (session['loopsCompleted'] as num?)?.toInt() ?? 0;
-                              
-                              final routePolyline = _extractPolyline(session);
 
                               return Padding(
                                 padding: EdgeInsets.only(bottom: ResponsiveSpacing().md),
-                                child: GestureDetector(
-                                  behavior: HitTestBehavior.opaque, 
-                                  onTap: () {
-                                    Navigator.push(
-                                      context,
-                                      PageRouteBuilder(
-                                        pageBuilder: (context, animation, secondaryAnimation) => SessionDetailScreen(
-                                          sessionData: session,
-                                          routePolyline: routePolyline,
-                                        ),
-                                        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-                                          const begin = Offset(0.0, 1.0);
-                                          const end = Offset.zero;
-                                          const curve = Curves.easeInOutQuart;
-
-                                          var tween = Tween(begin: begin, end: end).chain(CurveTween(curve: curve));
-
-                                          return SlideTransition(
-                                            position: animation.drive(tween),
-                                            child: child,
-                                          );
-                                        },
-                                      ),
-                                    );
-                                  },
-                                  child: SessionCard(
-                                    name: name,
-                                    distanceKm: distanceMeters / 1000,
-                                    timeMin: (durationMs / 60000).round(),
-                                    isLoop: loopsCompleted > 0,
-                                    routePolyline: routePolyline,
-                                  ),
+                                // The same card a profile's Runs row uses. Its
+                                // own InkWell handles the tap and its map sits
+                                // inside an IgnorePointer, so pressing the map
+                                // opens the run like pressing anywhere else
+                                // does — a FlutterMap swallows pointer events
+                                // even with InteractiveFlag.none, which is why
+                                // the previous card's outer GestureDetector
+                                // never fired there.
+                                child: DashRunCard(
+                                  heightFactor: _cardHeightFactor,
+                                  session: session,
+                                  onTap: () => _openSession(session),
                                 ),
                               );
                             },
@@ -287,120 +290,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
               ),
             ),
           ),
-    );
-  }
-}
-
-// ==========================================
-// WIDGET CARD DELLA SESSIONE
-// ==========================================
-class SessionCard extends StatelessWidget {
-  final String name;
-  final double distanceKm;
-  final int timeMin;
-  final bool isLoop;
-  final List<LatLng> routePolyline;
-
-  const SessionCard({
-    super.key,
-    required this.name,
-    required this.distanceKm,
-    required this.timeMin,
-    required this.isLoop,
-    required this.routePolyline,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final distLabel = Units.of(context).distance(distanceKm * 1000);
-    
-    final timeLabel = timeMin < 60
-        ? '${timeMin.round()} min'
-        : '${(timeMin / 60).floor()}h ${(timeMin % 60).round()}min';
-
-    return Card(
-      margin: EdgeInsets.zero,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      elevation: 2,
-      color: Colors.white,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // ── Map preview ──
-          if (routePolyline.length >= 2)
-            ClipRRect(
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-              child: SizedBox(
-                height: 160,
-                child: FlutterMap(
-                  options: MapOptions(
-                    initialCameraFit: CameraFit.bounds(
-                      bounds: LatLngBounds.fromPoints(routePolyline),
-                      padding: const EdgeInsets.all(28),
-                    ),
-                    interactionOptions: const InteractionOptions(
-                      flags: InteractiveFlag.none,
-                    ),
-                  ),
-                  children: [
-                    TileLayer(
-                      urlTemplate: MapStyle.terrainTileUrl,
-                      userAgentPackageName: 'com.dash',
-                      retinaMode: RetinaMode.isHighDensity(context),
-                      tileProvider: CachedTileProvider.instance,
-                    ),
-                    PolylineLayer(
-                      polylines: [
-                        Polyline(
-                          points: routePolyline,
-                          color: const Color(0xFF4A8C52),
-                          strokeWidth: 3.5,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          // ── Info row ──
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  name,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 15,
-                    color: Color(0xFF2A3028),
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 6),
-                Row(
-                  children: [
-                    const Icon(Icons.straighten_rounded, size: 13, color: Colors.grey),
-                    const SizedBox(width: 4),
-                    Text(distLabel, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                    const SizedBox(width: 12),
-                    const Icon(Icons.timer_outlined, size: 13, color: Colors.grey),
-                    const SizedBox(width: 4),
-                    Text(timeLabel, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                    if (isLoop) ...[
-                      const SizedBox(width: 12),
-                      const Icon(Icons.loop_rounded, size: 13, color: Color(0xFF4A8C52)),
-                      const SizedBox(width: 4),
-                      const Text('Loop', style: TextStyle(fontSize: 12, color: Color(0xFF4A8C52))),
-                    ],
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
     );
   }
 }

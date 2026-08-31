@@ -31,9 +31,10 @@ String _formatDuration(Duration d) {
   return '${s}s';
 }
 
-/// Full-page detail view for a single run — reached by tapping a row in
-/// `AreaDetailsSheet`'s "Built from N runs" contribution list on the Explore
-/// map, or a card in a profile's "Runs" row.
+/// Full-page detail view for a single run — **the only one**. Reached by
+/// tapping a row in `AreaDetailsSheet`'s "Built from N runs" contribution list
+/// on the Explore map, a card in a profile's "Runs" row, or a card in the
+/// calendar's day list.
 ///
 /// Deliberately the **same layout as [SavedRouteDetailPage]**: title bar, one
 /// line of context, a large interactive map of the whole path
@@ -49,9 +50,11 @@ String _formatDuration(Duration d) {
 /// denormalized onto the `AreaContribution` that led here — firestore.rules
 /// allows any signed-in user to read any session (a deliberate exposure:
 /// reading another user's already-completed run to copy into a route of your
-/// own isn't the same trust boundary as writing one). Distinct from
-/// `session_detail_page.dart` (reached from the calendar, always the signed-in
-/// user's own session, no runner header or favourite button needed there).
+/// own isn't the same trust boundary as writing one).
+///
+/// The calendar used to have its own near-duplicate of this screen
+/// (`session_detail_page.dart`'s `SessionDetailScreen`); it now opens this one
+/// too, so `SessionDetailScreen` is unreferenced and can be deleted.
 class RunSessionDetailPage extends StatefulWidget {
   final String sessionId;
   final String userId;
