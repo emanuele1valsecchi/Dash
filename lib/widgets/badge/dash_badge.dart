@@ -24,6 +24,8 @@ class DashBadge extends StatelessWidget{
 
   final bool clickable;
 
+  final String? userId;
+
   static const ColorFilter _greyscale = ColorFilter.matrix(<double>[
     0.2126, 0.7152, 0.0722, 0, 0,
     0.2126, 0.7152, 0.0722, 0, 0,
@@ -37,7 +39,9 @@ class DashBadge extends StatelessWidget{
     required this.progress,
     required this.clickable,
 
-    this.dimFactor = 0.26,
+    this.dimFactor = 0.26, 
+    
+    this.userId,
   });
 
   @override
@@ -161,6 +165,7 @@ class DashBadge extends StatelessWidget{
             child: BadgeOverlayContainer(
               badge: badge,
               progress: progress,
+              userId: userId,
             )
           ),
         );

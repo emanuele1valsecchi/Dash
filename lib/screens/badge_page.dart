@@ -71,6 +71,7 @@ class _BadgePageState extends State<BadgePage> {
                 progress: badge.progress,
                 dimFactor: 0.16,
                 clickable: true,
+                userId: widget.userId,
               ) 
             );
           },
