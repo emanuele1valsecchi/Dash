@@ -65,12 +65,20 @@ class DashApp extends StatefulWidget {
   State<DashApp> createState() => _DashAppState();
 }
 
-class _DashAppState extends State<DashApp> with WidgetsBindingObserver{
+class _DashAppState extends State<DashApp> with WidgetsBindingObserver {
+  Uri? _pendingDeepLinkUri;
+  Uri? _lastProcessedUri;
+  DateTime? _lastProcessedTime;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _handleColdStart();
+    
+    final String initialRoute = WidgetsBinding.instance.platformDispatcher.defaultRouteName;
+    if (initialRoute != '/' && initialRoute.isNotEmpty) {
+      _pendingDeepLinkUri = Uri.tryParse(initialRoute);
+    }
   }
 
   @override
@@ -79,17 +87,34 @@ class _DashAppState extends State<DashApp> with WidgetsBindingObserver{
     super.dispose();
   }
 
-  void _handleColdStart() {
-    final String initialRoute = WidgetsBinding.instance.platformDispatcher.defaultRouteName;
-    if (initialRoute != '/' && initialRoute.isNotEmpty) {
-      _processDeepLink(Uri.parse(initialRoute));
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    
+    if (_pendingDeepLinkUri != null) {
+      final uri = _pendingDeepLinkUri!;
+      _pendingDeepLinkUri = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _processDeepLink(uri);
+      });
     }
   }
 
   @override
   Future<bool> didPushRouteInformation(RouteInformation routeInformation) async {
     final uri = routeInformation.uri;
-    if (uri.path != '/') {
+    if (uri.path != '/' && uri.path.isNotEmpty) {
+      
+      if (_lastProcessedUri == uri && _lastProcessedTime != null) {
+        final difference = DateTime.now().difference(_lastProcessedTime!);
+        if (difference.inMilliseconds < 1000) {
+          return true;
+        }
+      }
+
+      _lastProcessedUri = uri;
+      _lastProcessedTime = DateTime.now();
+
       _processDeepLink(uri);
       return true;
     }
@@ -101,7 +126,7 @@ class _DashAppState extends State<DashApp> with WidgetsBindingObserver{
       final sharedUserId = uri.pathSegments[1];
 
       if (FirebaseAuth.instance.currentUser != null) {
-        if(sharedUserId == FirebaseAuth.instance.currentUser!.uid) return;
+        if (sharedUserId == FirebaseAuth.instance.currentUser!.uid) return;
 
         navigatorKey.currentState?.push(
           MaterialPageRoute(
