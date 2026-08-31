@@ -5,6 +5,7 @@ import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:dash/extensions/responsive_border_radius.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/models/home_badge_ui_model.dart';
+import 'package:dash/screens/run_tracking_page.dart';
 import 'package:dash/widgets/badge/dash_badge.dart';
 import 'package:dash/widgets/dash_action_button.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -236,8 +237,9 @@ class _BadgeStatusIndicator extends StatelessWidget {
       );
     } else {
       return DashActionButton(
-        onPressed: (){
-          // TODO: Navigate to challenge
+        onPressed: () async {
+          Navigator.of(context).pop();
+          await pushRunTracking(context);
         },
         label: "Complete it now",
         icon: Symbols.play_arrow_rounded
