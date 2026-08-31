@@ -58,7 +58,7 @@ dependencies:
   # android.builtInKotlin=false setup. 13.0.1 of the Android impl is pure
   # Java and has no such problem. Revisit together with the
   # package_info_plus override below once Flutter moves past 3.44.
-  permission_handler: ^12.0.1
+  permission_handler: ^13.0.1
   mime: ^2.0.0
 
   # Map & location (OpenMap integration)
@@ -67,7 +67,7 @@ dependencies:
   geolocator: ^14.0.2
   path_provider: ^2.1.5
   http: ^1.6.0
-  cached_network_image: ^3.4.1
+  cached_network_image: ^4.0.0
   # Already resolved transitively via cached_network_image; declared directly
   # since CachedTileProvider (map tile disk caching) now uses it as well.
   flutter_cache_manager: ^3.4.1
@@ -76,7 +76,7 @@ dependencies:
   # Date/time formatting (notifications_page). Was reaching this transitively
   # via table_calendar, which analyze flags: a transitive dep can change or
   # vanish on any unrelated version bump, so it is declared directly.
-  intl: ^0.20.3
+  intl: any
   cloud_functions: ^6.3.6
 
   # Wire format shared with the Wear OS companion in wear/. By path, so the two
@@ -87,7 +87,7 @@ dependencies:
   flutter_local_notifications: ^22.3.0
   firebase_app_check: ^0.4.7
   pretty_qr_code: ^3.6.0
-  share_plus: ^12.0.2
+  share_plus: ^13.3.0
   app_links: ^7.2.1
 
   # Meta / Facebook
@@ -201,5 +201,3 @@ flutter:
 # 9.x is safe here: package_info_plus reaches this project only through
 # geolocator_linux (Linux-only desktop support), and nothing in the app
 # imports it.
-dependency_overrides:
-  package_info_plus: ^9.0.1
