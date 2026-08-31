@@ -9,6 +9,7 @@
          without a visible notification the foreground service cannot run — so a
          refusal here costs background tracking entirely, not just the alert. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.CAMERA" />
     
     <application
         android:label="Dash"
