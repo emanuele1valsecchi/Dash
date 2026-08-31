@@ -88,7 +88,7 @@ dependencies:
   firebase_app_check: ^0.4.7
   pretty_qr_code: ^3.6.0
   share_plus: ^13.3.0
-  app_links: ^7.2.1
+  mobile_scanner: ^7.4.0
 
   # Meta / Facebook
   #flutter_facebook_auth: ^7.1.1
