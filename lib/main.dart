@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:app_links/app_links.dart';
 import 'package:dash/extensions/responsive_border_radius.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/root_screen.dart';
@@ -66,36 +65,43 @@ class DashApp extends StatefulWidget {
   State<DashApp> createState() => _DashAppState();
 }
 
-class _DashAppState extends State<DashApp> {
-  late AppLinks _appLinks;
-  StreamSubscription<Uri>? _linkSubscription;
-
+class _DashAppState extends State<DashApp> with WidgetsBindingObserver{
   @override
   void initState() {
     super.initState();
-    _initDeepLinks();
+    WidgetsBinding.instance.addObserver(this);
+    _handleColdStart();
   }
 
   @override
   void dispose() {
-    _linkSubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  void _initDeepLinks() {
-    _appLinks = AppLinks();
-    _linkSubscription = _appLinks.uriLinkStream.listen((uri) {
-      _handleDeepLink(uri);
-    });
+  void _handleColdStart() {
+    final String initialRoute = WidgetsBinding.instance.platformDispatcher.defaultRouteName;
+    if (initialRoute != '/' && initialRoute.isNotEmpty) {
+      _processDeepLink(Uri.parse(initialRoute));
+    }
   }
 
-  void _handleDeepLink(Uri uri) {
+  @override
+  Future<bool> didPushRouteInformation(RouteInformation routeInformation) async {
+    final uri = routeInformation.uri;
+    if (uri.path != '/') {
+      _processDeepLink(uri);
+      return true;
+    }
+    return false;
+  }
+
+  void _processDeepLink(Uri uri) {
     if (uri.pathSegments.length >= 2 && uri.pathSegments.first == 'profile') {
       final sharedUserId = uri.pathSegments[1];
 
       if (FirebaseAuth.instance.currentUser != null) {
-
-        if(sharedUserId == FirebaseAuth.instance.currentUser!.uid)  return;
+        if(sharedUserId == FirebaseAuth.instance.currentUser!.uid) return;
 
         navigatorKey.currentState?.push(
           MaterialPageRoute(
