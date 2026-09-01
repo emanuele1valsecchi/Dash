@@ -12,6 +12,9 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'screens/onboarding_page.dart';
 import 'services/unit_preferences.dart';
 import 'widgets/units_scope.dart';
+import 'services/profile_service.dart';
+import 'screens/welcome_register_page.dart';
+import 'screens/email_confirmation_page.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
@@ -152,10 +155,18 @@ class _DashAppState extends State<DashApp> with WidgetsBindingObserver {
             if (snapshot.connectionState == ConnectionState.waiting) {
               return const _SplashScreen();
             }
-            if (snapshot.hasData) {
-              return const RootScreen();
+
+            final user = snapshot.data;
+
+            if (user == null) {
+              return const OnboardingScreen();
             }
-            return const OnboardingScreen();
+
+            if (!user.emailVerified) {
+              return EmailConfirmationScreen(email: user.email ?? '');
+            }
+
+            return const _ProfileGate();
           },
         ),
       ),
@@ -201,6 +212,30 @@ class _DashAppState extends State<DashApp> with WidgetsBindingObserver {
         color: materialColorScheme.tertiary,           
         circularTrackColor: materialColorScheme.surfaceContainer,
       ),
+    );
+  }
+}
+
+class _ProfileGate extends StatelessWidget {
+  const _ProfileGate();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<bool>(
+      future: ProfileService().isProfileComplete(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const _SplashScreen();
+        }
+
+        final profileExists = snapshot.data ?? false;
+
+        if (!profileExists) {
+          return const WelcomeRegisterScreen();
+        }
+
+        return const RootScreen();
+      },
     );
   }
 }

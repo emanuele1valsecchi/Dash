@@ -8,6 +8,7 @@ import 'login_page.dart';
 import 'legal_page.dart';
 import 'notification_settings_page.dart';
 import 'home_leaderboards_settings_page.dart';
+import 'package:dash/root_screen.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -34,6 +35,7 @@ class SettingsPage extends StatelessWidget {
     );
 
     if (confirm == true) {
+      RootScreen.isIntentionalLogout = true;
       await FirebaseAuth.instance.signOut();
       
       if (context.mounted) {
