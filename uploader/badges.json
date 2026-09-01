@@ -108,42 +108,6 @@
     "requiredValue": 1.0
   },
   {
-    "id": "the_defender",
-    "title": "The Defender",
-    "description": "You have claimed back your area",
-    "imagePath": "/badges/TheDefender.png",
-    "defaultVisible": false,
-    "order": 13,
-    "requiredValue": 1.0
-  },
-  {
-    "id": "the_champion",
-    "title": "The champion",
-    "description": "You won a tournament",
-    "imagePath": "/badges/TheChampion.png",
-    "defaultVisible": false,
-    "order": 14,
-    "requiredValue": 1.0
-  },
-  {
-    "id": "first_time",
-    "title": "First Time?",
-    "description": "You took part in a tournament",
-    "imagePath": "/badges/FirstTime.png",
-    "defaultVisible": false,
-    "order": 15,
-    "requiredValue": 1.0
-  },
-  {
-    "id": "by_a_whisker",
-    "title": "By a whisker",
-    "description": "You stopped the running session 500 meters before closing it",
-    "imagePath": "/badges/ByAWhisker.png",
-    "defaultVisible": false,
-    "order": 16,
-    "requiredValue": 1.0
-  },
-  {
     "id": "home_sweet_home",
     "title": "Home Sweet Home",
     "description": "You closed 10 circuits, all starting from the same position",
@@ -216,33 +180,6 @@
     "requiredValue": 1.0
   },
   {
-    "id": "the_important_thing_is_to_participate",
-    "title": "The important thing is to participate",
-    "description": "You get on a tournament podium",
-    "imagePath": "/badges/TheImportantThingIsToParticipate.png",
-    "defaultVisible": false,
-    "order": 25,
-    "requiredValue": 1.0
-  },
-  {
-    "id": "cheetah",
-    "title": "Cheetah",
-    "description": "Surpass 5 people in the tournament ranking",
-    "imagePath": "/badges/Cheetah.png",
-    "defaultVisible": false,
-    "order": 26,
-    "requiredValue": 1.0
-  },
-  {
-    "id": "turtle",
-    "title": "Turtle",
-    "description": "Let 10 players surpass you in the tournament",
-    "imagePath": "/badges/Turtle.png",
-    "defaultVisible": false,
-    "order": 27,
-    "requiredValue": 1.0
-  },
-  {
     "id": "coup",
     "title": "Coup",
     "description": "Steal area from someone with the Duke Badge",
@@ -258,24 +195,6 @@
     "imagePath": "/badges/TheForeigner.png",
     "defaultVisible": false,
     "order": 29,
-    "requiredValue": 1.0
-  },
-  {
-    "id": "expanding_kingdom",
-    "title": "Expanding Kingdom",
-    "description": "Win the tournament of another city",
-    "imagePath": "/badges/ExpandingKingdom.png",
-    "defaultVisible": false,
-    "order": 30,
-    "requiredValue": 1.0
-  },
-  {
-    "id": "napoleone",
-    "title": "Napoleone",
-    "description": "Win 5 tournaments in 5 different cities",
-    "imagePath": "/badges/Napoleone.png",
-    "defaultVisible": false,
-    "order": 31,
     "requiredValue": 1.0
   },
   {
@@ -312,33 +231,6 @@
     "imagePath": "/badges/Cheater.png",
     "defaultVisible": false,
     "order": 35,
-    "requiredValue": 1.0
-  },
-  {
-    "id": "buuuu",
-    "title": "Buuuu!",
-    "description": "You beat a ghost",
-    "imagePath": "/badges/Buuuu.png",
-    "defaultVisible": false,
-    "order": 36,
-    "requiredValue": 1.0
-  },
-  {
-    "id": "try_to_beat_me",
-    "title": "Try to beat me",
-    "description": "Launch a challenge",
-    "imagePath": "/badges/TryToBeatMe.png",
-    "defaultVisible": false,
-    "order": 37,
-    "requiredValue": 1.0
-  },
-  {
-    "id": "eat_my_dust",
-    "title": "Eat my dust",
-    "description": "You won a challenge",
-    "imagePath": "/badges/EatMyDust.png",
-    "defaultVisible": false,
-    "order": 38,
     "requiredValue": 1.0
   }
 ]

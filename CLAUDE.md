@@ -932,7 +932,23 @@ Keep this list current — update it whenever a feature moves between these buck
   and `BadgeService.getAllBadges(userId)` read *another* user's progress, so every such
   read was denied and someone else's badges always rendered locked at 0%. It is now
   `isSignedIn()` to read — achievements are meant to be seen, and the trust boundary is
-  the write (`if false`, server-only), not the read. The claimed-area sheet's Duke mark
+  the write (`if false`, server-only), not the read.
+  **Retiring a badge takes three steps, and the first two are not enough**: remove it from
+  [uploader/badges.json](uploader/badges.json), remove any `BADGE_DEFINITIONS` rule for it in
+  [functions/index.js](functions/index.js), and then *delete the Firestore documents* —
+  `uploader/seed_badges.js` only ever `set`s with `merge: true`, so a badge dropped from the
+  JSON stays live in the `badges` collection and keeps appearing in the app.
+  [functions/_wipe_discarded_badges.js](functions/_wipe_discarded_badges.js) does that half (dry-run by default,
+  `--commit` to apply, not deployed). It removes `badges/{id}` — which is also what stops
+  `seedUserProfileAndBadges` handing the badge to new signups, since that seeds
+  `badge_progress` by reading this collection — and each user's now-orphaned
+  `badge_progress/{id}` rows. Twelve early-concept badges were retired this way
+  (*The Defender, The champion, First Time?, By a whisker, The important thing is to
+  participate, Cheetah, Turtle, Expanding Kingdom, Napoleone, Buuuu!, Try to beat me, Eat my
+  dust*); three of them had `BADGE_DEFINITIONS` rules reading `session.beatGhost` /
+  `wonChallenge` / `stoppedNearEnd`, fields nothing has ever written — leftovers of the
+  ghost-race and challenge ideas cut alongside "champion" re-timing, so they could never
+  have fired. The claimed-area sheet's Duke mark
   depends on this too.
 - Cloud Function that seeds a `profiles/{uid}` doc and `badge_progress` subcollection on user signup ([functions/index.js](functions/index.js)).
 - Live run tracking screen ("Start to run now"): a 5-second pre-run countdown (STOP
