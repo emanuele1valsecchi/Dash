@@ -1,8 +1,11 @@
+import 'package:dash/screens/followings_followers_page.dart';
 import 'package:dash/utils/strings_utils.dart';
 import 'package:dash/widgets/profile/profile_picture_avatar.dart';
 import 'package:flutter/material.dart';
 
 class ProfileHeader extends StatelessWidget{
+
+  final String userId;
 
   final String name;
   final String surname;
@@ -13,12 +16,13 @@ class ProfileHeader extends StatelessWidget{
 
   const ProfileHeader({
     super.key, 
+    required this.userId,
     required this.name, 
     required this.surname, 
     required this.email, 
     required this.profileImageUrl, 
     required this.followers, 
-    required this.following
+    required this.following, 
   });
 
   @override
@@ -50,8 +54,46 @@ class ProfileHeader extends StatelessWidget{
               SizedBox(height: screenHeight * 0.02),
               Row(
                 children: [
-                  _buildFollowersCount(context, formatNumber(followers), 'Followers'),
-                  _buildFollowersCount(context, formatNumber(following), 'Following'),
+                  Expanded(
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => FollowingsFollowersPage(
+                              userId: userId,
+                              initialSection: FollowingsFollowersPage.followersSection,
+                            ),
+                          ),
+                        );
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4.0),
+                        child: _buildFollowersCount(context, formatNumber(followers), 'Followers'),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => FollowingsFollowersPage(
+                              userId: userId,
+                              initialSection: FollowingsFollowersPage.followingSection,
+                            ),
+                          ),
+                        );
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4.0),
+                        child: _buildFollowersCount(context, formatNumber(following), 'Following'),
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ],
@@ -80,4 +122,6 @@ class ProfileHeader extends StatelessWidget{
       ),
     );
   }
+
+
 }
