@@ -65,10 +65,20 @@ Future<void> pushRunTracking(
       builder: (_) => RunTrackingPage(plannedRoute: plannedRoute),
     ),
   );
-  if (summary == null || !context.mounted) return;
+  if (summary == null) return;
+
+  // Reported through the *navigator's* context, not the caller's.
+  //
+  // A run takes minutes, and some callers do not survive it: the badge
+  // overlay pops its own dialog before starting the run, so by the time this
+  // resumes, `context` is unmounted and a `context.mounted` guard would
+  // silently swallow the result. The Navigator outlives every route it
+  // pushes, and `ScaffoldMessenger`/`Theme` resolve from there just as well.
+  final reportContext = navigator.context;
+  if (!reportContext.mounted) return;
 
   if (!summary.saved) {
-    context.showWarningSnackBar("Run discarded");
+    reportContext.showWarningSnackBar("Run discarded");
     return;
   }
 
@@ -77,7 +87,8 @@ Future<void> pushRunTracking(
   final loopsText = summary.loopsCompleted > 0
       ? ', ${summary.loopsCompleted} loop${summary.loopsCompleted == 1 ? '' : 's'} closed'
       : '';
-  context.showSuccessSnackBar('Run saved — $distance in $minutes min$loopsText');
+  reportContext
+      .showSuccessSnackBar('Run saved — $distance in $minutes min$loopsText');
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────

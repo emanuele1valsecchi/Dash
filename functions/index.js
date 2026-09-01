@@ -135,18 +135,12 @@ const BADGE_RULES = {
     },
     target: 1
   },
-  'buuuu': {
-    calculateProgress: (session, stats) => session.beatGhost === true ? 1 : 0,
-    target: 1
-  },
-  'eat_my_dust': {
-    calculateProgress: (session, stats) => session.wonChallenge === true ? 1 : 0,
-    target: 1
-  },
-  'by_a_whisker': {
-    calculateProgress: (session, stats) => session.stoppedNearEnd === true ? 1 : 0,
-    target: 1
-  }
+  // Removed with the discarded badges they belonged to: 'buuuu',
+  // 'eat_my_dust' and 'by_a_whisker' read session.beatGhost /
+  // session.wonChallenge / session.stoppedNearEnd — fields nothing has ever
+  // written, left over from the ghost-race and challenge concepts that were
+  // cut along with "champion" re-timing (see CLAUDE.md's out-of-scope note).
+  // They could never have fired.
 };
 
 // ==============================================================================
