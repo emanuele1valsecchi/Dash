@@ -56,11 +56,21 @@ service cloud.firestore {
       allow delete: if false; // disable client-side deletes
 
       // ---------- badge_progress (per-user progress toward each badge) ----------
-      // Seeded by seedUserProfileAndBadges (Admin SDK) on signup; a future
-      // Cloud Function is expected to update it as the user progresses.
-      // Read-only from the client, same trust-value reasoning as userStats.
+      // Seeded by seedUserProfileAndBadges (Admin SDK) on signup and updated by
+      // Cloud Functions as the user progresses. **Never client-writable** —
+      // unlocking a badge is a trust value, same reasoning as userStats and
+      // totalPoints.
+      //
+      // Readable by any signed-in user, not just its owner. Achievements are
+      // meant to be seen: a public profile shows another user's badges
+      // (`ProfileBadgeSection`, via `BadgeService.getAllBadges`), and the
+      // claimed-area sheet marks an owner who holds the Duke badge. Both of
+      // those were silently reading nothing under the old self-only rule —
+      // every such read was denied, so someone else's badges always rendered
+      // as locked at 0%. Widening the *read* leaves the trust boundary exactly
+      // where it was, on writes.
       match /badge_progress/{badgeId} {
-        allow read: if isSelf(uid);
+        allow read: if isSignedIn();
         allow write: if false;
       }
     }

@@ -1,12 +1,66 @@
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 
+import '../../screens/public_profile_page.dart';
 import '../../screens/run_session_detail_page.dart';
 import '../../services/claimed_area_repository.dart';
 import '../../services/profile_service.dart';
+import '../../services/storage_service.dart';
 import '../../services/user_appearance_service.dart';
 import '../../utils/player_palette.dart';
 import '../units_scope.dart';
+
+/// Resolves whether a user holds the Duke badge, and the badge artwork to
+/// draw beside their name.
+///
+/// Kept here rather than in a service because this is the only place that
+/// asks: one document read per sheet opened, and the artwork URL — shared
+/// reference data that never changes — is resolved once per process.
+class _DukeBadge {
+  static const String badgeId = 'duke';
+
+  /// Process-lifetime cache of the badge image's download URL. Null once
+  /// resolution has been attempted and failed, so a broken image path isn't
+  /// re-fetched on every sheet.
+  static Future<String?>? _imageUrl;
+
+  static Future<String?> imageUrl() => _imageUrl ??= _resolveImageUrl();
+
+  static Future<String?> _resolveImageUrl() async {
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('badges')
+          .doc(badgeId)
+          .get();
+      final path = doc.data()?['imagePath'] as String?;
+      if (path == null || path.isEmpty) return null;
+      return await StorageService().getDownloadUrl(path);
+    } catch (e) {
+      debugPrint('Could not resolve the Duke badge image: $e');
+      return null;
+    }
+  }
+
+  /// Whether [uid] has unlocked it. `badge_progress` is readable by any
+  /// signed-in user (see `firestore.rules`) precisely so achievements can be
+  /// shown next to someone's name.
+  static Future<bool> isHeldBy(String uid) async {
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('profiles')
+          .doc(uid)
+          .collection('badge_progress')
+          .doc(badgeId)
+          .get();
+      return doc.data()?['unlocked'] == true;
+    } catch (e) {
+      debugPrint('Could not read Duke badge state for $uid: $e');
+      return false;
+    }
+  }
+}
 
 /// Opens [AreaDetailsSheet] for the area with the given id, if it's still in
 /// [areas] (it always should be — ids come from a hit-test against polygons
@@ -93,6 +147,63 @@ class _AreaDetailsSheetState extends State<AreaDetailsSheet> {
   late final Future<String?> _usernameFuture =
       ProfileService().fetchUsername(widget.area.userId);
 
+  late final Future<bool> _hasDukeBadgeFuture =
+      _DukeBadge.isHeldBy(widget.area.userId);
+
+  /// Deliberately small — it sits beside a name, not in a trophy case, and
+  /// should read as a mark of rank rather than compete with the username.
+  static const double _dukeBadgeSize = 18;
+
+  /// The Duke badge beside the owner's name, when they hold it.
+  ///
+  /// Renders nothing at all until both the ownership check and the artwork
+  /// have resolved, and nothing if either fails: an empty box or a broken
+  /// image next to someone's name reads as a bug, whereas its absence is
+  /// indistinguishable from "this person is not a Duke", which is the common
+  /// case anyway.
+  Widget _buildDukeBadge() {
+    return FutureBuilder<bool>(
+      future: _hasDukeBadgeFuture,
+      builder: (context, held) {
+        if (held.data != true) return const SizedBox.shrink();
+
+        return FutureBuilder<String?>(
+          future: _DukeBadge.imageUrl(),
+          builder: (context, image) {
+            final url = image.data;
+            if (url == null || url.isEmpty) return const SizedBox.shrink();
+
+            return Padding(
+              padding: const EdgeInsets.only(left: 6),
+              child: Tooltip(
+                message: 'Duke',
+                child: CachedNetworkImage(
+                  imageUrl: url,
+                  width: _dukeBadgeSize,
+                  height: _dukeBadgeSize,
+                  fit: BoxFit.contain,
+                  placeholder: (_, _) => const SizedBox.shrink(),
+                  errorWidget: (_, _, _) => const SizedBox.shrink(),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Opens the owner's profile. The name is the obvious thing to tap once you
+  /// are looking at "whose territory is this", and this sheet is the only
+  /// place on the map where a stranger's identity is spelled out.
+  void _openOwnerProfile() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PublicProfilePage(userId: widget.area.userId),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final area = widget.area;
@@ -136,23 +247,37 @@ class _AreaDetailsSheetState extends State<AreaDetailsSheet> {
                   ),
                   const SizedBox(width: 10),
                   Expanded(
-                    child: FutureBuilder<String?>(
-                      future: _usernameFuture,
-                      builder: (context, snapshot) {
-                        final username = snapshot.data;
-                        final label = username ??
-                            (snapshot.connectionState == ConnectionState.waiting
-                                ? 'Loading…'
-                                : 'Unknown runner');
-                        return Text(
-                          label,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w800,
-                            color: Color(0xFF1F3020),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: _openOwnerProfile,
+                      child: Row(
+                        children: [
+                          Flexible(
+                            child: FutureBuilder<String?>(
+                              future: _usernameFuture,
+                              builder: (context, snapshot) {
+                                final username = snapshot.data;
+                                final label = username ??
+                                    (snapshot.connectionState ==
+                                            ConnectionState.waiting
+                                        ? 'Loading…'
+                                        : 'Unknown runner');
+                                return Text(
+                                  label,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                    color: Color(0xFF1F3020),
+                                  ),
+                                );
+                              },
+                            ),
                           ),
-                        );
-                      },
+                          _buildDukeBadge(),
+                        ],
+                      ),
                     ),
                   ),
                 ],

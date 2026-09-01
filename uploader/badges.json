@@ -245,7 +245,7 @@
   {
     "id": "coup",
     "title": "Coup",
-    "description": "Take the duke area",
+    "description": "Steal area from someone with the Duke Badge",
     "imagePath": "/badges/Coup.png",
     "defaultVisible": false,
     "order": 28,

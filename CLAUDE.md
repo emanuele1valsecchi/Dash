@@ -928,7 +928,12 @@ Keep this list current — update it whenever a feature moves between these buck
   failed with `permission-denied` (badges surfaced this to the user on the homepage;
   badge_progress failed silently into a caught `debugPrint`, always showing 0%/locked).
   Both are covered now: `badges` is signed-in-read/no-client-write shared reference data,
-  `badge_progress` is self-read-only (same trust-value reasoning as `userStats`).
+  `badge_progress` was then **self**-read-only, which was itself a bug: `PublicProfilePage`
+  and `BadgeService.getAllBadges(userId)` read *another* user's progress, so every such
+  read was denied and someone else's badges always rendered locked at 0%. It is now
+  `isSignedIn()` to read — achievements are meant to be seen, and the trust boundary is
+  the write (`if false`, server-only), not the read. The claimed-area sheet's Duke mark
+  depends on this too.
 - Cloud Function that seeds a `profiles/{uid}` doc and `badge_progress` subcollection on user signup ([functions/index.js](functions/index.js)).
 - Live run tracking screen ("Start to run now"): a 5-second pre-run countdown (STOP
   pauses it, resuming restarts it from 5) precedes GPS tracking; battery-efficient GPS
@@ -1286,7 +1291,12 @@ Keep this list current — update it whenever a feature moves between these buck
   polygons exist to prevent. The same inversion existed twice more on the client, in
   `home_page.dart` and `home_leaderboards_settings_page.dart`, both reading
   `startLocality.isNotEmpty ? startLocality : territoryCity`; fixing only the server would
-  have left the home screen still grouping by village. All three now prefer the
+  have left the home screen still grouping by village. **Two more copies surfaced later**
+  and are also fixed: `leaderboard_page.dart` (the worst of them — the home screen derives
+  the `cityFilter` it opens that page with using the *correct* order, so a session inside a
+  curated polygon computed its village name, never matched the metro filter, and the board
+  came up empty) and `run_results_dialog.dart`'s post-run chip. If a fifth turns up, the
+  tell is `startLocality` being read before `territoryCity`. All now prefer the
   server-resolved territory, and the client mirrors the server's own tier choice exactly
   (`territoryCity ?? territoryBroad ?? startLocality`, matching `city || broad` in
   `awardSessionPoints`) — falling straight through to `startLocality` would show a village
@@ -1494,6 +1504,16 @@ Keep this list current — update it whenever a feature moves between these buck
     purely a read-cost optimization at this point, not a workaround for restricted access).
     Tap detection uses flutter_map's `PolygonLayer.hitNotifier`/`Polygon.hitValue`, checked
     inside `MapOptions.onTap`.
+  - **The owner's name is tappable and opens their `PublicProfilePage`** — this sheet is
+    the only place on the map where a stranger's identity is spelled out, so it is the
+    natural jumping-off point. A small **Duke badge** sits beside the name when that user
+    holds it, read from `profiles/{uid}/badge_progress/duke` (one document read per sheet;
+    the badge artwork's download URL is shared reference data and is resolved once per
+    process). It renders nothing at all while either lookup is pending or if either fails
+    — an empty box beside a name reads as a bug, while its absence is indistinguishable
+    from "not a Duke", which is the common case. **This needed the `badge_progress` read
+    rule widened from self-only to any signed-in user**; see the badge bullet above, which
+    also explains the pre-existing bug that fixed.
   - **Tapping a contribution row** opens [lib/screens/run_session_detail_page.dart](lib/screens/run_session_detail_page.dart)
     (`RunSessionDetailPage`) — pushed from inside the still-open `AreaDetailsSheet`, so its
     own back button (top-left, same circular-white-Material style as `RouteCreatePage`'s)
@@ -1815,7 +1835,7 @@ See [firestore.rules](firestore.rules) for the authoritative, enforced version o
   value (see Project structure). The bound `10` appears in three places that must be kept
   in step — `PlayerPalette.size`, `PALETTE_SIZE` in `functions/index.js`, and the literal
   in `firestore.rules`.
-  - `profiles/{uid}/badge_progress/{badgeId}` — self-read-only, seeded by
+  - `profiles/{uid}/badge_progress/{badgeId}` — signed-in read, no client write, seeded by
     `seedUserProfileAndBadges`; no client write.
 - `badges/{badgeId}` — shared reference data (title/description/image/order); signed-in
   read, no client write.

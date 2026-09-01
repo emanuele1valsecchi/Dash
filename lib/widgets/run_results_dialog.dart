@@ -271,9 +271,25 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
 
     final data = _serverData!;
     final points = (data['pointsEarned'] as num?)?.round() ?? 0;
-    final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
-    final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
-    final leaderboard = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
+    // Mirrors the server's own tier choice (`city || broad` in
+    // `awardSessionPoints`) — the curated metropolitan territory first, the
+    // broad region next, and the raw reverse-geocoded village only as a
+    // fallback for sessions predating territory resolution.
+    //
+    // **The order used to be inverted here**, preferring `startLocality`, so
+    // this chip named a village the server never writes a point to — the same
+    // bug that was fixed in `home_page.dart` and
+    // `home_leaderboards_settings_page.dart`; this dialog was missed.
+    final territoryCity = (data['territoryCity'] as String?)?.trim() ?? '';
+    final territoryBroad = (data['territoryBroad'] as String?)?.trim() ?? '';
+    final startLocality = (data['startLocality'] as String?)?.trim() ?? '';
+    final leaderboard = territoryCity.isNotEmpty
+        ? territoryCity
+        : territoryBroad.isNotEmpty
+            ? territoryBroad
+            : startLocality.isNotEmpty
+                ? startLocality
+                : 'Unknown';
     final xpFromDistance = (data['xpFromDistance'] as num?)?.toDouble() ?? 0;
     final xpFromArea = (data['xpFromArea'] as num?)?.toDouble() ?? 0;
     final xpFromStolenArea = (data['xpFromStolenArea'] as num?)?.toDouble() ?? 0;
@@ -294,12 +310,27 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
               const SizedBox(width: 8),
               Text('$points XP',
                   style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF2E7D32))),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
-                child: Text(leaderboard,
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF2E7D32))),
+              const SizedBox(width: 8),
+              // Expanded + right-aligned rather than a Spacer before a
+              // fixed-width chip: a long territory name ("Vertemate con
+              // Minoprio") plus the XP figure overflowed the row, and nothing
+              // in it could shrink. This gives the chip every pixel the XP
+              // figure doesn't need and lets the name ellipsize past that.
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+                    child: Text(
+                      leaderboard,
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF2E7D32)),
+                    ),
+                  ),
+                ),
               ),
             ],
           ),

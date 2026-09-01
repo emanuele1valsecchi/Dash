@@ -58,9 +58,25 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         final data = doc.data();
         final userId = data['userId'] as String?;
         final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
+        // Same ordering as `home_page.dart` and
+        // `home_leaderboards_settings_page.dart`, and it has to be: the home
+        // screen derives the `cityFilter` this page is opened with using that
+        // order, then this loop re-derives a city per session and compares
+        // the two. With the order inverted here, a session inside a curated
+        // metro polygon computed its *village* name, never matched the metro
+        // filter it was opened under, and the board came up empty or wrong.
+        // `territoryBroad` is included for the same reason it is there — a run
+        // outside every curated polygon is scored against the broad region.
         final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
         final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
-        final city = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
+        final rawBroad = (data['territoryBroad'] as String?)?.trim() ?? '';
+        final city = rawTerritory.isNotEmpty
+            ? rawTerritory
+            : rawBroad.isNotEmpty
+                ? rawBroad
+                : rawLocality.isNotEmpty
+                    ? rawLocality
+                    : 'Unknown';
         
         if (userId != null) {
           // Se non è globale, saltiamo tutte le sessioni non appartenenti a questa città
