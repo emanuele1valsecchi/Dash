@@ -100,14 +100,13 @@ class _ProfilePageState extends State<ProfilePage> {
             color: Theme.of(context).colorScheme.tertiary,
             child: SingleChildScrollView(
               padding: EdgeInsets.symmetric(horizontal: ResponsiveSpacing().md),
-              // Always scrollable, so the pull gesture works even when the
-              // profile is short enough not to overflow.
               physics: const AlwaysScrollableScrollPhysics(),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 spacing: ResponsiveSpacing().lg,
                 children: [
                   ProfileHeader(
+                    userId: FirebaseAuth.instance.currentUser!.uid,
                     name: _name,
                     surname: _surname,
                     email: _email,

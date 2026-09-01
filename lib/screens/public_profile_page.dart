@@ -134,6 +134,7 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
           spacing: ResponsiveSpacing().lg,
           children: [
             ProfileHeader(
+              userId: widget.userId,
               name: _name,
               surname: _surname,
               email: _email,

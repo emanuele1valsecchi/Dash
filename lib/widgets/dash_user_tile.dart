@@ -10,7 +10,7 @@ class DashUserTile extends StatelessWidget{
 
   final Function()? onTap;
 
-  final IconButton? trailingIcon;
+  final Widget? trailingIcon;
 
   const DashUserTile({
     super.key, 
