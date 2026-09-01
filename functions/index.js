@@ -139,7 +139,7 @@ const BADGE_RULES = {
   // 'eat_my_dust' and 'by_a_whisker' read session.beatGhost /
   // session.wonChallenge / session.stoppedNearEnd — fields nothing has ever
   // written, left over from the ghost-race and challenge concepts that were
-  // cut along with "champion" re-timing (see CLAUDE.md's out-of-scope note).
+  // cut along with "champion" re-timing.
   // They could never have fired.
 };
 
@@ -508,8 +508,8 @@ async function awardSessionPoints({userId, sessionId, sessionData, totalAreaM2, 
 
   // Territory is score-affecting, so it is derived here from the run's real
   // GPS start point and never from the client-supplied `startLocality`
-  // string — see territory.js's header, and the standing rule in CLAUDE.md
-  // that the client must not set anything feeding points or ranking.
+  // string — see territory.js's header, and the standing rule that the
+  // client must not set anything feeding points or ranking.
   //
   // This used to read `const city = startLocality`, which threw the resolver's
   // answer away: a run starting in Seregno was filed under "Seregno" rather

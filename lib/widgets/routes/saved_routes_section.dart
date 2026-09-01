@@ -18,8 +18,8 @@ import 'package:material_symbols_icons/symbols.dart';
 /// Both lists come from the same cache-and-invalidate repositories the rest
 /// of the app uses ([RouteRepository] / [FavoriteRouteRepository]) rather
 /// than live listeners — a route list changes rarely, and a standing
-/// snapshot stream would cost reads on every open (see "Security &
-/// performance" in CLAUDE.md). Pull-to-refresh is what forces a re-read.
+/// snapshot stream would cost reads on every open. Pull-to-refresh is what
+/// forces a re-read.
 ///
 /// Kept out of the page itself so the page stays a thin two-section shell.
 /// Its [State] is public so the page can call [SavedRoutesSectionState.reload]

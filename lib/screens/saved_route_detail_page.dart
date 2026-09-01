@@ -21,9 +21,8 @@ import 'package:material_symbols_icons/symbols.dart';
 /// null when they cancel or go back. The caller is what decides what "run"
 /// means: the library page forwards the polyline up to `HomeScreen`, which
 /// pushes `RunTrackingPage` with it — the same shape route creation and
-/// route search already use for their own "Run now" (see the route-search
-/// bullet in CLAUDE.md), so finishing the run returns to the home screen
-/// rather than back into a stale route list.
+/// route search already use for their own "Run now", so finishing the run
+/// returns to the home screen rather than back into a stale route list.
 class SavedRouteDetailPage extends StatefulWidget {
   final SavedRoute route;
 

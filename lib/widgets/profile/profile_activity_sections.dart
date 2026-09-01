@@ -28,8 +28,7 @@ import 'package:material_symbols_icons/symbols.dart';
 ///
 /// **Reads are one-time, not listeners**, unlike the `snapshots()` streams
 /// this replaced — a profile's run and route lists change rarely, and a
-/// standing stream per profile visit costs reads for nothing (see "Security &
-/// performance" in CLAUDE.md).
+/// standing stream per profile visit costs reads for nothing.
 class ProfileActivitySections extends StatefulWidget {
   final String userId;
 

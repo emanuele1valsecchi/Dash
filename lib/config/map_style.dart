@@ -5,9 +5,9 @@ import 'package:latlong2/latlong.dart';
 /// same style. Swap the style/token here rather than editing each screen.
 ///
 /// The Jawg access token is supplied at build/run time via `--dart-define`
-/// (see `config/secrets.example.json` and the "Working conventions" section
-/// of CLAUDE.md) rather than committed as a source constant — it is never
-/// present in git history for builds made after this change.
+/// (see `config/secrets.example.json`) rather than committed as a source
+/// constant — it is never present in git history for builds made after this
+/// change.
 ///
 /// This token is still shipped inside the compiled app binary, same as any
 /// tile-service key embedded in a mobile map SDK (Mapbox, Google Maps, Jawg

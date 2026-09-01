@@ -80,10 +80,10 @@ class RunSession {
   final DateTime createdAt;
 
   /// Total area claimed across every loop this session closed — written by
-  /// `onRunningSessionCreateClaimedAreas` (see "XP/points and scoreboard
-  /// territory" in CLAUDE.md), server-only on the client (`firestore.rules`'
-  /// `serverOnlyRunFields`). 0 for a session with no closed loops, or one
-  /// whose points/territory haven't finished processing yet.
+  /// `onRunningSessionCreateClaimedAreas`, server-only on the client
+  /// (`firestore.rules`' `serverOnlyRunFields`). 0 for a session with no
+  /// closed loops, or one whose points/territory haven't finished processing
+  /// yet.
   final double totalAreaM2;
 
   /// Heart rate as it was stored on the *session* document by builds that

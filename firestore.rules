@@ -211,8 +211,8 @@ service cloud.firestore {
     }
 
     // ---------- claimedAreas ----------
-    // Area ownership is a trust value (see CLAUDE.md "Security & performance"
-    // — the client must never assign itself a claimed area). Areas are
+    // Area ownership is a trust value (the client must never assign itself a
+    // claimed area). Areas are
     // created only by the onRunningSessionCreateClaimedAreas Cloud Function
     // (Admin SDK, bypasses these rules) from a completed run's closed loops.
     match /claimedAreas/{areaId} {

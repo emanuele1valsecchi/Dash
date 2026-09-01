@@ -8,8 +8,8 @@
 //    fetchRoundTrip, used by route search's closed-circuit generation).
 //    Why it exists: RoutingService used to embed
 //    the ORS API key directly in the compiled Dart app (a trivially-
-//    extractable, shared-quota secret — see CLAUDE.md's "Known security
-//    debt"). This callable moves the key behind Cloud Functions, where it's
+//    extractable, shared-quota secret). This callable moves the key behind
+//    Cloud Functions, where it's
 //    held in Secret Manager and never shipped to a device. Deliberately a
 //    thin proxy, not a reimplementation: it forwards ORS's own HTTP status +
 //    JSON body back to the client verbatim (as {status, body}), so the
@@ -521,7 +521,7 @@ function decodePolyline(encoded, precision) {
 exports.orsRoute = onCall(
   {region: 'europe-west1', secrets: [ORS_API_KEY]},
   async (request) => {
-    // Routing quota is a shared, rate-limited resource (see CLAUDE.md) —
+    // Routing quota is a shared, rate-limited resource —
     // gating on sign-in (already required to use the rest of the app) keeps
     // an anonymous/scripted caller from draining it for free.
     if (!request.auth) {
