@@ -311,7 +311,7 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
   /// Note this is a **display** rule, not an enforced one: `runningSessions`
   /// docs are readable in full by any signed-in user, so hiding a tile does
   /// not stop someone reading the field directly. Making it genuinely private
-  /// needs the fields moved somewhere with its own rule — see CLAUDE.md.
+  /// needs the fields moved somewhere with its own rule.
   Widget _buildStats(BuildContext context, RunSession session) {
     final units = Units.of(context);
     final pace = session.avgPaceMinPerKm;

@@ -80,8 +80,8 @@ class DrawnRouteFailure extends DrawnRouteConversionResult {
 /// direct cause of the shared-quota exhaustion that broke routing app-wide,
 /// and of every straight-line-across-a-lake fallback). Shared by
 /// `route_create_page.dart` and `test_run_creator_page.dart` so the fix
-/// exists exactly once (CLAUDE.md: business/data logic belongs in services,
-/// not widgets).
+/// exists exactly once — business/data logic belongs in services, not
+/// widgets.
 ///
 /// Request bound per stroke: 1 client→function call, ≤3 upstream routing
 /// calls (enforced in functions/routing.js). On any failure the caller gets
