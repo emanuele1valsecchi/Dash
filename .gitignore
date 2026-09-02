@@ -60,3 +60,15 @@ packages/*/.dart_tool/
 
 # Personal working document for the university report - not for git
 DESIGN_DOC.md
+
+# Written by tool/coverage.dart while measuring, deleted straight after.
+# Listed anyway so an interrupted run can never commit a 126-import file.
+/test/all_lib_imports_for_coverage_test.dart
+
+# npm dependencies, anywhere in the tree. Deliberately unanchored (no leading
+# slash) so it covers every package in the repo — test/rules/, uploader/,
+# functions/ — rather than needing a new rule each time one is added.
+# NOTE: uploader/node_modules was committed before this rule existed and is
+# still tracked; an ignore rule does not untrack what is already in the index.
+# See TEST_NOTES.md.
+node_modules/

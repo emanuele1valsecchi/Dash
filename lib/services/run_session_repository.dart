@@ -152,10 +152,46 @@ class RunSession {
 
 class RunSessionRepository {
   static final RunSessionRepository instance = RunSessionRepository._();
-  RunSessionRepository._();
+  /// Collaborators default to the real Firebase singletons, so
+  /// `RunSessionRepository.instance` behaves exactly as it always has and no
+  /// call site changes. They are only ever passed by tests.
+  RunSessionRepository._({
+    FirebaseFirestore? db,
+    FirebaseAuth? auth,
+    http.Client? httpClient,
+  })  : _db = db ?? FirebaseFirestore.instance,
+        _auth = auth ?? FirebaseAuth.instance,
+        // `this._httpClient` is unavailable: Dart forbids a private name as a
+        // named parameter, and this stays named to match the other two.
+        // ignore: prefer_initializing_formals
+        _httpClient = httpClient;
 
-  final _db = FirebaseFirestore.instance;
-  final _auth = FirebaseAuth.instance;
+  /// A repository wired to test doubles (`FakeFirebaseFirestore`,
+  /// `MockFirebaseAuth`).
+  ///
+  /// **This is the seam that makes the data layer testable.** Reading
+  /// `FirebaseFirestore.instance` in a field initializer, as this class
+  /// used to, cannot be substituted from a test: there is no
+  /// `Firebase.initializeApp` in the test binding, so touching it throws
+  /// before a single assertion runs.
+  ///
+  /// A named constructor rather than a public `RunSessionRepository()`: the singleton stays
+  /// the only way production code gets one, so this cannot quietly become
+  /// a second live instance with its own cache.
+  @visibleForTesting
+  factory RunSessionRepository.withDependencies({
+    FirebaseFirestore? db,
+    FirebaseAuth? auth,
+    http.Client? httpClient,
+  }) =>
+      RunSessionRepository._(db: db, auth: auth, httpClient: httpClient);
+
+  final FirebaseFirestore _db;
+  final FirebaseAuth _auth;
+
+  /// Null in production, where the reverse-geocode makes its own one-shot
+  /// request exactly as before. Injected by tests so it never hits Nominatim.
+  final http.Client? _httpClient;
 
   String get _uid => _auth.currentUser!.uid;
 
@@ -307,8 +343,11 @@ class RunSessionRepository {
         'https://nominatim.openstreetmap.org/reverse'
         '?lat=${point.latitude}&lon=${point.longitude}&format=json&zoom=10',
       );
-      final response = await http
-          .get(uri, headers: {'User-Agent': 'DashApp/1.0'})
+      final response = await (_httpClient?.get(
+                uri,
+                headers: {'User-Agent': 'DashApp/1.0'},
+              ) ??
+              http.get(uri, headers: {'User-Agent': 'DashApp/1.0'}))
           .timeout(const Duration(seconds: 8));
       if (response.statusCode != 200) return null;
 

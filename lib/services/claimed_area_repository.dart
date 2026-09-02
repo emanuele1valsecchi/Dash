@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:latlong2/latlong.dart';
 
 import '../utils/geometry_utils.dart';
+import 'package:flutter/foundation.dart';
 
 /// One contiguous piece of a claimed area's territory — an outer boundary
 /// plus zero or more holes (produced when someone else's loop carves a
@@ -156,9 +157,32 @@ class ClaimedArea {
 /// query's lower bound moves past them.
 class ClaimedAreaRepository {
   static final ClaimedAreaRepository instance = ClaimedAreaRepository._();
-  ClaimedAreaRepository._();
+  /// Collaborators default to the real Firebase singletons, so
+  /// `ClaimedAreaRepository.instance` behaves exactly as it always has and no
+  /// call site changes. They are only ever passed by tests.
+  ClaimedAreaRepository._({
+    FirebaseFirestore? db,
+  })  :         _db = db ?? FirebaseFirestore.instance;
 
-  final _db = FirebaseFirestore.instance;
+  /// A repository wired to test doubles (`FakeFirebaseFirestore`,
+  /// `MockFirebaseAuth`).
+  ///
+  /// **This is the seam that makes the data layer testable.** Reading
+  /// `FirebaseFirestore.instance` in a field initializer, as this class
+  /// used to, cannot be substituted from a test: there is no
+  /// `Firebase.initializeApp` in the test binding, so touching it throws
+  /// before a single assertion runs.
+  ///
+  /// A named constructor rather than a public `ClaimedAreaRepository()`: the singleton stays
+  /// the only way production code gets one, so this cannot quietly become
+  /// a second live instance with its own cache.
+  @visibleForTesting
+  factory ClaimedAreaRepository.withDependencies({
+    FirebaseFirestore? db,
+  }) =>
+      ClaimedAreaRepository._(db: db);
+
+  final FirebaseFirestore _db;
 
   /// Returns a live stream of every currently-claimed area from every user.
   Stream<List<ClaimedArea>> areasStream() {

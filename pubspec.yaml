@@ -19,7 +19,13 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.11.0
+  # Dart 3.12 / Flutter 3.44 is what pubspec.lock is resolved against
+  # (cached_network_image 4.0.0 requires it). Pinned deliberately: with a
+  # looser bound an older Flutter on PATH resolves far enough to fail
+  # deep inside the framework ("Type 'ui.DisplayCornerRadii' not found")
+  # instead of saying plainly that the SDK is too old.
+  sdk: ^3.12.0
+  flutter: '>=3.44.0'
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -96,6 +102,32 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
+  # End-to-end tests that drive the real app on a device/emulator
+  # (integration_test/), as opposed to the widget tests under test/.
+  integration_test:
+    sdk: flutter
+
+  # Mocking for anything reached through an injected collaborator.
+  # mocks are generated into *.mocks.dart by build_runner:
+  #   dart run build_runner build --delete-conflicting-outputs
+  mockito: ^5.4.4
+  build_runner: ^2.4.13
+
+  # Provides `setupFirebaseCoreMocks()` so a widget test can call
+  # `Firebase.initializeApp()` and screens that touch `FirebaseAuth.instance`
+  # can be constructed. Reached transitively via firebase_core, but declared
+  # directly because the tests import it (depend_on_referenced_packages).
+  firebase_core_platform_interface: ^8.1.1
+
+  # In-memory Firestore/Auth doubles, so repository and screen tests can run
+  # without a live project or the emulator suite.
+  fake_cloud_firestore: ^4.0.0
+  firebase_auth_mocks: ^0.15.0
+
+  # Widget tests that render a NetworkImage (profile pictures, badges) would
+  # otherwise fail on the test binding's 400-response HTTP client.
+  network_image_mock: ^2.1.1
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is

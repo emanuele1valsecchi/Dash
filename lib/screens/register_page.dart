@@ -4,14 +4,19 @@ import '../services/auth_service.dart';
 import 'email_confirmation_page.dart';
 
 class RegisterScreen extends StatefulWidget {
-  const RegisterScreen({super.key});
+  /// Injectable for tests; defaults to the real service, so every existing
+  /// `const RegisterScreen()` call site is untouched. See `LoginScreen` for
+  /// the same pattern and why it is needed.
+  const RegisterScreen({super.key, this.authService});
+
+  final AuthService? authService;
 
   @override
   State<RegisterScreen> createState() => _RegisterScreenState();
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
-  final _authService = AuthService();
+  late final _authService = widget.authService ?? AuthService();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
 
@@ -88,15 +93,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Future<void> _onGooglePressed() async {
-    debugPrint('>>> Google button pressed');
-    try {
-      final result = await _authService.signInWithGoogle();
-      debugPrint('>>> Google result: $result');
-    } catch (e, st) {
-      debugPrint('>>> Google error: $e');
-      debugPrint('>>> Stack: $st');
-    }
-
+    // NOTE: a leftover debugging block used to call `signInWithGoogle()` here
+    // before the real attempt below, so every tap ran the whole Google flow
+    // **twice** — two account pickers' worth of work, and an error surfaced
+    // from whichever call happened to land first. Caught by
+    // `register_page_test.dart`'s "asks the auth service exactly once".
     setState(() => _isLoading = true);
     try {
       final result = await _authService.signInWithGoogle();

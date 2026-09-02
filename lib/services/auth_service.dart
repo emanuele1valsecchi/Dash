@@ -4,7 +4,17 @@ import 'package:google_sign_in/google_sign_in.dart';
 // import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 
 class AuthService {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
+  /// Defaults to the real `FirebaseAuth`, so an existing `AuthService()` call
+  /// behaves exactly as before. Tests pass a `MockFirebaseAuth` instead.
+  AuthService({FirebaseAuth? auth}) : _authOverride = auth;
+
+  final FirebaseAuth? _authOverride;
+
+  // Resolved on first use, never at construction. `LoginPage` and friends
+  // build this in a field initializer, so eagerly reading
+  // `FirebaseAuth.instance` here made those screens unconstructible in a test
+  // — it throws `[core/no-app]` with no initialised Firebase app.
+  late final FirebaseAuth _auth = _authOverride ?? FirebaseAuth.instance;
 
   User? get currentUser => _auth.currentUser;
   Stream<User?> get authStateChanges => _auth.authStateChanges();

@@ -2035,6 +2035,59 @@ for convenience, and flag it clearly if a requested change would weaken either.
   out here), and rotate the token that was committed in git history, updating
   `config/secrets.local.json` (and every other developer's own copy) once rotated.
 
+## Testing
+
+> **Open security question, unresolved:** any signed-in user can create a
+> private-metrics document under anyone else's run, which permanently locks
+> the real owner out of their own heart-rate data for that run. Verified
+> against the emulator; two candidate fixes written up in
+> [TEST_NOTES.md](TEST_NOTES.md) section 5. Pinned by two `todo` tests so it
+> stays visible.
+
+**Start with [TEST_NOTES.md](TEST_NOTES.md)** — the running log of traps, decisions,
+bugs the tests found, and what is still owed. [test/README.md](test/README.md) covers how to
+run things and the harness's own gotchas. The parts worth knowing before touching anything:
+
+- **Two Flutter installs on this machine, and only one of them works.** The
+  project is resolved against **Flutter 3.44 / Dart 3.12**
+  (`C:/Users/user/Flutter/flutter`); `C:/src/flutter` is 3.41.9 and was first on
+  `PATH`. Running `flutter test` with the wrong one compiles 3.44's framework
+  sources against 3.41's `dart:ui` and fails with `Type 'ui.DisplayCornerRadii'
+  not found` — a message that points nowhere near the real cause. This wasted a
+  session once; `pubspec.yaml`'s `environment:` block now pins `sdk: ^3.12.0`
+  and `flutter: '>=3.44.0'` so a too-old SDK refuses the resolve with a clear
+  message instead. A stale `.dart_tool/hooks_runner` left over from switching
+  SDKs shows up separately as `Invalid kernel binary format version`; delete it.
+- **Three layers, `test/unit/` + `test/widget/` + `integration_test/`.** The
+  loose `*_test.dart` files still at the root of `test/` predate the split and
+  are all pure unit tests.
+- **`buildAppTheme()` lives in [lib/config/app_theme.dart](lib/config/app_theme.dart), not as a private
+  method on `main.dart`'s state class, specifically so tests can render against
+  the real theme.** Several widgets resolve theme *extensions* with a non-null
+  assertion (`context.paddingMd` is
+  `Theme.of(this).extension<ResponsiveSpacing>()!`), so a widget pumped under a
+  bare `MaterialApp()` throws before rendering. Every widget test goes through
+  `pumpDashWidget` ([test/helpers/pump_app.dart](test/helpers/pump_app.dart)) for this reason. A second
+  copy of the theme in a test helper would work right up until someone added an
+  extension in one place and not the other.
+- **Screens are not testable yet, and the reason is structural.** They reach
+  Firebase through `FirebaseFirestore.instance` / `FirebaseAuth.instance`
+  directly — 27 screens and 14 services, with repositories hardcoding it as a
+  field initializer (`final _db = FirebaseFirestore.instance;`).
+  `fake_cloud_firestore`/`firebase_auth_mocks` are in `dev_dependencies` but
+  cannot substitute for `.instance`. The unblocking change is an **optional
+  constructor seam** on each repository (`RouteRepository({FirebaseFirestore?
+  db}) : _db = db ?? FirebaseFirestore.instance`) — non-breaking, no call site
+  changes. Not done yet; it is the next piece of work.
+- **`flutter test --coverage` flatters the suite** — it only reports files a
+  test imported, so it prints a percentage of the tested subset, not of the app.
+  Currently it reaches 28 of 126 files in `lib/`, and no screens. Quote the file
+  count alongside the percentage.
+- **`functions/_verify_*.js` are not tests in any runner's sense** — hand-rolled
+  assertion scripts run with plain `node`, producing no machine-readable result.
+  Moving them to `node:test` would make the Cloud Functions side reportable
+  without rewriting the assertions.
+
 ## Working conventions
 
 - Some in-app user-facing strings are in Italian (e.g. `ImageUploadService` error

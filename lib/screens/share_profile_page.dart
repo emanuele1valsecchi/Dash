@@ -66,7 +66,10 @@ class ShareProfilePage extends StatelessWidget {
             ),
             
             Text(
-              '$name $surname',
+              // Trimmed, matching `DashUserTile`: a user with no surname
+              // recorded would otherwise render a trailing space, which
+              // centres the name visibly off-centre.
+              '$name $surname'.trim(),
               style: contextTheme.textTheme.headlineSmall?.copyWith(
                 fontWeight: FontWeight.w500,
                 color: contextTheme.colorScheme.onSurface,
@@ -81,9 +84,18 @@ class ShareProfilePage extends StatelessWidget {
   }
 
   Widget _buildActionButtons(BuildContext context, ThemeData contextTheme){
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
+    // `Wrap`, not `Row`, so the two buttons drop to a second line instead of
+    // clipping when they cannot fit side by side.
+    //
+    // At the default text scale a `Row` fits fine on any phone — this is not
+    // fixing a bug anyone has reported. It matters at a large accessibility
+    // text scale, where the two labels plus their icons genuinely do outgrow
+    // a 320-390pt screen and a `Row` would silently clip "Share External"
+    // off the right edge. `Wrap` costs nothing when there is room.
+    return Wrap(
+      alignment: WrapAlignment.center,
       spacing: ResponsiveSpacing().md,
+      runSpacing: ResponsiveSpacing().sm,
       children: [
         DashActionButton(
           onPressed: () => _copyLink(context),

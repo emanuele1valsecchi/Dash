@@ -1,7 +1,20 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class FollowService {
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  /// Collaborators default to the real Firebase singletons, so an
+  /// existing `FollowService()` call behaves exactly as before. Tests pass
+  /// fakes instead, which is the only way to exercise this class at
+  /// all: `FirebaseFirestore.instance` throws with no initialised app.
+  FollowService({
+    FirebaseFirestore? db,
+  })  :         _dbOverride = db;
+
+  final FirebaseFirestore? _dbOverride;
+
+  // Resolved on first use, never at construction: a screen that
+  // builds this service in a field initializer must not throw
+  // `[core/no-app]` before its widget tree even exists.
+  late final FirebaseFirestore _db = _dbOverride ?? FirebaseFirestore.instance;
 
   Future<void> toggleFollow({
     required String currentUserId, 
