@@ -1311,13 +1311,22 @@ Keep this list current — update it whenever a feature moves between these buck
   and are also fixed: `leaderboard_page.dart` (the worst of them — the home screen derives
   the `cityFilter` it opens that page with using the *correct* order, so a session inside a
   curated polygon computed its village name, never matched the metro filter, and the board
-  came up empty) and `run_results_dialog.dart`'s post-run chip. If a fifth turns up, the
-  tell is `startLocality` being read before `territoryCity`. All now prefer the
-  server-resolved territory, and the client mirrors the server's own tier choice exactly
-  (`territoryCity ?? territoryBroad ?? startLocality`, matching `city || broad` in
-  `awardSessionPoints`) — falling straight through to `startLocality` would show a village
-  board the server never writes a point to. `startLocality` survives as a fallback only for
-  sessions predating territory resolution. Relatedly, only the *city* tier was ever written
+  came up empty) and `run_results_dialog.dart`'s post-run chip.
+  **That "one board per run" model was then replaced outright, and the current rule is
+  simpler**: a run counts toward **both** the locality it started in *and* the
+  metropolitan/broad territory covering it, and the run-results chip shows the **locality**.
+  Either choice alone was wrong in one direction — metro-only buried the place you actually
+  ran, locality-only fragments each metro area into one board per village — and counting
+  both costs nothing while making each board mean its own name. The decision now lives in
+  exactly one place, [lib/utils/session_leaderboards.dart](lib/utils/session_leaderboards.dart)
+  (`leaderboardsForSession` / `displayLocalityForSession`), called by the home screen, the
+  leaderboard page, the "Customize Home" settings page and the results dialog, and mirrored
+  by `awardSessionPoints`'s `cityStats` writes. **That single call site is the actual fix**:
+  this rule was copy-pasted into four screens plus the Cloud Function and drifted out of
+  step in four of them, so the class of bug mattered more than any instance. Note the
+  leaderboard page must match a session when *either* board matches, not just the first.
+  `startLocality` being client-supplied is acceptable for this and only this: it decides
+  which board a run also appears on, never how much XP it earns. Relatedly, only the *city* tier was ever written
   to a leaderboard, so a runner outside every curated polygon earned XP but appeared on no
   scoreboard at all; the broad tier is now used when no city matches, which is what the
   fallback was always documented to be for. **`userStats.cityCounts` deliberately still uses

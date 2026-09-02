@@ -7,6 +7,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
+import '../utils/session_leaderboards.dart';
 import '../utils/unit_formatter.dart';
 import 'units_scope.dart';
 
@@ -271,25 +272,15 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
 
     final data = _serverData!;
     final points = (data['pointsEarned'] as num?)?.round() ?? 0;
-    // Mirrors the server's own tier choice (`city || broad` in
-    // `awardSessionPoints`) — the curated metropolitan territory first, the
-    // broad region next, and the raw reverse-geocoded village only as a
-    // fallback for sessions predating territory resolution.
-    //
-    // **The order used to be inverted here**, preferring `startLocality`, so
-    // this chip named a village the server never writes a point to — the same
-    // bug that was fixed in `home_page.dart` and
-    // `home_leaderboards_settings_page.dart`; this dialog was missed.
-    final territoryCity = (data['territoryCity'] as String?)?.trim() ?? '';
-    final territoryBroad = (data['territoryBroad'] as String?)?.trim() ?? '';
-    final startLocality = (data['startLocality'] as String?)?.trim() ?? '';
-    final leaderboard = territoryCity.isNotEmpty
-        ? territoryCity
-        : territoryBroad.isNotEmpty
-            ? territoryBroad
-            : startLocality.isNotEmpty
-                ? startLocality
-                : 'Unknown';
+    // The place the run actually started in, not the metropolitan area that
+    // covers it — see `displayLocalityForSession`. The XP still counts toward
+    // the metro board as well; that is just not what this chip names.
+    final leaderboard = displayLocalityForSession(
+          startLocality: data['startLocality'] as String?,
+          territoryCity: data['territoryCity'] as String?,
+          territoryBroad: data['territoryBroad'] as String?,
+        ) ??
+        'Unknown';
     final xpFromDistance = (data['xpFromDistance'] as num?)?.toDouble() ?? 0;
     final xpFromArea = (data['xpFromArea'] as num?)?.toDouble() ?? 0;
     final xpFromStolenArea = (data['xpFromStolenArea'] as num?)?.toDouble() ?? 0;

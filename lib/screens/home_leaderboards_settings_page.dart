@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import '../utils/leaderboard_order.dart';
+import '../utils/session_leaderboards.dart';
 
 class LeaderboardViewConfig {
   final String title;
@@ -67,31 +68,25 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
 
       for (var doc in sessionsSnap.docs) {
         final data = doc.data();
-        // Same ordering fix as `home_page.dart` — see the comment there for
-        // why `territoryCity` must win over `startLocality`. The two lists
+        // The same board list `home_page.dart` accumulates into — the two
         // have to agree, or settings would offer leaderboards the home screen
-        // never shows.
-        final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
+        // never shows, or hide ones it does. A run counts toward both its
+        // locality and its metropolitan area; see `leaderboardsForSession`.
         final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
-        final rawBroad = (data['territoryBroad'] as String?)?.trim() ?? '';
-        // Must mirror the server's own choice of scoreboard exactly
-        // (`city || broad` in awardSessionPoints): `territoryCity` is only
-        // set when a curated metro polygon covers the start point, and a run
-        // outside every polygon is filed under the broad region tier instead.
-        // Falling straight through to `startLocality` there would show a
-        // village leaderboard the server never writes a single point to.
-        final city = rawTerritory.isNotEmpty
-            ? rawTerritory
-            : rawBroad.isNotEmpty
-                ? rawBroad
-                : (rawLocality.isNotEmpty ? rawLocality : 'Unknown');
+        final boards = leaderboardsForSession(
+          startLocality: data['startLocality'] as String?,
+          territoryCity: data['territoryCity'] as String?,
+          territoryBroad: data['territoryBroad'] as String?,
+        );
 
         final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
-        if (city == 'Unknown' || createdAt == null) continue;
+        if (boards.isEmpty || createdAt == null) continue;
 
-        final seen = territoryLastRun[city];
-        if (seen == null || createdAt.isAfter(seen)) {
-          territoryLastRun[city] = createdAt;
+        for (final city in boards) {
+          final seen = territoryLastRun[city];
+          if (seen == null || createdAt.isAfter(seen)) {
+            territoryLastRun[city] = createdAt;
+          }
         }
         // Only a curated metro polygon sets `territoryCity`; the broad region
         // fallback does not, and does not earn the promoted slot.

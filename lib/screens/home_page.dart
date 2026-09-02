@@ -20,6 +20,7 @@ import '../services/location_service.dart';
 import '../services/storage_service.dart';
 import '../services/unit_preferences.dart';
 import '../utils/run_estimates.dart';
+import '../utils/session_leaderboards.dart';
 import '../widgets/units_scope.dart';
 import '../services/water_fountain_service.dart';
 import 'route_create_page.dart';
@@ -519,33 +520,35 @@ class _HomePageState extends State<HomePage> {
           final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
           final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
 
-          final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
           final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
-          final rawBroad = (data['territoryBroad'] as String?)?.trim() ?? '';
-          
-          final city = rawTerritory.isNotEmpty
-              ? rawTerritory
-              : rawBroad.isNotEmpty
-                  ? rawBroad
-                  : (rawLocality.isNotEmpty ? rawLocality : 'Unknown');
+
+          // A run counts toward BOTH the place it started in and the
+          // metropolitan area covering it — see `leaderboardsForSession`.
+          final boards = leaderboardsForSession(
+            startLocality: data['startLocality'] as String?,
+            territoryCity: data['territoryCity'] as String?,
+            territoryBroad: data['territoryBroad'] as String?,
+          );
 
           if (userId != null && createdAt != null) {
             globalUserPoints[userId] = (globalUserPoints[userId] ?? 0) + points;
 
-            if (city != 'Unknown') {
+            for (final city in boards) {
               cityUserPoints.putIfAbsent(city, () => {});
               cityUserPoints[city]![userId] = (cityUserPoints[city]![userId] ?? 0) + points;
 
-              if (userId == user.uid) {
-                if (!currentUserCities.containsKey(city) || createdAt.isAfter(currentUserCities[city]!)) {
-                  currentUserCities[city] = createdAt;
-                }
-                if (rawTerritory.isNotEmpty &&
-                    (myMetroAt == null || createdAt.isAfter(myMetroAt))) {
-                  myMetroTerritory = rawTerritory;
-                  myMetroAt = createdAt;
-                }
+              if (userId == user.uid &&
+                  (!currentUserCities.containsKey(city) ||
+                      createdAt.isAfter(currentUserCities[city]!))) {
+                currentUserCities[city] = createdAt;
               }
+            }
+
+            if (userId == user.uid &&
+                rawTerritory.isNotEmpty &&
+                (myMetroAt == null || createdAt.isAfter(myMetroAt))) {
+              myMetroTerritory = rawTerritory;
+              myMetroAt = createdAt;
             }
           }
         }
