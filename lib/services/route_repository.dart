@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
@@ -132,10 +133,49 @@ class SavedRoute {
 /// Firestore index on (userId, createdAt).
 class RouteRepository {
   static final RouteRepository instance = RouteRepository._();
-  RouteRepository._();
 
-  final _db = FirebaseFirestore.instance;
-  final _auth = FirebaseAuth.instance;
+  /// Collaborators default to the real Firebase singletons, so
+  /// `RouteRepository.instance` behaves exactly as it always has and no call
+  /// site changes. They are only ever passed explicitly by tests — see
+  /// [RouteRepository.withDependencies].
+  RouteRepository._({
+    FirebaseFirestore? db,
+    FirebaseAuth? auth,
+    http.Client? httpClient,
+  })  : _db = db ?? FirebaseFirestore.instance,
+        _auth = auth ?? FirebaseAuth.instance,
+        // `this._httpClient` is not available here: Dart forbids a private
+        // name as a *named* parameter, and this has to stay named to match
+        // the other two.
+        // ignore: prefer_initializing_formals
+        _httpClient = httpClient;
+
+  /// A repository wired to test doubles — `FakeFirebaseFirestore`,
+  /// `MockFirebaseAuth`, and an `http.Client` stub for the Nominatim lookup.
+  ///
+  /// **This is the seam that makes the data layer testable at all.** Reading
+  /// `FirebaseFirestore.instance` in a field initializer, as this class used
+  /// to, cannot be substituted from a test: there is no `Firebase.initializeApp`
+  /// in the test binding, so touching it throws before a single assertion runs.
+  ///
+  /// A named constructor rather than making `_()` public: the singleton
+  /// remains the only way production code gets one, so this cannot quietly
+  /// become a second live repository with its own cache.
+  @visibleForTesting
+  factory RouteRepository.withDependencies({
+    FirebaseFirestore? db,
+    FirebaseAuth? auth,
+    http.Client? httpClient,
+  }) =>
+      RouteRepository._(db: db, auth: auth, httpClient: httpClient);
+
+  final FirebaseFirestore _db;
+  final FirebaseAuth _auth;
+
+  /// Null in production, where each reverse-geocode makes its own one-shot
+  /// request exactly as before. Injected by tests so the Nominatim call does
+  /// not reach the network.
+  final http.Client? _httpClient;
 
   List<SavedRoute>? _cache;
 
@@ -210,8 +250,13 @@ class RouteRepository {
         'https://nominatim.openstreetmap.org/reverse'
         '?lat=${point.latitude}&lon=${point.longitude}&format=json&zoom=10',
       );
-      final response = await http
-          .get(uri, headers: {'User-Agent': 'DashApp/1.0'})
+      // `http.get` is itself a one-shot client; the injected one is only ever
+      // supplied by a test, which needs the request never to leave the process.
+      final response = await (_httpClient?.get(
+                uri,
+                headers: {'User-Agent': 'DashApp/1.0'},
+              ) ??
+              http.get(uri, headers: {'User-Agent': 'DashApp/1.0'}))
           .timeout(const Duration(seconds: 8));
       if (response.statusCode != 200) return null;
 

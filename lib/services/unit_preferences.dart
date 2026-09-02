@@ -2,6 +2,7 @@ import 'dart:async' show unawaited;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -92,6 +93,27 @@ class UnitPreferences extends ChangeNotifier {
 
   bool _configured = false;
   bool _warmedUp = false;
+
+  /// Restores the metric defaults and forgets that [warmUp] ever ran.
+  ///
+  /// **Only for tests.** This is an app-lifetime singleton, so without it one
+  /// test's choice of miles leaks into every test that runs after it — and
+  /// since the test runner does not guarantee an order, that failure would
+  /// come and go. `warmUp()` cannot serve here: it returns early once
+  /// `_warmedUp` is set, which is exactly the behaviour production wants.
+  @visibleForTesting
+  void resetForTesting() {
+    _distance = DistanceUnit.kilometers;
+    _area = AreaUnit.metric;
+    _rate = RateDisplay.pace;
+    _elevation = ElevationUnit.meters;
+    _energy = EnergyUnit.kcal;
+    _clock = ClockFormat.h24;
+    _weekStart = WeekStart.monday;
+    _configured = false;
+    _warmedUp = false;
+    notifyListeners();
+  }
 
   DistanceUnit get distance => _distance;
   AreaUnit get area => _area;
@@ -258,6 +280,16 @@ class UnitPreferences extends ChangeNotifier {
     'weekStart': _weekStart.name,
   };
 
+  /// Whether there is a Firebase app to talk to at all.
+  ///
+  /// Guarding on this rather than letting `FirebaseAuth.instance` throw and
+  /// catching it: the throw is the *expected* path in unit tests and in any
+  /// code running before `Firebase.initializeApp`, so treating it as an error
+  /// meant a passing test suite printed a stack of alarming "cloud mirror
+  /// failed" lines for a condition that is entirely normal. The `try` blocks
+  /// below stay, for the genuine failures they were written for.
+  static bool get _firebaseReady => Firebase.apps.isNotEmpty;
+
   /// Best-effort background write, never awaited by a caller and never
   /// surfaced to the user — the local copy is authoritative, so a failure
   /// here costs nothing but cross-device sync until the next change.
@@ -266,6 +298,7 @@ class UnitPreferences extends ChangeNotifier {
     // write: reading it throws synchronously when Firebase has not been
     // initialised, and this runs unawaited — an escape here becomes an
     // unhandled async error rather than a caught one.
+    if (!_firebaseReady) return;
     try {
       final uid = FirebaseAuth.instance.currentUser?.uid;
       if (uid == null) return;
@@ -288,6 +321,7 @@ class UnitPreferences extends ChangeNotifier {
   /// Called once from `HomeScreen.initState` alongside the other warm-up
   /// work, since that is the first point the user is certainly signed in.
   Future<void> syncFromCloud() async {
+    if (!_firebaseReady) return;
     try {
       // Same reasoning as `_mirrorToCloud`: the auth read is inside the
       // `try`, since it throws when Firebase is not initialised.

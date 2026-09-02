@@ -2,7 +2,20 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/badge_model.dart'; // Make sure this path is correct
 
 class BadgeService {
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  /// Collaborators default to the real Firebase singletons, so an
+  /// existing `BadgeService()` call behaves exactly as before. Tests pass
+  /// fakes instead, which is the only way to exercise this class at
+  /// all: `FirebaseFirestore.instance` throws with no initialised app.
+  BadgeService({
+    FirebaseFirestore? firestore,
+  })  :         _firestoreOverride = firestore;
+
+  final FirebaseFirestore? _firestoreOverride;
+
+  // Resolved on first use, never at construction: a screen that
+  // builds this service in a field initializer must not throw
+  // `[core/no-app]` before its widget tree even exists.
+  late final FirebaseFirestore _firestore = _firestoreOverride ?? FirebaseFirestore.instance;
 
   Future<List<BadgeModel>> getAllBadges(String userId) async {
     final badgesSnapshot = await _firestore.collection('badges').get();

@@ -1,0 +1,321 @@
+// Runs the test suite with coverage and reports it honestly.
+//
+// Two things this does that a bare `flutter test --coverage` does not:
+//
+//  1. **It counts every file in `lib/`, not just the ones a test imported.**
+//     `flutter test --coverage` only emits records for libraries that were
+//     actually loaded, so a file no test touches is *absent* from lcov.info
+//     rather than present at 0%. The percentage that comes out is therefore a
+//     percentage of the tested subset — it goes UP when you delete a test that
+//     was the only thing importing a poorly-covered file. This script writes a
+//     temporary test that imports all of `lib/` first, so the denominator is
+//     the whole app.
+//
+//  2. **It runs the Flutter SDK the project is actually resolved against.**
+//     `.dart_tool/package_config.json` records absolute paths into one
+//     specific SDK; if the `flutter` on PATH belongs to a different install,
+//     you compile one SDK's framework against another's `dart:ui` and fail
+//     deep inside the framework. This reads the SDK out of package_config and
+//     uses that one, so it does not matter what PATH says.
+//
+// Usage:
+//   dart run tool/coverage.dart              # summary table
+//   dart run tool/coverage.dart --html       # also write coverage/report.html
+//   dart run tool/coverage.dart --no-run     # re-report existing lcov.info
+//   dart run tool/coverage.dart --min 40     # exit 1 below this percentage
+
+import 'dart:convert';
+import 'dart:io';
+
+const _generatedTest = 'test/all_lib_imports_for_coverage_test.dart';
+
+Future<void> main(List<String> args) async {
+  final wantHtml = args.contains('--html');
+  final skipRun = args.contains('--no-run');
+  final minimum = _flagValue(args, '--min');
+
+  if (!Directory('lib').existsSync()) {
+    stderr.writeln('Run this from the project root.');
+    exit(2);
+  }
+
+  if (!skipRun) {
+    final flutter = _resolveFlutter();
+    stdout.writeln('Flutter: $flutter\n');
+
+    _writeAllImportsTest();
+    try {
+      final result = await Process.start(
+        flutter,
+        ['test', '--coverage'],
+        mode: ProcessStartMode.inheritStdio,
+      );
+      final code = await result.exitCode;
+      if (code != 0) {
+        stderr.writeln('\nTests failed (exit $code) - coverage not updated.');
+        exit(code);
+      }
+    } finally {
+      // Always clean up, even if the run threw: a stray generated test that
+      // imports the whole app would slow every later run and show up in git.
+      final f = File(_generatedTest);
+      if (f.existsSync()) f.deleteSync();
+    }
+  }
+
+  final lcov = File('coverage/lcov.info');
+  if (!lcov.existsSync()) {
+    stderr.writeln('No coverage/lcov.info - run without --no-run first.');
+    exit(2);
+  }
+
+  final files = _parseLcov(lcov.readAsLinesSync());
+  _printReport(files);
+  if (wantHtml) _writeHtml(files);
+
+  if (minimum != null) {
+    final pct = _overall(files);
+    if (pct < minimum) {
+      stderr.writeln(
+        '\nCoverage ${pct.toStringAsFixed(1)}% is below the required '
+        '${minimum.toStringAsFixed(1)}%.',
+      );
+      exit(1);
+    }
+  }
+}
+
+double? _flagValue(List<String> args, String flag) {
+  final i = args.indexOf(flag);
+  if (i == -1 || i + 1 >= args.length) return null;
+  return double.tryParse(args[i + 1]);
+}
+
+/// The `flutter` executable belonging to the SDK this project is resolved
+/// against, read out of `.dart_tool/package_config.json`.
+String _resolveFlutter() {
+  final cfg = File('.dart_tool/package_config.json');
+  if (!cfg.existsSync()) {
+    stderr.writeln('No .dart_tool/package_config.json - run `flutter pub get`.');
+    exit(2);
+  }
+
+  final json =
+      jsonDecode(cfg.readAsStringSync()) as Map<String, dynamic>;
+  for (final pkg in (json['packages'] as List).cast<Map<String, dynamic>>()) {
+    if (pkg['name'] != 'flutter') continue;
+
+    // rootUri points at <sdk>/packages/flutter
+    final root = Uri.parse(pkg['rootUri'] as String);
+    final sdk = Directory.fromUri(root).parent.parent.path;
+    final exe = Platform.isWindows ? 'flutter.bat' : 'flutter';
+    final candidate = '$sdk${Platform.pathSeparator}bin'
+        '${Platform.pathSeparator}$exe';
+    if (File(candidate).existsSync()) return candidate;
+  }
+
+  stderr.writeln('Could not find the Flutter SDK from package_config.json.');
+  exit(2);
+}
+
+/// Writes a test importing every library under `lib/`, so files no real test
+/// touches still appear in the coverage report at 0% instead of vanishing.
+void _writeAllImportsTest() {
+  final libs = Directory('lib')
+      .listSync(recursive: true)
+      .whereType<File>()
+      .map((f) => f.path.replaceAll(r'\', '/'))
+      .where((p) => p.endsWith('.dart'))
+      // Generated Firebase config is environment-specific and not ours to test.
+      .where((p) => !p.endsWith('firebase_options.dart'))
+      .toList()
+    ..sort();
+
+  final buffer = StringBuffer()
+    ..writeln('// GENERATED by tool/coverage.dart - do not commit.')
+    ..writeln('//')
+    ..writeln('// Imports every library under lib/ so that files no test')
+    ..writeln('// exercises are still counted in the coverage denominator.')
+    ..writeln('// Each import is prefixed to avoid clashing with the others')
+    ..writeln("// (several declare a `main`, and many share type names).")
+    ..writeln('//')
+    ..writeln('// ignore_for_file: unused_import, directives_ordering')
+    ..writeln();
+
+  for (var i = 0; i < libs.length; i++) {
+    final pkg = 'package:dash/${libs[i].substring('lib/'.length)}';
+    buffer.writeln("import '$pkg' as lib$i;");
+  }
+
+  buffer
+    ..writeln()
+    ..writeln('void main() {')
+    ..writeln('  // Importing is the whole point; nothing is asserted here.')
+    ..writeln('  // Referencing the prefixes keeps the analyzer quiet without')
+    ..writeln('  // constructing anything that would need Firebase.')
+    ..writeln('}');
+
+  File(_generatedTest).writeAsStringSync(buffer.toString());
+}
+
+class _FileCoverage {
+  final String path;
+  int total = 0;
+  int hit = 0;
+  _FileCoverage(this.path);
+  double get pct => total == 0 ? 100 : hit / total * 100;
+}
+
+Map<String, _FileCoverage> _parseLcov(List<String> lines) {
+  final files = <String, _FileCoverage>{};
+  _FileCoverage? current;
+
+  for (final raw in lines) {
+    final line = raw.trim();
+    if (line.startsWith('SF:')) {
+      var path = line.substring(3).replaceAll(r'\', '/');
+      final idx = path.indexOf('/lib/');
+      if (idx != -1) path = path.substring(idx + 1);
+      current = files.putIfAbsent(path, () => _FileCoverage(path));
+    } else if (line.startsWith('DA:') && current != null) {
+      final parts = line.substring(3).split(',');
+      current.total++;
+      if ((int.tryParse(parts[1]) ?? 0) > 0) current.hit++;
+    }
+  }
+  return files;
+}
+
+double _overall(Map<String, _FileCoverage> files) {
+  final total = files.values.fold<int>(0, (a, f) => a + f.total);
+  final hit = files.values.fold<int>(0, (a, f) => a + f.hit);
+  return total == 0 ? 0 : hit / total * 100;
+}
+
+void _printReport(Map<String, _FileCoverage> files) {
+  final all = files.values.toList();
+  final covered = all.where((f) => f.hit > 0).length;
+
+  stdout.writeln('\n${'=' * 62}');
+  stdout.writeln('COVERAGE');
+  stdout.writeln('=' * 62);
+  stdout.writeln(
+    'Overall     ${_overall(files).toStringAsFixed(1)}%   '
+    '(${all.fold<int>(0, (a, f) => a + f.hit)}'
+    '/${all.fold<int>(0, (a, f) => a + f.total)} lines)',
+  );
+  stdout.writeln('Files       $covered/${all.length} have any coverage at all');
+
+  // Per top-level directory, which is where the real story is.
+  final byDir = <String, List<int>>{};
+  for (final f in all) {
+    final parts = f.path.split('/');
+    final dir = parts.length > 2 ? parts[1] : 'lib (root)';
+    final e = byDir.putIfAbsent(dir, () => [0, 0]);
+    e[0] += f.total;
+    e[1] += f.hit;
+  }
+
+  stdout.writeln('\n${'area'.padRight(14)}${'cov'.padLeft(7)}   lines');
+  stdout.writeln('-' * 40);
+  final dirs = byDir.entries.toList()
+    ..sort((a, b) =>
+        (b.value[1] / (b.value[0] == 0 ? 1 : b.value[0]))
+            .compareTo(a.value[1] / (a.value[0] == 0 ? 1 : a.value[0])));
+  for (final e in dirs) {
+    final pct = e.value[0] == 0 ? 0.0 : e.value[1] / e.value[0] * 100;
+    stdout.writeln(
+      '${e.key.padRight(14)}${pct.toStringAsFixed(1).padLeft(6)}%   '
+      '${e.value[1]}/${e.value[0]}',
+    );
+  }
+
+  // The actionable list: biggest untested files first. These are where the
+  // next tests buy the most.
+  final untested = all.where((f) => f.hit == 0 && f.total > 0).toList()
+    ..sort((a, b) => b.total.compareTo(a.total));
+
+  if (untested.isNotEmpty) {
+    stdout.writeln('\nLargest files with NO coverage (best targets next):');
+    stdout.writeln('-' * 62);
+    for (final f in untested.take(15)) {
+      stdout.writeln('  ${f.total.toString().padLeft(5)} lines  ${f.path}');
+    }
+    if (untested.length > 15) {
+      stdout.writeln('  ... and ${untested.length - 15} more');
+    }
+  }
+  stdout.writeln('');
+}
+
+void _writeHtml(Map<String, _FileCoverage> files) {
+  final all = files.values.toList()..sort((a, b) => a.pct.compareTo(b.pct));
+  final overall = _overall(files);
+
+  String colour(double pct) => pct >= 80
+      ? '#2e7d32'
+      : pct >= 50
+          ? '#f9a825'
+          : pct > 0
+              ? '#ef6c00'
+              : '#c62828';
+
+  final rows = all.map((f) {
+    final c = colour(f.pct);
+    return '''
+    <tr>
+      <td class="file">${f.path}</td>
+      <td class="num">${f.hit}/${f.total}</td>
+      <td class="bar">
+        <div class="track"><div class="fill" style="width:${f.pct.toStringAsFixed(1)}%;background:$c"></div></div>
+      </td>
+      <td class="pct" style="color:$c">${f.pct.toStringAsFixed(1)}%</td>
+    </tr>''';
+  }).join('\n');
+
+  final html = '''<!doctype html>
+<meta charset="utf-8">
+<title>Dash coverage</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 32px;
+         background: #fbfbfa; color: #1a1a18; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #191917; color: #f0efec; }
+    tr:hover { background: #26251f !important; }
+    .track { background: #2f2e28 !important; }
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { opacity: .65; margin-bottom: 24px; }
+  .big { font-size: 40px; font-weight: 700; color: ${colour(overall)}; }
+  table { border-collapse: collapse; width: 100%; max-width: 1000px; }
+  th { text-align: left; font-size: 12px; text-transform: uppercase;
+       letter-spacing: .04em; opacity: .6; padding: 6px 10px;
+       border-bottom: 1px solid #0002; }
+  td { padding: 5px 10px; border-bottom: 1px solid #0001; }
+  tr:hover { background: #0000000a; }
+  .file { font-family: ui-monospace, monospace; font-size: 12.5px; }
+  .num, .pct { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .pct { font-weight: 600; }
+  .bar { width: 220px; }
+  .track { background: #0001; border-radius: 999px; height: 7px; overflow: hidden; }
+  .fill { height: 100%; border-radius: 999px; }
+</style>
+<h1>Dash test coverage</h1>
+<div class="sub">Worst first &mdash; the top of this list is what to test next.</div>
+<div class="big">${overall.toStringAsFixed(1)}%</div>
+<div class="sub">
+  ${all.fold<int>(0, (a, f) => a + f.hit)}/${all.fold<int>(0, (a, f) => a + f.total)} lines &middot;
+  ${all.where((f) => f.hit > 0).length}/${all.length} files touched &middot;
+  generated ${DateTime.now().toIso8601String().substring(0, 16).replaceFirst('T', ' ')}
+</div>
+<table>
+  <tr><th>File</th><th class="num">Lines</th><th>Coverage</th><th class="pct">%</th></tr>
+$rows
+</table>
+''';
+
+  Directory('coverage').createSync(recursive: true);
+  File('coverage/report.html').writeAsStringSync(html);
+  stdout.writeln('HTML report: coverage/report.html');
+}
