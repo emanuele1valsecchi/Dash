@@ -30,13 +30,32 @@ class SavedRoutesSection extends StatefulWidget {
   /// detail page. The page above forwards it to whoever pushed the library.
   final ValueChanged<List<LatLng>> onRunRoute;
 
-  const SavedRoutesSection({super.key, required this.onRunRoute});
+  /// The two repositories this section reads, injectable for tests and
+  /// defaulting to the app-wide singletons — so no call site changes.
+  ///
+  /// Without these the section cannot be exercised at all: it reaches
+  /// `RouteRepository.instance`, which touches Firebase and throws with no
+  /// initialised app, so even a test of the page *around* it would only ever
+  /// see the error state.
+  final RouteRepository? routeRepository;
+  final FavoriteRouteRepository? favoriteRepository;
+
+  const SavedRoutesSection({
+    super.key,
+    required this.onRunRoute,
+    this.routeRepository,
+    this.favoriteRepository,
+  });
 
   @override
   State<SavedRoutesSection> createState() => SavedRoutesSectionState();
 }
 
 class SavedRoutesSectionState extends State<SavedRoutesSection> {
+  late final _routeRepo = widget.routeRepository ?? RouteRepository.instance;
+  late final _favoriteRepo =
+      widget.favoriteRepository ?? FavoriteRouteRepository.instance;
+
   /// Slightly shorter than [DashRouteCard]'s own default, so more than one
   /// card is visible at a time in a scrolling list.
   static const double _cardHeightFactor = 0.24;
@@ -69,8 +88,8 @@ class SavedRoutesSectionState extends State<SavedRoutesSection> {
   Future<void> _load() async {
     try {
       final results = await Future.wait([
-        RouteRepository.instance.fetchUserRoutes(),
-        FavoriteRouteRepository.instance.fetchFavorites(),
+        _routeRepo.fetchUserRoutes(),
+        _favoriteRepo.fetchFavorites(),
       ]);
       if (!mounted) return;
       setState(() {
@@ -103,8 +122,8 @@ class SavedRoutesSectionState extends State<SavedRoutesSection> {
   Future<void> reload() => _load();
 
   Future<void> _refresh() async {
-    RouteRepository.instance.invalidateCache();
-    FavoriteRouteRepository.instance.invalidateCache();
+    _routeRepo.invalidateCache();
+    _favoriteRepo.invalidateCache();
     await _load();
   }
 
@@ -148,7 +167,7 @@ class SavedRoutesSectionState extends State<SavedRoutesSection> {
     if (confirmed != true) return;
 
     try {
-      await FavoriteRouteRepository.instance.unfavoriteRoute(route.id);
+      await _favoriteRepo.unfavoriteRoute(route.id);
       if (!mounted) return;
       setState(
         () => _favorites = _favorites.where((r) => r.id != route.id).toList(),

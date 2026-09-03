@@ -3,6 +3,7 @@ import 'package:dash/screens/register_page.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_core_platform_interface/test.dart';
+import 'package:dash/services/wear_bridge.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mockito/mockito.dart';
@@ -38,6 +39,7 @@ void main() {
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
     });
+
     addTearDown(() => tester.pumpWidget(const SizedBox()));
 
     await tester.pumpWidget(
@@ -54,6 +56,14 @@ void main() {
   Future<void> settleAndIgnoreDestination(WidgetTester tester) async {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
+
+    // `WearBridge` is an app-lifetime singleton that `HomePage.initState`
+    // starts, opening a 1-second periodic timer that nothing cancels — by
+    // design, since it is meant to outlive any one screen. `flutter_test`
+    // fails a test that ends with a pending timer, so it is stopped here,
+    // *inside the test body*: `addTearDown` runs after the framework's
+    // invariant check, which is too late.
+    WearBridge.instance.dispose();
 
     for (var i = 0; i < 100; i++) {
       final error = tester.takeException();

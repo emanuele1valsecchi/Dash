@@ -8,14 +8,15 @@ import 'dart:async' as _i5;
 import 'dart:io' as _i7;
 
 import 'package:cloud_firestore/cloud_firestore.dart' as _i3;
-import 'package:dash/models/badge_model.dart' as _i15;
+import 'package:dash/models/badge_model.dart' as _i16;
 import 'package:dash/services/auth_service.dart' as _i4;
-import 'package:dash/services/badge_service.dart' as _i14;
-import 'package:dash/services/follow_service.dart' as _i13;
+import 'package:dash/services/badge_service.dart' as _i15;
+import 'package:dash/services/favorite_route_repository.dart' as _i12;
+import 'package:dash/services/follow_service.dart' as _i14;
 import 'package:dash/services/profile_service.dart' as _i6;
 import 'package:dash/services/push_notification_service.dart' as _i8;
 import 'package:dash/services/route_repository.dart' as _i9;
-import 'package:dash/services/run_session_repository.dart' as _i12;
+import 'package:dash/services/run_session_repository.dart' as _i13;
 import 'package:firebase_auth/firebase_auth.dart' as _i2;
 import 'package:latlong2/latlong.dart' as _i10;
 import 'package:mockito/mockito.dart' as _i1;
@@ -363,11 +364,79 @@ class MockRouteRepository extends _i1.Mock implements _i9.RouteRepository {
           as _i5.Future<void>);
 }
 
+/// A class which mocks [FavoriteRouteRepository].
+///
+/// See the documentation for Mockito's code generation for more information.
+class MockFavoriteRouteRepository extends _i1.Mock
+    implements _i12.FavoriteRouteRepository {
+  MockFavoriteRouteRepository() {
+    _i1.throwOnMissingStub(this);
+  }
+
+  @override
+  _i5.Future<bool> isFavorited(String? sessionId) =>
+      (super.noSuchMethod(
+            Invocation.method(#isFavorited, [sessionId]),
+            returnValue: _i5.Future<bool>.value(false),
+          )
+          as _i5.Future<bool>);
+
+  @override
+  _i5.Future<void> favoriteSession(
+    String? sessionId, {
+    required String? routeName,
+  }) =>
+      (super.noSuchMethod(
+            Invocation.method(
+              #favoriteSession,
+              [sessionId],
+              {#routeName: routeName},
+            ),
+            returnValue: _i5.Future<void>.value(),
+            returnValueForMissingStub: _i5.Future<void>.value(),
+          )
+          as _i5.Future<void>);
+
+  @override
+  _i5.Future<void> unfavoriteRoute(String? routeId) =>
+      (super.noSuchMethod(
+            Invocation.method(#unfavoriteRoute, [routeId]),
+            returnValue: _i5.Future<void>.value(),
+            returnValueForMissingStub: _i5.Future<void>.value(),
+          )
+          as _i5.Future<void>);
+
+  @override
+  _i5.Future<void> renameFavorite(String? routeId, String? name) =>
+      (super.noSuchMethod(
+            Invocation.method(#renameFavorite, [routeId, name]),
+            returnValue: _i5.Future<void>.value(),
+            returnValueForMissingStub: _i5.Future<void>.value(),
+          )
+          as _i5.Future<void>);
+
+  @override
+  _i5.Future<List<_i9.SavedRoute>> fetchFavorites() =>
+      (super.noSuchMethod(
+            Invocation.method(#fetchFavorites, []),
+            returnValue: _i5.Future<List<_i9.SavedRoute>>.value(
+              <_i9.SavedRoute>[],
+            ),
+          )
+          as _i5.Future<List<_i9.SavedRoute>>);
+
+  @override
+  void invalidateCache() => super.noSuchMethod(
+    Invocation.method(#invalidateCache, []),
+    returnValueForMissingStub: null,
+  );
+}
+
 /// A class which mocks [RunSessionRepository].
 ///
 /// See the documentation for Mockito's code generation for more information.
 class MockRunSessionRepository extends _i1.Mock
-    implements _i12.RunSessionRepository {
+    implements _i13.RunSessionRepository {
   MockRunSessionRepository() {
     _i1.throwOnMissingStub(this);
   }
@@ -422,36 +491,36 @@ class MockRunSessionRepository extends _i1.Mock
           as _i5.Future<String>);
 
   @override
-  _i5.Future<_i12.RunPrivateMetrics?> fetchPrivateMetrics(String? sessionId) =>
+  _i5.Future<_i13.RunPrivateMetrics?> fetchPrivateMetrics(String? sessionId) =>
       (super.noSuchMethod(
             Invocation.method(#fetchPrivateMetrics, [sessionId]),
-            returnValue: _i5.Future<_i12.RunPrivateMetrics?>.value(),
+            returnValue: _i5.Future<_i13.RunPrivateMetrics?>.value(),
           )
-          as _i5.Future<_i12.RunPrivateMetrics?>);
+          as _i5.Future<_i13.RunPrivateMetrics?>);
 
   @override
-  _i5.Future<List<_i12.RunSession>> fetchUserSessions({String? userId}) =>
+  _i5.Future<List<_i13.RunSession>> fetchUserSessions({String? userId}) =>
       (super.noSuchMethod(
             Invocation.method(#fetchUserSessions, [], {#userId: userId}),
-            returnValue: _i5.Future<List<_i12.RunSession>>.value(
-              <_i12.RunSession>[],
+            returnValue: _i5.Future<List<_i13.RunSession>>.value(
+              <_i13.RunSession>[],
             ),
           )
-          as _i5.Future<List<_i12.RunSession>>);
+          as _i5.Future<List<_i13.RunSession>>);
 
   @override
-  _i5.Future<_i12.RunSession?> fetchSessionById(String? sessionId) =>
+  _i5.Future<_i13.RunSession?> fetchSessionById(String? sessionId) =>
       (super.noSuchMethod(
             Invocation.method(#fetchSessionById, [sessionId]),
-            returnValue: _i5.Future<_i12.RunSession?>.value(),
+            returnValue: _i5.Future<_i13.RunSession?>.value(),
           )
-          as _i5.Future<_i12.RunSession?>);
+          as _i5.Future<_i13.RunSession?>);
 }
 
 /// A class which mocks [FollowService].
 ///
 /// See the documentation for Mockito's code generation for more information.
-class MockFollowService extends _i1.Mock implements _i13.FollowService {
+class MockFollowService extends _i1.Mock implements _i14.FollowService {
   MockFollowService() {
     _i1.throwOnMissingStub(this);
   }
@@ -477,40 +546,40 @@ class MockFollowService extends _i1.Mock implements _i13.FollowService {
 /// A class which mocks [BadgeService].
 ///
 /// See the documentation for Mockito's code generation for more information.
-class MockBadgeService extends _i1.Mock implements _i14.BadgeService {
+class MockBadgeService extends _i1.Mock implements _i15.BadgeService {
   MockBadgeService() {
     _i1.throwOnMissingStub(this);
   }
 
   @override
-  _i5.Future<List<_i15.BadgeModel>> getAllBadges(String? userId) =>
+  _i5.Future<List<_i16.BadgeModel>> getAllBadges(String? userId) =>
       (super.noSuchMethod(
             Invocation.method(#getAllBadges, [userId]),
-            returnValue: _i5.Future<List<_i15.BadgeModel>>.value(
-              <_i15.BadgeModel>[],
+            returnValue: _i5.Future<List<_i16.BadgeModel>>.value(
+              <_i16.BadgeModel>[],
             ),
           )
-          as _i5.Future<List<_i15.BadgeModel>>);
+          as _i5.Future<List<_i16.BadgeModel>>);
 
   @override
-  _i5.Future<List<_i15.BadgeModel>> getHomeBadges(String? userId) =>
+  _i5.Future<List<_i16.BadgeModel>> getHomeBadges(String? userId) =>
       (super.noSuchMethod(
             Invocation.method(#getHomeBadges, [userId]),
-            returnValue: _i5.Future<List<_i15.BadgeModel>>.value(
-              <_i15.BadgeModel>[],
+            returnValue: _i5.Future<List<_i16.BadgeModel>>.value(
+              <_i16.BadgeModel>[],
             ),
           )
-          as _i5.Future<List<_i15.BadgeModel>>);
+          as _i5.Future<List<_i16.BadgeModel>>);
 
   @override
-  _i5.Future<List<_i15.BadgeModel>> getProfileBadges(String? userId) =>
+  _i5.Future<List<_i16.BadgeModel>> getProfileBadges(String? userId) =>
       (super.noSuchMethod(
             Invocation.method(#getProfileBadges, [userId]),
-            returnValue: _i5.Future<List<_i15.BadgeModel>>.value(
-              <_i15.BadgeModel>[],
+            returnValue: _i5.Future<List<_i16.BadgeModel>>.value(
+              <_i16.BadgeModel>[],
             ),
           )
-          as _i5.Future<List<_i15.BadgeModel>>);
+          as _i5.Future<List<_i16.BadgeModel>>);
 }
 
 /// A class which mocks [UserCredential].

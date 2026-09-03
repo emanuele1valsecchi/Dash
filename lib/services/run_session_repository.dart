@@ -31,10 +31,20 @@ class RunPrivateMetrics {
 
   bool get isEmpty => avgHeartRateBpm == null && maxHeartRateBpm == null;
 
-  /// The document ID under the session's `private` subcollection. A fixed name
-  /// rather than an auto-ID so it can be fetched (and migrated) directly,
-  /// without a query.
-  static const String docId = 'metrics';
+  /// The document ID under the session's `private` subcollection **is the
+  /// owner's uid**, not a fixed name.
+  ///
+  /// That is a security property rather than a naming choice. With a fixed ID
+  /// every user addressed the same slot, so anyone could create
+  /// `.../private/metrics` under anyone else's session — and the real owner's
+  /// later write, now an `update`, was refused against the squatter's
+  /// document, locking her out of her own heart rate. Addressing by uid makes
+  /// the collision unreachable: a client can only ever name its own slot.
+  /// `firestore.rules` enforces `ownerUid == request.auth.uid`.
+  ///
+  /// The old fixed ID, kept only so the transitional read rule and the
+  /// migration script can name it. Nothing writes here any more.
+  static const String legacyDocId = 'metrics';
 
   Map<String, dynamic> toFirestore(String userId) => {
         // Denormalized so the security rule can authorize a read without a
@@ -291,7 +301,7 @@ class RunSessionRepository {
     // and reads the same as "no watch data".
     if (!metrics.isEmpty) {
       batch.set(
-        docRef.collection('private').doc(RunPrivateMetrics.docId),
+        docRef.collection('private').doc(_uid),
         metrics.toFirestore(_uid),
       );
     }
@@ -300,37 +310,34 @@ class RunSessionRepository {
     return docRef.id;
   }
 
-  /// The body metrics of [sessionId], or null when there are none.
+  /// The signed-in user's own body metrics for [sessionId], or null when
+  /// there are none.
   ///
-  /// **`permission-denied` is an expected, uninteresting outcome here, not a
-  /// failure.** The rule authorizes against the document's own `userId`, so a
-  /// document that does not exist has no `userId` to check and the read is
-  /// denied rather than returning an empty snapshot — which is the case for
-  /// every phone-only run, i.e. most of them.
+  /// Only ever the caller's own: the document is addressed by their uid (see
+  /// [RunPrivateMetrics.legacyDocId] for why), so there is no way to ask for
+  /// anyone else's, and the rules would refuse if there were.
   ///
-  /// That is a deliberate trade rather than an oversight. Letting a missing
-  /// document read as empty would have told any signed-in user which of
-  /// someone else's runs carry watch data, since "denied" and "empty" are
-  /// distinguishable; denying both leaks nothing at all. The cost is this
-  /// swallowed error, which is cheaper than the alternatives (a `get()` on the
-  /// parent session inside the rule is a billed read on every evaluation, and
-  /// writing an empty document for every phone-only run is a write for
-  /// nothing).
+  /// **A missing document now reads as an ordinary empty snapshot**, which is
+  /// the common case — most runs are phone-only. It used to come back as
+  /// `permission-denied`, because the rule had to authorize against the
+  /// document's own `userId` and a missing document has none; that error had
+  /// to be swallowed here and was indistinguishable from a real denial.
+  /// Addressing by uid means another user is refused by the *path*, before
+  /// existence is ever consulted, so nothing leaks about whose runs carry
+  /// watch data and the owner gets a clean answer.
   Future<RunPrivateMetrics?> fetchPrivateMetrics(String sessionId) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return null;
+
     try {
       final doc = await _db
           .collection('runningSessions')
           .doc(sessionId)
           .collection('private')
-          .doc(RunPrivateMetrics.docId)
+          .doc(uid)
           .get();
       if (!doc.exists) return null;
       return RunPrivateMetrics.fromDoc(doc);
-    } on FirebaseException catch (e) {
-      if (e.code != 'permission-denied') {
-        debugPrint('Could not read private metrics for $sessionId: $e');
-      }
-      return null;
     } catch (e) {
       debugPrint('Could not read private metrics for $sessionId: $e');
       return null;

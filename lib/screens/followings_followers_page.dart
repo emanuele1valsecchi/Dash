@@ -17,10 +17,19 @@ class FollowingsFollowersPage extends StatefulWidget {
   static const int followersSection = 0;
   static const int followingSection = 1;
 
+  /// Injectable for tests, defaulting to the real Firestore, so no call site
+  /// changes. Both lists are live `snapshots()` queries, which
+  /// `FakeFirebaseFirestore` supports — so a test can seed follow documents
+  /// and watch the lists react.
+  final FirebaseFirestore? firestore;
+  final FirebaseAuth? auth;
+
   const FollowingsFollowersPage({
     super.key,
     required this.userId,
     this.initialSection = followersSection,
+    this.firestore,
+    this.auth,
   });
 
   @override
@@ -66,10 +75,14 @@ class _FollowingsFollowersPageState extends State<FollowingsFollowersPage> {
                   _UserListSection(
                     userId: widget.userId,
                     isFollowers: true,
+                    firestore: widget.firestore,
+                    auth: widget.auth,
                   ),
                   _UserListSection(
                     userId: widget.userId,
                     isFollowers: false,
+                    firestore: widget.firestore,
+                    auth: widget.auth,
                   ),
                 ],
               ),
@@ -202,10 +215,14 @@ class _Tab extends StatelessWidget {
 class _UserListSection extends StatelessWidget {
   final String userId;
   final bool isFollowers;
+  final FirebaseFirestore? firestore;
+  final FirebaseAuth? auth;
 
   const _UserListSection({
     required this.userId,
     required this.isFollowers,
+    this.firestore,
+    this.auth,
   });
 
   @override
@@ -214,7 +231,7 @@ class _UserListSection extends StatelessWidget {
     final targetField = isFollowers ? 'followerId' : 'followingId';
 
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
+      stream: (firestore ?? FirebaseFirestore.instance)
           .collection('follows')
           .where(queryField, isEqualTo: userId)
           .snapshots(),
@@ -244,7 +261,11 @@ class _UserListSection extends StatelessWidget {
           padding: EdgeInsets.symmetric(horizontal: ResponsiveSpacing().md),
           itemCount: userIds.length,
           itemBuilder: (context, index) {
-            return _UserTileWrapper(targetUserId: userIds[index]);
+            return _UserTileWrapper(
+              targetUserId: userIds[index],
+              firestore: firestore,
+              auth: auth,
+            );
           },
         );
       },
@@ -254,13 +275,21 @@ class _UserListSection extends StatelessWidget {
 
 class _UserTileWrapper extends StatelessWidget {
   final String targetUserId;
+  final FirebaseFirestore? firestore;
+  final FirebaseAuth? auth;
 
-  const _UserTileWrapper({required this.targetUserId});
+  const _UserTileWrapper({
+    required this.targetUserId,
+    this.firestore,
+    this.auth,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final db = firestore ?? FirebaseFirestore.instance;
+
     return FutureBuilder<DocumentSnapshot>(
-      future: FirebaseFirestore.instance.collection('profiles').doc(targetUserId).get(),
+      future: db.collection('profiles').doc(targetUserId).get(),
       builder: (context, snapshot) {
         if (!snapshot.hasData || !snapshot.data!.exists) {
           return const SizedBox.shrink();
@@ -272,12 +301,12 @@ class _UserTileWrapper extends StatelessWidget {
         final email = data['email'] ?? '';
         final profileImageUrl = data['profileImageUrl'] ?? '';
 
-        final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+        final currentUserId = (auth ?? FirebaseAuth.instance).currentUser?.uid;
         final isSelf = currentUserId == targetUserId;
 
         return StreamBuilder<DocumentSnapshot>(
           stream: currentUserId != null
-              ? FirebaseFirestore.instance
+              ? db
                   .collection('follows')
                   .doc('${currentUserId}_$targetUserId')
                   .snapshots()

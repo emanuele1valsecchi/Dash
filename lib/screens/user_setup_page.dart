@@ -5,14 +5,19 @@ import 'package:image_picker/image_picker.dart';
 import '../services/profile_service.dart';
 
 class UserSetupScreen extends StatefulWidget {
-  const UserSetupScreen({super.key});
+  /// Injectable for tests; defaults to the real service, so every existing
+  /// `const UserSetupScreen()` call site is untouched. Same pattern as
+  /// `LoginScreen`/`RegisterScreen`.
+  const UserSetupScreen({super.key, this.profileService});
+
+  final ProfileService? profileService;
 
   @override
   State<UserSetupScreen> createState() => _UserSetupScreenState();
 }
 
 class _UserSetupScreenState extends State<UserSetupScreen> {
-  final _profileService = ProfileService();
+  late final _profileService = widget.profileService ?? ProfileService();
   final _usernameCtrl   = TextEditingController();
   final _nameCtrl       = TextEditingController();
   final _surnameCtrl    = TextEditingController();

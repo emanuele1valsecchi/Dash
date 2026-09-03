@@ -1,26 +1,15 @@
 # TEST NOTES
 
-> ## ⚠ OPEN SECURITY QUESTION — needs a team decision
+> ## ✅ RESOLVED — private-metrics squatting
 >
-> **Any signed-in user can create a private-metrics document under anyone
-> else's run — and doing so permanently locks the real owner out of their own
-> heart-rate data for that run.** Found by the rules tests, verified against
-> the emulator. Not fixed, not agreed. Details and two proposed fixes in
-> [section 5](#the-open-finding-private-metrics-squatting).
->
-> It shows in every rules run as a red `not ok ... # TODO` line and will keep
-> showing until someone resolves it.
+> Any signed-in user could create a private-metrics document under anyone
+> else's run, which **permanently locked the real owner out of their own
+> heart-rate data**. Found by the rules tests, verified against the emulator,
+> **fixed** by addressing the document by the owner's uid.
+> Write-up in [section 5](#the-finding-private-metrics-squatting-fixed).
 
-
-Everything worth knowing about testing Dash that is not obvious from reading
-the tests, plus what we still owe. Written up as we went, so the reasons are
-recorded rather than re-derived.
-
-For *how to run things*, see [test/README.md](test/README.md). This file is the
-running log: traps, decisions, bugs found, and open work.
-
-**Status:** 391 Dart tests + **98 Firestore rules tests**, `flutter analyze`
-clean, **16.4% line coverage** (1980/12057 across all 126 files in `lib/`).
+**Status:** 578 Dart tests + **109 Firestore rules tests**, `flutter analyze`
+clean, all green.
 
 ---
 
@@ -92,6 +81,13 @@ font proves a comfortable real-world margin, which also covers large
 accessibility text scales. Keep such assertions where they pass; never read a
 failure as a bug without measuring.
 
+
+**A corollary worth knowing:** when a widget sizes itself from `MediaQuery`
+rather than its parent, wrapping it in a bigger `SizedBox` does nothing — the
+overflow stays *identical*. That is the tell. Widen `surfaceSize` instead. It
+cost a round on `leaderboard_preview_card_test.dart`, where the overflow read
+27px at both 560 and 800 pixels of parent width.
+
 ### 1.3 `Scaffold`'s body gets *tight* constraints
 
 A widget that sizes itself to a fraction of screen width gets stretched back to
@@ -145,6 +141,18 @@ narrowly (anything not Firebase-init-related still fails the test).
 "Signing in lands you on the home screen" is an **integration test**, and is
 listed as owed work below.
 
+### 1.9 A SnackBar needs a Scaffold to survive a pop
+
+A page that shows a confirmation and then pops (`EditProfilePage` on save) will
+appear to show nothing if the route *underneath* has no `Scaffold`. A SnackBar
+is hosted by the `ScaffoldMessenger` but re-parents to the nearest registered
+`Scaffold`; with a bare widget beneath, there is nothing to re-parent to and
+the message vanishes with the page.
+
+That is a test-harness artifact, not an app bug — every real caller is a
+Scaffold-based page — but it costs a confusing round if the harness pumps the
+page under a plain `Builder`. Give the parent route a `Scaffold`.
+
 ---
 
 ## 2. Bugs the tests actually found
@@ -153,12 +161,27 @@ listed as owed work below.
 |---|---|---|
 | **`signInWithGoogle()` called twice per tap** — a leftover debug block ran the whole Google flow, then the real attempt ran it again. Wasted work, and an error surfaced from whichever call landed first. | `register_page.dart` | **Fixed.** Caught by "asks the auth service exactly once" (Expected 1, Actual 2). |
 | Name rendered untrimmed — `'$name $surname'` left a trailing space for a user with no surname, visibly off-centring a centred name. `DashUserTile` already trimmed. | `share_profile_page.dart` | **Fixed.** |
+| **`Expanded` inside a `Padding`** — `_buildFollowersCount` returned an `Expanded`, but both call sites are already `Row > Expanded > InkWell > Padding`, so the inner one had a non-Flex parent. Flutter's "Incorrect use of ParentDataWidget" assertion fired on **every render of a profile header**. | `profile_header.dart` | **Fixed.** Found while getting `PublicProfilePage` to render at all. |
+| **Unhandled async error on a badge read** — `_startBadgesStream()` is `async void` with no guard around `getProfileBadges`, so a failure escapes as an unhandled zone error nothing can catch. Realistic: this exact read was denied outright before the `badge_progress` rule was widened. | `public_profile_page.dart` | **Fixed** — badges now degrade to absent. |
+| **`maxLines`/`ellipsis` that could never take effect** — the stat title sat in a `Row` with `mainAxisSize: min` and no `Flexible`, so it was never width-constrained and its truncation properties were inert. The intent was already in the code; it simply could not work. | `statistic_tachometer.dart` | **Fixed** — title wrapped in `Flexible`, matching `DashMapCard`. |
 | Two "overflow" bugs | — | **Not real.** See 1.2. |
 
 Also noticed while reading, **not** fixed:
 
-- **`error_page.dart`'s "Return to login" button is `onPressed: (){}`** — a dead
-  button that does nothing at all.
+- **The Start-run overlay's action labels are not tappable — and that is
+  deliberate, confirmed by the project owner.** Each of the three actions is a
+  `Row` of a plain `Text` beside a *separate* icon-only `DashActionButton`, so
+  only the round icon is a target. Tapping the words does **nothing at all**:
+  it neither selects the action nor dismisses the overlay.
+
+  Three behaviours were possible — do nothing, dismiss (the tap falling
+  through to the backdrop), or trigger the action. "Do nothing" is the chosen
+  one, and it is the safest: a near-miss on a small icon must not close a menu
+  the user just opened. Pinned by
+  `start_run_overlay_test.dart`'s `only the icon is tappable, not the label
+  beside it`, so a refactor that accidentally makes the label swallow-through
+  to the backdrop will fail rather than pass silently.
+
 - **`ClaimedAreaRepository` contradicts its own doc comment.** It documents
   itself as *"One-time read rather than a real-time listener"*, but its only
   method is `areasStream()` using `.snapshots()` — a live listener on the
@@ -242,6 +265,30 @@ Do this yourself any time: flip `bool isPublic = false` to `true` in
 `route_repository.dart`, run `flutter test`, watch it go red, change it back.
 
 
+### Three seam shapes, in increasing order of reach
+
+As screens got harder the injection had to go deeper. Worth knowing which
+shape a given screen needs before starting:
+
+1. **Service injection** — the screen builds a service (`AuthService()`,
+   `ProfileService()`); give the widget an optional parameter for it.
+   `LoginScreen`, `RegisterScreen`, `UserSetupScreen`,
+   `SavedRouteDetailPage`, `RunSessionDetailPage`.
+2. **Repository injection, forwarded through a child** — the screen itself is
+   fine but a widget *inside* it reaches a singleton. `RouteLibraryPage` takes
+   the repositories only to hand them to `SavedRoutesSection`.
+3. **Firestore injection, threaded to the leaf** — the screen queries
+   `FirebaseFirestore.instance` directly, often several levels down.
+   `FollowingsFollowersPage` passes a `FirebaseFirestore` to its list section
+   *and* to the per-row tile, which does its own profile read and its own
+   follow-state `snapshots()`. Miss one level and the test fails with
+   `[core/no-app]` from whichever widget you forgot.
+
+   The payoff is worth it: with `FakeFirebaseFirestore` these become *real*
+   queries against real in-memory documents, including live `snapshots()`
+   updates, rather than stubbed return values. `followings_followers_page_test`
+   asserts that adding a follow document makes a row appear with no reload.
+
 ### No fake test account. Integration tests stay a smoke test.
 
 Decided deliberately: standing up a dedicated Firebase account for tests means
@@ -280,17 +327,15 @@ rather than treated as parity work.
    assertion scripts run with plain `node`, producing no machine-readable
    result and invisible to any coverage or CI summary. Moving them to
    `node:test` would fix that without rewriting the assertions.
-3. **No CI.** Nothing runs the suite on push. `dart run tool/coverage.dart --min N`
-   exits non-zero below a threshold and is ready to wire up.
 
 ### Medium
 
-4. **`widgets/` is 14.5%.** ~20 Firebase-free widgets remain untested, including
+3. **`widgets/` is 14.5%.** ~20 Firebase-free widgets remain untested, including
    `EnhancedMapGestures` (440 lines) — the rotation dead zone and multi-touch
    release fix are the most intricate untested logic in the app, and the most
    likely to regress silently.
-5. **`models/` is 43.9%** and only 41 lines. Cheap to finish.
-6. **The loose `*_test.dart` files at the root of `test/`** predate the
+4. **`models/` is 43.9%** and only 41 lines. Cheap to finish.
+5. **The loose `*_test.dart` files at the root of `test/`** predate the
    `unit/`/`widget/` split. Move them into `test/unit/` when next touched.
 
 
@@ -305,8 +350,57 @@ rather than treated as parity work.
   failure would come and go. Call it in `setUp` **and** `tearDown` when touching
   units.
 - **`qr_scanner_page.dart` needs a camera** and is untestable at this level.
-- **`session_detail_page.dart` is unreferenced dead code** (per CLAUDE.md) —
-  don't spend tests on it; delete it.
+- **Four dead screens were deleted** (863 lines): `registration_page.dart`
+  (272 — an abandoned twin of the live `register_page.dart`, actively
+  confusing), `temp_profile_page.dart` (296), `session_detail_page.dart` (264)
+  and `error_page.dart` (31). Each was verified to have no imports and no
+  non-comment references to its public classes; `flutter analyze` and the full
+  suite stayed green afterwards.
+
+  **Beware the naive check:** searching for class references alone reports
+  `run_tracking_page.dart` (1,953 lines) as dead too, because it is reached
+  through the `pushRunTracking` *function*, not its class. Verify imports and
+  function-level entry points before deleting anything.
+
+- **`test_run_creator_page.dart` (1,669 lines) is deliberately untested and
+  excluded from the coverage denominator.** It is a developer-only tool,
+  reached from a hidden entry point on the run countdown screen, that
+  fabricates running sessions so the area-claiming logic can be exercised
+  against specific loop shapes without physically running them. It is
+  scaffolding *for* testing the app, not part of the app. **Kept in the
+  codebase — do not delete it — just do not spend tests on it.**
+
+  The exclusion lives in `_excludedFromCoverage` in `tool/coverage.dart`
+  alongside `firebase_options.dart`, and the report prints the list every run
+  so the number stays honest. Excluding code is how a coverage figure becomes
+  a lie, so anything added there must be something a test *should not* be
+  written for, not merely something awkward to test.
+
+- **Google/Apple sign-in cannot be driven** past the service boundary; we verify
+  the screen calls `signInWithGoogle()` and handles null (cancelled) and throw
+  (failed), which is as far as a widget test can go.
+- **`UnitPreferences` is an app-lifetime singleton.** `resetForTesting()`
+  (`@visibleForTesting`) exists because otherwise one test's choice of miles
+  leaks into every later test, and since test order is not guaranteed the
+  failure would come and go. Call it in `setUp` **and** `tearDown` when touching
+  units.
+- **`qr_scanner_page.dart` needs a camera** and is untestable at this level.
+- **Four screens are unreferenced dead code — 863 lines. Do not test them;
+  delete them.** Checked by searching for each file's public class names
+  across `lib/`, excluding comment lines:
+
+  | File | Lines | Note |
+  |---|---|---|
+  | `registration_page.dart` | 272 | `RegistrationScreen` — an abandoned twin of the live `register_page.dart`'s `RegisterScreen`. Two near-identical files, one dead: actively confusing. |
+  | `temp_profile_page.dart` | 296 | Named only in a *comment* in `route_search_page.dart`. |
+  | `session_detail_page.dart` | 264 | Already flagged in CLAUDE.md as superseded. |
+  | `error_page.dart` | 31 | Its "Return to login" button is `onPressed: (){}` — a dead button on a dead screen. |
+
+  They also inflate the coverage denominator by 863 lines that can never
+  legitimately be covered. **Beware the naive check:** searching for class
+  references alone reports `run_tracking_page.dart` as dead too, because it is
+  reached through the `pushRunTracking` *function*, not its class. Verify
+  before deleting anything.
 
 
 ---
@@ -344,115 +438,105 @@ Removing the `isPublic` pin from the `routes` update rule failed exactly three
 tests — the two permanence checks and the legacy-document one — and nothing
 else. Reverted; suite green.
 
-### The open finding: private-metrics squatting
+### The finding: private-metrics squatting (fixed)
 
-<a name="the-open-finding-private-metrics-squatting"></a>
+<a name="the-finding-private-metrics-squatting-fixed"></a>
 
-**Status: unresolved. Needs a decision.** Surfaces as a deliberately-failing
-`todo` test in `running_sessions.test.js`:
+**Fixed.** Kept in full because the reasoning is the useful part, and because
+the same shape of bug is easy to reintroduce anywhere a rule authorizes off a
+field in the document body rather than off the path.
 
-```
-not ok 5 - another user may NOT create metrics under someone elses session # TODO
-not ok 6 - the owner can still save metrics after someone squats the slot   # TODO
-# fail 0
-# todo 2
-```
+#### What was wrong
 
-`todo` rather than a hard failure so CI stays usable — a permanently red suite
-teaches people to ignore red. Delete the marker when the rule is tightened;
-node:test reports a *passing* todo, which is the prompt to do it.
-
-**What the rule actually says** (`runningSessions/{id}/private/{docId}`):
+`runningSessions/{id}/private/metrics` used a **fixed document ID**, and the
+rule authorized `create` off the document's own denormalized `userId`:
 
 ```
 allow create: if isSignedIn()
-  && request.resource.data.userId == request.auth.uid
-  && validHeartRate(...);
+  && request.resource.data.userId == request.auth.uid   // says nothing about
+  && validHeartRate(...);                               // whose session it is
 ```
 
-It authorizes off the **document's own denormalized `userId`** — not the parent
-session's owner. Nothing anywhere checks that the session belongs to the writer.
-
-**So Bob can do this:**
-
-```js
-setDoc(doc(bobsDb, 'runningSessions/<any-session-id>/private/metrics'),
-       { userId: 'bob', avgHeartRateBpm: 152 });   // succeeds
-```
-
-**Consequences — run against the emulator, not reasoned about:**
+Every user addressed the *same slot*. So Bob could write into Alice's session
+just by stamping his own uid in the body. Measured against the emulator:
 
 ```
 PROBE bob creates metrics under alice session: ALLOWED
-PROBE alice then writes her own metrics:       DENIED
+PROBE alice then writes her own metrics:       DENIED   <- locked out
 PROBE alice reads the slot:                    DENIED
 PROBE alice deletes the squatted doc:          DENIED
 ```
 
-So it is **a denial of service on the owner's own data**, not merely litter:
+Not merely litter: once Bob's document occupied the slot, Alice's own write
+became an `update`, gated on the **existing** document's `userId` — so she was
+refused, and could neither read nor delete his document to clear it. Session
+IDs are readable by any signed-in user (the collection is world-readable by
+design), so it was enumerable across the whole app.
 
-1. Once Bob's document occupies `.../private/metrics`, Alice's own write
-   becomes an *update*, and `update` is gated on the **existing** document's
-   `userId` — so she is denied. Her heart rate silently never saves.
-2. She can neither read nor delete Bob's document to clear the slot. Only an
-   Admin-SDK sweep can.
-3. It is cheap and repeatable: session IDs are readable by any signed-in user
-   (the collection is world-readable by design), so an attacker can enumerate
-   every session in the app and squat all of them.
-
-**What it is NOT:** disclosure. Bob cannot read anything of Alice's, and cannot
-overwrite metrics that already exist. No heart rate leaks. The damage is
-availability and integrity, not confidentiality.
-
-#### Why it was not just fixed
-
-CLAUDE.md rejects `get()` inside a rule because it is *"a billed read on every
-evaluation"*. **That reasoning is weaker here than it first looks, and this is
-the part worth arguing about:**
-
-- It was written about the **read** rule, which fires constantly — a detail
-  page loads metrics on every visit.
-- The hole is in **create/update**, which fire only when a *watch* run is
-  saved. Per the migration note in CLAUDE.md, production had **11 sessions and
-  zero heart-rate records** — no watch run has ever been saved. The write path
-  is close to unused.
-
-So "a `get()` on create only" costs approximately nothing today.
-
-#### Two candidate fixes, for the discussion
-
-**A. `get()` the parent, on write paths only.**
+#### The fix: make the document ID the owner's uid
 
 ```
-allow create: if isSignedIn()
-  && request.resource.data.userId == request.auth.uid
-  && get(/databases/$(database)/documents/runningSessions/$(sessionId))
-       .data.userId == request.auth.uid
-  && validHeartRate(...);
+match /private/{ownerUid} {
+  allow read:   if isSelf(ownerUid) || <transitional legacy clause>;
+  allow create: if isSelf(ownerUid)
+                && request.resource.data.userId == ownerUid
+                && validHeartRate(...);
+  allow update: if isSelf(ownerUid) && ...;
+  allow delete: if isSelf(ownerUid) || <transitional legacy clause>;
+}
 ```
 
-Smallest change, no data migration, leaves the read rule untouched. Costs one
-billed read per metrics write — currently a rounding error.
+`runningSessions/{sessionId}/private/{uid}`. A client can only ever *name* its
+own slot, so the collision is **unreachable rather than merely forbidden** —
+the strongest form of this kind of fix, and the reason it beat the two options
+originally on the table:
 
-**B. Put the owner in the document path instead.** Move body metrics to a
-top-level `runPrivateMetrics/{uid}_{sessionId}`, so the rule reads the owner
-straight out of the ID:
+| | Cost | Migration | Result |
+|---|---|---|---|
+| `get()` the parent session | a billed read per write | none | forbidden |
+| move to `runPrivateMetrics/{uid}_{sessionId}` | none | yes, plus `saveSession` rework | unreachable |
+| **document ID = uid** (chosen) | **none** | **none in practice** | **unreachable** |
+
+Same insight as `favoriteRoutes/{uid}_{routeId}`, which already puts the owner
+in the path — so this is a pattern the codebase already had, applied where it
+had been missed.
+
+Replayed after the change:
 
 ```
-allow read, write: if isSignedIn()
-  && favId.split('_')[0] == request.auth.uid;
+PROBE bob squats alice slot        : DENIED
+PROBE alice writes her own metrics : ALLOWED
+PROBE alice reads her own          : ALLOWED
+PROBE bob reads alice metrics      : DENIED
+PROBE alice deletes her own        : ALLOWED
 ```
 
-No `get()`, no billed read, and squatting becomes structurally impossible
-rather than merely forbidden. **This is the same trick `favoriteRoutes/{uid}_{routeId}`
-already uses in this codebase**, so it is a consistent pattern rather than a new
-idea. Costs a migration and a change to `RunSessionRepository.saveSession`
-(which currently writes the subcollection in the same `WriteBatch`, partly *for*
-the shared document ID).
+#### Two things it improved on the way
 
-**My reading:** B is the better end state — it removes the class of bug instead
-of the instance, and matches a pattern already here. A is the right thing to
-ship first if a fix is wanted before the migration is scheduled.
+- **A missing document now reads as an empty snapshot for the owner.** It used
+  to return `permission-denied` — the rule needed a `userId` a missing document
+  does not have — and `fetchPrivateMetrics` had to swallow that error, which
+  was indistinguishable from a real denial. Another user is now refused by the
+  *path*, before existence is ever consulted, so nothing leaks about whose runs
+  carry watch data and the owner gets a clean answer. That swallow is gone.
+- **A remaining, accepted gap:** a user can still create a document in *their
+  own* slot under someone else's session. It blocks nobody, is readable by
+  nobody else, and is swept with the session on account deletion. Preventing it
+  needs exactly the `get()` this design avoids. Not worth it.
+
+#### Deployment order
+
+1. **Deploy `firestore.rules` first.** The new rules accept both shapes (the
+   transitional clause keeps legacy `metrics` documents readable and
+   deletable), so old app builds keep working — they simply cannot write the
+   old slot any more.
+2. Ship the app build.
+3. Run `functions/_migrate_private_metrics.js` (updated to write uid-addressed
+   documents) if any legacy documents exist. **Production held 11 sessions and
+   zero heart-rate records at last check**, so this is likely a no-op — verify
+   before assuming.
+4. Delete the transitional clause from the rules, and
+   `RunPrivateMetrics.legacyDocId`, once step 3 reports nothing left.
 
 ### What is covered
 
@@ -467,9 +551,58 @@ ship first if a fix is wanted before the migration is scheduled.
 | `favoriteRoutes` | client cannot create; only `name` updatable |
 | `notifications` | recipient-only read; client cannot create; only `isRead` updatable |
 
+
 ---
 
-## 6. Quick reference
+## 6. CI
+
+`.github/workflows/tests.yml` — runs on every push to `main` or `dev/**`, and
+on every pull request into `main`. Two **independent** jobs:
+
+| Job | What it does |
+|---|---|
+| `Analyze + test` | `flutter pub get` → mock-staleness check → `flutter analyze` → `dart run tool/coverage.dart --min 30`, uploading `lcov.info` and `report.html` as artifacts |
+| `Firestore rules` | Node 20 + JDK 21 → `npm ci` → `npm test` (boots the emulator, runs `node --test` against the real `firestore.rules`) |
+
+### Decisions worth not undoing
+
+- **The two jobs are deliberately independent.** The rules are a different
+  language, runner and failure mode from the Flutter suite; a rules regression
+  must not be hidden behind a Dart compile error, or the reverse.
+- **Flutter is pinned to `3.44.0`, not `stable`.** This project has already
+  lost a session to two SDKs disagreeing (see 1.1). A floating channel would
+  reintroduce exactly that, remotely, where it is harder to debug.
+- **`tool/coverage.dart`, not `flutter test --coverage`** — for the reason in
+  section 3: the built-in figure is a percentage of the tested subset and
+  *rises* when you delete a test.
+- **`--min 30` is a ratchet, not a target.** Coverage is 34.3% now. Raise the
+  floor as it climbs; **never lower it to make a red build green** — that is
+  how the number stops meaning anything.
+- **JDK 21 on CI, though the local pin is firebase-tools 14.19.0.** The pin
+  exists only because this dev machine has no JDK newer than 19 (see 5). CI
+  has no such constraint, so it runs the version firebase-tools actually wants.
+- **No secrets are needed.** `MapStyle` reads its Jawg token via
+  `String.fromEnvironment`, which defaults to empty, and no test renders real
+  tiles. Nothing in the suite touches the network. If a test ever needs the
+  token, add it as a repository secret rather than committing it.
+
+### Verified before committing to it
+
+Each step was run locally first, rather than pushed and watched:
+
+- `dart run tool/coverage.dart --min 30` → exit 0; `--min 99` → exit 1, so the
+  gate genuinely fails a build.
+- `npm ci` in `test/rules` → exit 0 from the committed lockfile, and the 109
+  rules tests pass afterwards.
+- `dart run build_runner build` → "wrote 0 outputs", so the committed mocks are
+  current.
+
+**One caveat:** the mock-staleness check is meaningful only on Linux. Windows
+has `core.autocrlf=true`, so a local run of that `git diff` is never empty.
+
+---
+
+## 7. Quick reference
 
 ```sh
 flutter test                              # 391 tests, ~17s

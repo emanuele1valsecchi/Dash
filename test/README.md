@@ -119,6 +119,26 @@ assertions where they pass; just never read a failure as a bug without
 measuring first. Where a page trips the artifact (see `login_page_test.dart`),
 widen the test viewport and assert behaviour instead of pixels.
 
+
+## CI
+
+`.github/workflows/tests.yml` runs both suites on every push to `main` or
+`dev/**` and on every PR into `main`:
+
+- **Analyze + test** — `flutter analyze`, then
+  `dart run tool/coverage.dart --min 30`. Coverage reports are uploaded as
+  build artifacts, so you can download `report.html` from a run.
+- **Firestore rules** — boots the emulator and runs the 109 rules tests.
+
+The two jobs are independent on purpose: a rules regression should not be
+hidden behind a Dart compile error, or the reverse.
+
+Flutter is pinned to **3.44.0**, not `stable` — see TEST_NOTES.md section 1.1
+for why a floating channel is a trap in this repo specifically.
+
+`--min 30` is a **ratchet**. Raise it as coverage climbs; never lower it to
+turn a red build green.
+
 ## What is not covered yet, and why
 
 `flutter test --coverage` only reports files a test actually imports, so the

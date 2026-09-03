@@ -59,12 +59,21 @@ void main() {
   Future<Map<String, dynamic>> session(String id) async =>
       (await db.collection('runningSessions').doc(id).get()).data()!;
 
-  Future<DocumentSnapshot<Map<String, dynamic>>> privateDoc(String id) => db
-      .collection('runningSessions')
-      .doc(id)
-      .collection('private')
-      .doc(RunPrivateMetrics.docId)
-      .get();
+  /// The private metrics slot for [id], addressed by the **owner's uid** —
+  /// which is what stops one user occupying another's. A fixed document ID
+  /// used to let any signed-in user write into anyone's session and lock the
+  /// real owner out of their own heart rate; see `firestore.rules` and
+  /// `test/rules/running_sessions.test.js`.
+  Future<DocumentSnapshot<Map<String, dynamic>>> privateDoc(
+    String id, {
+    String uid = 'runner-1',
+  }) =>
+      db
+          .collection('runningSessions')
+          .doc(id)
+          .collection('private')
+          .doc(uid)
+          .get();
 
   group('saveSession', () {
     test('writes the run under the signed-in user', () async {
@@ -132,6 +141,15 @@ void main() {
         expect(metrics.exists, isTrue);
         expect(metrics.data()!['avgHeartRateBpm'], 152);
         expect(metrics.data()!['maxHeartRateBpm'], 178);
+      });
+
+      test('the metrics document is addressed by the owner uid', () async {
+        // The security property: a client can only ever name its own slot, so
+        // no user's write can collide with another's.
+        final id = await save(avgHeartRateBpm: 152);
+
+        expect((await privateDoc(id, uid: 'runner-1')).exists, isTrue);
+        expect((await privateDoc(id, uid: 'someone-else')).exists, isFalse);
       });
 
       test('the private doc denormalizes userId so its rule needs no get()',

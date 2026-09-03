@@ -1143,6 +1143,9 @@ Keep this list current — update it whenever a feature moves between these buck
   service/background GPS, the watch bridge, crash-recovery persistence, back-to-minimize,
   and collapsing the five lifecycle booleans into a phase enum.
 - Dev-only test run creator, reached from the run-tracking countdown screen
+  (**deliberately untested and excluded from the coverage denominator — it is
+  scaffolding for testing the app, not part of it; keep the file, don't write
+  tests for it**)
   ([lib/screens/test_run_creator_page.dart](lib/screens/test_run_creator_page.dart)) — builds a fake run by placing pins (routed
   the same way as route creation) plus a manually-entered duration, then publishes
   straight into `runningSessions`, so the area-claiming logic can be tested against
@@ -2037,12 +2040,13 @@ for convenience, and flag it clearly if a requested change would weaken either.
 
 ## Testing
 
-> **Open security question, unresolved:** any signed-in user can create a
-> private-metrics document under anyone else's run, which permanently locks
-> the real owner out of their own heart-rate data for that run. Verified
-> against the emulator; two candidate fixes written up in
-> [TEST_NOTES.md](TEST_NOTES.md) section 5. Pinned by two `todo` tests so it
-> stays visible.
+> **Fixed, worth knowing:** the private run-metrics document is addressed by
+> the **owner's uid** (`runningSessions/{id}/private/{uid}`), not a fixed
+> `metrics` ID. With a fixed ID any signed-in user could occupy anyone's slot
+> and permanently lock the real owner out of their own heart-rate data. The
+> uid-addressed path makes that unreachable at no cost; see
+> [TEST_NOTES.md](TEST_NOTES.md) section 5 for the full write-up and the
+> deployment order.
 
 **Start with [TEST_NOTES.md](TEST_NOTES.md)** — the running log of traps, decisions,
 bugs the tests found, and what is still owed. [test/README.md](test/README.md) covers how to

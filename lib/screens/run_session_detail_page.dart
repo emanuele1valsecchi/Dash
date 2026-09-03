@@ -59,10 +59,23 @@ class RunSessionDetailPage extends StatefulWidget {
   final String sessionId;
   final String userId;
 
+  /// Injectable for tests, each defaulting to what the app already uses, so
+  /// no call site changes. `auth` decides `_isOwnRun`, which gates the body
+  /// metrics — energy and heart rate describe the *runner*, not the route, so
+  /// a visitor must see only the shape of the run.
+  final FirebaseAuth? auth;
+  final RunSessionRepository? sessionRepository;
+  final FavoriteRouteRepository? favoriteRepository;
+  final ProfileService? profileService;
+
   const RunSessionDetailPage({
     super.key,
     required this.sessionId,
     required this.userId,
+    this.auth,
+    this.sessionRepository,
+    this.favoriteRepository,
+    this.profileService,
   });
 
   @override
@@ -70,6 +83,13 @@ class RunSessionDetailPage extends StatefulWidget {
 }
 
 class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
+  late final _auth = widget.auth ?? FirebaseAuth.instance;
+  late final _sessions =
+      widget.sessionRepository ?? RunSessionRepository.instance;
+  late final _favorites =
+      widget.favoriteRepository ?? FavoriteRouteRepository.instance;
+  late final _profiles = widget.profileService ?? ProfileService();
+
   RunSession? _session;
   String? _username;
 
@@ -98,7 +118,7 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
   /// Whether the viewer is the person who ran this. Gates the body metrics
   /// (energy, heart rate) — see [_buildStats].
   bool get _isOwnRun =>
-      FirebaseAuth.instance.currentUser?.uid == widget.userId;
+      _auth.currentUser?.uid == widget.userId;
 
   @override
   void initState() {
@@ -113,7 +133,7 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
     RunSession? session;
     try {
       session =
-          await RunSessionRepository.instance.fetchSessionById(widget.sessionId);
+          await _sessions.fetchSessionById(widget.sessionId);
     } catch (e) {
       debugPrint('Could not load session ${widget.sessionId}: $e');
     }
@@ -130,14 +150,14 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
   Future<void> _loadPrivateMetrics() async {
     if (!_isOwnRun) return;
     final metrics =
-        await RunSessionRepository.instance.fetchPrivateMetrics(widget.sessionId);
+        await _sessions.fetchPrivateMetrics(widget.sessionId);
     if (mounted) setState(() => _privateMetrics = metrics);
   }
 
   Future<void> _loadUsername() async {
     String? username;
     try {
-      username = await ProfileService().fetchUsername(widget.userId);
+      username = await _profiles.fetchUsername(widget.userId);
     } catch (e) {
       debugPrint('Could not resolve username ${widget.userId}: $e');
     }
@@ -155,7 +175,7 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
     var favorited = false;
     try {
       favorited =
-          await FavoriteRouteRepository.instance.isFavorited(widget.sessionId);
+          await _favorites.isFavorited(widget.sessionId);
     } catch (e) {
       debugPrint('Could not resolve favourite state: $e');
     }
@@ -171,13 +191,13 @@ class _RunSessionDetailPageState extends State<RunSessionDetailPage> {
     setState(() => _togglingFavorite = true);
     try {
       if (_isFavorited) {
-        await FavoriteRouteRepository.instance.unfavoriteRoute(session.id);
+        await _favorites.unfavoriteRoute(session.id);
         if (!mounted) return;
         setState(() => _isFavorited = false);
       } else {
         // Only the ID is sent: the server copies the geometry out of the
         // session itself rather than trusting anything from this client.
-        await FavoriteRouteRepository.instance.favoriteSession(
+        await _favorites.favoriteSession(
           session.id,
           routeName: _username != null ? "$_username's run" : 'Favourited run',
         );

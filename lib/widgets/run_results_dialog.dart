@@ -329,7 +329,7 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
           const Divider(height: 1, color: Color(0xFFCFE3C0)),
           const SizedBox(height: 10),
           const Text(
-            'XP BREAKDOWN (DEBUG)',
+            'XP BREAKDOWN',
             style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF6B7266), letterSpacing: 0.4),
           ),
           const SizedBox(height: 6),
