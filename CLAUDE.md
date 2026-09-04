@@ -616,8 +616,17 @@ Keep this list current — update it whenever a feature moves between these buck
      deactivates leaves a dependent registered on an ancestor `InheritedElement`, which
      then asserts on its own deactivation a moment later. **The reported assertion names
      the victim, not the cause — look for something throwing during teardown.**
-     `personal_information_page.dart`'s `_updateEmailDialog` still has the original
-     shape and is the same crash waiting to happen.
+     `personal_information_page.dart`'s `_updateEmailDialog` **had the same shape and
+     has been fixed the same way** (`_UpdateEmailDialog`, a private `StatefulWidget`
+     owning its own controller). It was not hypothetical: a widget test reproduced it
+     before the fix, and the assertion it actually raises is the plainer
+     `A TextEditingController was used after being disposed`, thrown from the
+     `TextField` during the dialog's *exit transition* — the `dependents.isEmpty`
+     variant is what the same root cause looks like when it happens to surface a frame
+     later. Pinned by `test/widget_test/personal_information_page_test.dart`'s
+     "cancelling closes it cleanly", which only catches it because it settles the exit
+     animation. **Any remaining `create controller -> await showDialog -> dispose`
+     site is the same bug**; grep for it before adding another.
   2. **Find a Route** — `RouteSearchPage`, behaviourally unchanged.
   **The `Run` contract is unchanged all the way up**: the detail page pops its own route
   with the polyline, the section forwards it, and the library pops with it — exactly what
@@ -996,8 +1005,8 @@ Keep this list current — update it whenever a feature moves between these buck
   fully blocking back-dismissal there too — the user must explicitly choose Save or
   Discard.
 - **Direction arrow while following a planned route** (`GeometryUtils.routeGuidance` +
-  `RouteGuidance` in [lib/utils/geometry_utils.dart](lib/utils/geometry_utils.dart), rendered by `_RouteGuidanceCard` in
-  [lib/screens/run_tracking_page.dart](lib/screens/run_tracking_page.dart)) — a compass-style bearing guide, deliberately
+  `RouteGuidance` in [lib/utils/geometry_utils.dart](lib/utils/geometry_utils.dart), rendered by `RouteGuidanceCard` in
+  [lib/widgets/run/route_guidance_card.dart](lib/widgets/run/route_guidance_card.dart)) — a compass-style bearing guide, deliberately
   **not** turn-by-turn: it needs no street names, works on any polyline including
   hand-drawn and multi-hop stitched ones, and degrades to "head that way" rather than
   failing. Real turn-by-turn would need ORS's `steps` (returned by the API but discarded
@@ -1060,7 +1069,7 @@ Keep this list current — update it whenever a feature moves between these buck
     `GeometryUtils` is — `test/route_progress_test.dart`, 14 tests) divides the planned
     route into checkpoints spaced ~150 m apart by *cumulative distance* (clamped to 3–12,
     placed via the existing `GeometryUtils.arrowPositions` sampling, endpoints excluded)
-    and requires all of them to be passed before `_RouteGuidanceCard` will say "Route
+    and requires all of them to be passed before `RouteGuidanceCard` will say "Route
     complete". **Checkpoints must be reached in order**, which is load-bearing rather than
     tidiness: an unordered proximity test reintroduces the same bug from the other end,
     since on a small loop the *last* checkpoint can sit within the 35 m visit radius of the
@@ -1110,6 +1119,22 @@ Keep this list current — update it whenever a feature moves between these buck
   dedupe key includes `guidance.segmentIndex`, which advances every few metres on a
   road-snapped polyline, so the same turn is re-announced repeatedly within one distance
   band — it should key on the turn's own identity, not the runner's current position.
+  **Three of the run screen's overlays now live in [lib/widgets/run/](lib/widgets/run/)** —
+  `RouteGuidanceCard` ([lib/widgets/run/route_guidance_card.dart](lib/widgets/run/route_guidance_card.dart)),
+  `LoopIndicator` ([lib/widgets/run/loop_indicator.dart](lib/widgets/run/loop_indicator.dart)) and
+  `ExpandedStatsBar` ([lib/widgets/run/expanded_stats_bar.dart](lib/widgets/run/expanded_stats_bar.dart)), all previously
+  private classes at the bottom of `run_tracking_page.dart`. Moved **to make them
+  testable, and for no other reason** — the page itself is a map shell (flutter_map,
+  a live GPS stream, `FirebaseAuth.instance`) that a widget test cannot pump, so
+  every branch of the guidance card's state machine (off route / arrived /
+  arrived-but-skipped-part / pointing / no-heading, plus the turn-vs-bear split at
+  70°) was unreachable while it sat inside that file. They are pure presentation:
+  no Firebase, no map, no controller — they take formatted values and callbacks, so
+  the extraction moved no logic and changed no behaviour. Covered by
+  `test/widget_test/route_guidance_card_test.dart` (15) and
+  `test/widget_test/run_overlays_test.dart` (8). `run_tracking_page.dart` is still
+  0.2% covered and remains integration-test territory.
+
 - **`RunSessionController`** ([lib/services/run_session_controller.dart](lib/services/run_session_controller.dart)) — owns everything about a
   live run: the clock, the GPS stream, the breadcrumb trail, distance/pace/altitude,
   closed-loop detection and planned-route guidance. `RunTrackingPage` is now purely the UI
@@ -2062,7 +2087,7 @@ run things and the harness's own gotchas. The parts worth knowing before touchin
   and `flutter: '>=3.44.0'` so a too-old SDK refuses the resolve with a clear
   message instead. A stale `.dart_tool/hooks_runner` left over from switching
   SDKs shows up separately as `Invalid kernel binary format version`; delete it.
-- **Three layers, `test/unit/` + `test/widget/` + `integration_test/`.** The
+- **Three layers, `test/unit_test/` + `test/widget_test/` + `integration_test/`.** The
   loose `*_test.dart` files still at the root of `test/` predate the split and
   are all pure unit tests.
 - **`buildAppTheme()` lives in [lib/config/app_theme.dart](lib/config/app_theme.dart), not as a private

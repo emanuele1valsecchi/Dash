@@ -25,13 +25,25 @@ class LeaderboardViewConfig {
 }
 
 class HomeLeaderboardsSettingsPage extends StatefulWidget {
-  const HomeLeaderboardsSettingsPage({super.key});
+  /// Test seams. Production leaves both null and the state resolves
+  /// `.instance` lazily — an eager field initializer would throw
+  /// `[core/no-app]` when the widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseFirestore? firestore;
+  @visibleForTesting
+  final FirebaseAuth? auth;
+
+  const HomeLeaderboardsSettingsPage({super.key, this.firestore, this.auth});
 
   @override
   State<HomeLeaderboardsSettingsPage> createState() => _HomeLeaderboardsSettingsPageState();
 }
 
 class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsPage> {
+  late final FirebaseFirestore _db =
+      widget.firestore ?? FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+
   List<LeaderboardViewConfig> _leaderboards = [];
   bool _isLoading = true;
 
@@ -52,9 +64,9 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
       loadedConfigs = decoded.map((e) => LeaderboardViewConfig.fromJson(e)).toList();
     }
 
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _auth.currentUser;
     if (user != null) {
-      final sessionsSnap = await FirebaseFirestore.instance
+      final sessionsSnap = await _db
           .collection('runningSessions')
           .where('userId', isEqualTo: user.uid)
           .get();
@@ -129,7 +141,13 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
 
   void _onReorder(int oldIndex, int newIndex) {
     setState(() {
-      if (newIndex > oldIndex) newIndex -= 1;
+      // No `if (newIndex > oldIndex) newIndex -= 1` here. That adjustment
+      // belongs to the deprecated `onReorder` callback, which reported the
+      // index the item was dropped *before* while it was still in the list.
+      // `onReorderItem` — used above — already accounts for the removal, so
+      // subtracting again cancelled every downward move: dragging a board
+      // down did nothing at all. Covered by
+      // `home_leaderboards_settings_page_test.dart`'s "moving a board down".
       final item = _leaderboards.removeAt(oldIndex);
       _leaderboards.insert(newIndex, item);
     });
