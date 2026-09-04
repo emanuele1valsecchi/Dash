@@ -1,4 +1,5 @@
 import 'package:dash/screens/public_profile_page.dart';
+import 'package:dash/utils/session_leaderboards.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -26,9 +27,19 @@ class LeaderboardEntry {
 class LeaderboardScreen extends StatefulWidget {
   final String cityFilter; // Città specifica o 'Global Leaderboard'
 
+  /// Test seams. Production leaves both null and the state resolves
+  /// `.instance` lazily — an eager field initializer would throw
+  /// `[core/no-app]` when the widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseFirestore? firestore;
+  @visibleForTesting
+  final FirebaseAuth? auth;
+
   const LeaderboardScreen({
     super.key,
     required this.cityFilter,
+    this.firestore,
+    this.auth,
   });
 
   @override
@@ -36,6 +47,9 @@ class LeaderboardScreen extends StatefulWidget {
 }
 
 class _LeaderboardScreenState extends State<LeaderboardScreen> {
+  late final FirebaseFirestore _db = widget.firestore ?? FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+
   bool _isLoading = true;
   List<LeaderboardEntry> _leaderboard = [];
   LeaderboardEntry? _currentUserEntry;
@@ -48,23 +62,29 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
 
   Future<void> _fetchLeaderboardData() async {
     try {
-      final sessionsSnapshot = await FirebaseFirestore.instance.collection('runningSessions').get();
+      final sessionsSnapshot = await _db.collection('runningSessions').get();
       
       Map<String, int> userPointsMap = {};
-      final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+      final currentUserId = _auth.currentUser?.uid;
       final isGlobal = widget.cityFilter == 'Global Leaderboard';
 
       for (var doc in sessionsSnapshot.docs) {
         final data = doc.data();
         final userId = data['userId'] as String?;
         final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
-        final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
-        final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
-        final city = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
-        
+        // The same board list the home screen builds its cards from — it must
+        // be, since the `cityFilter` this page is opened with comes from
+        // there. A session counts toward its locality *and* its metropolitan
+        // area, so it belongs on this board if **either** matches.
+        final boards = leaderboardsForSession(
+          startLocality: data['startLocality'] as String?,
+          territoryCity: data['territoryCity'] as String?,
+          territoryBroad: data['territoryBroad'] as String?,
+        );
+
         if (userId != null) {
           // Se non è globale, saltiamo tutte le sessioni non appartenenti a questa città
-          if (!isGlobal && city != widget.cityFilter) continue;
+          if (!isGlobal && !boards.contains(widget.cityFilter)) continue;
 
           userPointsMap[userId] = (userPointsMap[userId] ?? 0) + points;
         }
@@ -80,7 +100,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         final userId = entry.key;
         final totalPoints = entry.value;
 
-        final profileDoc = await FirebaseFirestore.instance.collection('profiles').doc(userId).get();
+        final profileDoc = await _db.collection('profiles').doc(userId).get();
         final profileData = profileDoc.data() ?? {};
 
         final name = profileData['name'] as String? ?? 'Unknown';
@@ -147,7 +167,11 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 // Substitute current page with the global leaderboard
                 Navigator.of(context).pushReplacement(
                   MaterialPageRoute(
-                    builder: (_) => const LeaderboardScreen(cityFilter: 'Global Leaderboard'),
+                    builder: (_) => LeaderboardScreen(
+                      cityFilter: 'Global Leaderboard',
+                      firestore: widget.firestore,
+                      auth: widget.auth,
+                    ),
                   ),
                 );
               },

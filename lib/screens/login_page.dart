@@ -9,14 +9,35 @@ import 'welcome_register_page.dart';
 import '../services/push_notification_service.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  /// The three collaborators this screen needs, injectable for tests.
+  ///
+  /// **All optional, each defaulting to the real service**, so every existing
+  /// `const LoginScreen()` call site is untouched. They exist because a screen
+  /// that builds its own services can be rendered but never *driven*: there is
+  /// no way to make a sign-in succeed, so the success path — the whole reason
+  /// the screen exists — cannot be tested at all. With these a test supplies a
+  /// `MockAuthService` and asserts both what the screen shows and what it
+  /// asked the service to do.
+  const LoginScreen({
+    super.key,
+    this.authService,
+    this.profileService,
+    this.pushNotificationService,
+  });
+
+  final AuthService? authService;
+  final ProfileService? profileService;
+  final PushNotificationService? pushNotificationService;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _authService = AuthService();
+  late final _authService = widget.authService ?? AuthService();
+  late final _profileService = widget.profileService ?? ProfileService();
+  late final _pushNotificationService =
+      widget.pushNotificationService ?? PushNotificationService();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
@@ -95,10 +116,9 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _navigateAfterLogin(BuildContext context) async {
-    final profileService = ProfileService();
-    final exists = await profileService.isProfileComplete();
-    
-    await PushNotificationService().initialize();
+    final exists = await _profileService.isProfileComplete();
+
+    await _pushNotificationService.initialize();
     
     if (!context.mounted) return;
     

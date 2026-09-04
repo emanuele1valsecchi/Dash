@@ -13,13 +13,22 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SearchFriendPage extends StatefulWidget {
-  const SearchFriendPage({super.key});
+  /// Test seam. Production leaves it null and the state resolves `.instance`
+  /// lazily — an eager field initializer would throw `[core/no-app]` when the
+  /// widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseFirestore? firestore;
+
+  const SearchFriendPage({super.key, this.firestore});
 
   @override
   State<SearchFriendPage> createState() => _SearchFriendPageState();
 }
 
 class _SearchFriendPageState extends State<SearchFriendPage> {
+  late final FirebaseFirestore _db =
+      widget.firestore ?? FirebaseFirestore.instance;
+
   final TextEditingController _searchController = TextEditingController();
 
   static const String _recentsKey = 'recent_friend_searches';
@@ -248,7 +257,7 @@ class _SearchFriendPageState extends State<SearchFriendPage> {
     try {
       final String searchPrefix = query.trim();
       
-      final snapshot = await FirebaseFirestore.instance
+      final snapshot = await _db
           .collection('profiles')
           .where('name', isGreaterThanOrEqualTo: searchPrefix)
           .where('name', isLessThanOrEqualTo: '$searchPrefix\uf8ff')
@@ -278,7 +287,10 @@ class _SearchFriendPageState extends State<SearchFriendPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => PublicProfilePage(userId: user['uid']),
+        builder: (context) => PublicProfilePage(
+          userId: user['uid'],
+          firestore: widget.firestore,
+        ),
       ),
     );
   }

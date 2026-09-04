@@ -4,9 +4,28 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 
 class ProfileService {
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseStorage _storage = FirebaseStorage.instance;
+  /// Collaborators default to the real Firebase singletons, so an
+  /// existing `ProfileService()` call behaves exactly as before. Tests pass
+  /// fakes instead, which is the only way to exercise this class at
+  /// all: `FirebaseFirestore.instance` throws with no initialised app.
+  ProfileService({
+    FirebaseFirestore? firestore,
+    FirebaseAuth? auth,
+    FirebaseStorage? storage,
+  })  :         _firestoreOverride = firestore,
+        _authOverride = auth,
+        _storageOverride = storage;
+
+  final FirebaseFirestore? _firestoreOverride;
+  final FirebaseAuth? _authOverride;
+  final FirebaseStorage? _storageOverride;
+
+  // Resolved on first use, never at construction: a screen that
+  // builds this service in a field initializer must not throw
+  // `[core/no-app]` before its widget tree even exists.
+  late final FirebaseFirestore _firestore = _firestoreOverride ?? FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = _authOverride ?? FirebaseAuth.instance;
+  late final FirebaseStorage _storage = _storageOverride ?? FirebaseStorage.instance;
 
   String get _uid => _auth.currentUser!.uid;
 

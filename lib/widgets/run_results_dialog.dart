@@ -7,6 +7,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../config/map_style.dart';
 import '../services/cached_tile_provider.dart';
+import '../utils/session_leaderboards.dart';
 import '../utils/unit_formatter.dart';
 import 'units_scope.dart';
 
@@ -26,6 +27,12 @@ import 'units_scope.dart';
 Future<void> showRunResultsDialog({
   required BuildContext context,
   required String sessionId,
+  /// Injectable for tests, defaulting to the real Firestore, so no call site
+  /// changes. Area/XP wait on a `snapshots()` listener for the Cloud
+  /// Function's `pointsProcessed` write, and `FakeFirebaseFirestore` supports
+  /// streams — so a test can drive the "calculating…" state, the arrival of
+  /// the score, and the timeout independently.
+  FirebaseFirestore? firestore,
   required List<LatLng> path,
   required double distanceMeters,
   required Duration duration,
@@ -37,6 +44,7 @@ Future<void> showRunResultsDialog({
     barrierDismissible: false,
     builder: (_) => _RunResultsDialog(
       sessionId: sessionId,
+      firestore: firestore,
       path: path,
       distanceMeters: distanceMeters,
       duration: duration,
@@ -48,6 +56,7 @@ Future<void> showRunResultsDialog({
 
 class _RunResultsDialog extends StatefulWidget {
   final String sessionId;
+  final FirebaseFirestore? firestore;
   final List<LatLng> path;
   final double distanceMeters;
   final Duration duration;
@@ -56,6 +65,7 @@ class _RunResultsDialog extends StatefulWidget {
 
   const _RunResultsDialog({
     required this.sessionId,
+    this.firestore,
     required this.path,
     required this.distanceMeters,
     required this.duration,
@@ -78,7 +88,7 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
   @override
   void initState() {
     super.initState();
-    _sub = FirebaseFirestore.instance
+    _sub = (widget.firestore ?? FirebaseFirestore.instance)
         .collection('runningSessions')
         .doc(widget.sessionId)
         .snapshots()
@@ -271,9 +281,15 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
 
     final data = _serverData!;
     final points = (data['pointsEarned'] as num?)?.round() ?? 0;
-    final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
-    final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
-    final leaderboard = rawLocality.isNotEmpty ? rawLocality : (rawTerritory.isNotEmpty ? rawTerritory : 'Unknown');
+    // The place the run actually started in, not the metropolitan area that
+    // covers it — see `displayLocalityForSession`. The XP still counts toward
+    // the metro board as well; that is just not what this chip names.
+    final leaderboard = displayLocalityForSession(
+          startLocality: data['startLocality'] as String?,
+          territoryCity: data['territoryCity'] as String?,
+          territoryBroad: data['territoryBroad'] as String?,
+        ) ??
+        'Unknown';
     final xpFromDistance = (data['xpFromDistance'] as num?)?.toDouble() ?? 0;
     final xpFromArea = (data['xpFromArea'] as num?)?.toDouble() ?? 0;
     final xpFromStolenArea = (data['xpFromStolenArea'] as num?)?.toDouble() ?? 0;
@@ -294,12 +310,27 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
               const SizedBox(width: 8),
               Text('$points XP',
                   style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF2E7D32))),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
-                child: Text(leaderboard,
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF2E7D32))),
+              const SizedBox(width: 8),
+              // Expanded + right-aligned rather than a Spacer before a
+              // fixed-width chip: a long territory name ("Vertemate con
+              // Minoprio") plus the XP figure overflowed the row, and nothing
+              // in it could shrink. This gives the chip every pixel the XP
+              // figure doesn't need and lets the name ellipsize past that.
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20)),
+                    child: Text(
+                      leaderboard,
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF2E7D32)),
+                    ),
+                  ),
+                ),
               ),
             ],
           ),
@@ -307,7 +338,7 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
           const Divider(height: 1, color: Color(0xFFCFE3C0)),
           const SizedBox(height: 10),
           const Text(
-            'XP BREAKDOWN (DEBUG)',
+            'XP BREAKDOWN',
             style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF6B7266), letterSpacing: 0.4),
           ),
           const SizedBox(height: 6),

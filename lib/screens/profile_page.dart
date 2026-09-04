@@ -1,4 +1,7 @@
 import 'dart:async';
+import '../models/badge_model.dart';
+import '../services/route_repository.dart';
+import '../services/run_session_repository.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
@@ -22,13 +25,39 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'settings_page.dart';
 
 class ProfilePage extends StatefulWidget {
-  const ProfilePage({super.key});
+  /// Injectable for tests, each defaulting to the real thing, so no call
+  /// site changes. Mirrors `PublicProfilePage`'s seam set — the two screens
+  /// are twins and should stay testable the same way.
+  @visibleForTesting
+  final FirebaseFirestore? firestore;
+  @visibleForTesting
+  final FirebaseAuth? auth;
+  @visibleForTesting
+  final BadgeService? badgeService;
+  @visibleForTesting
+  final RunSessionRepository? sessionRepository;
+  @visibleForTesting
+  final RouteRepository? routeRepository;
+
+  const ProfilePage({
+    super.key,
+    this.firestore,
+    this.auth,
+    this.badgeService,
+    this.sessionRepository,
+    this.routeRepository,
+  });
 
   @override
   State<ProfilePage> createState() => _ProfilePageState();
 }
 
 class _ProfilePageState extends State<ProfilePage> {
+  late final FirebaseFirestore _db =
+      widget.firestore ?? FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+  late final BadgeService _badgeService = widget.badgeService ?? BadgeService();
+
   bool _isLoading = true;
 
   String _name = '';
@@ -107,7 +136,7 @@ class _ProfilePageState extends State<ProfilePage> {
                 spacing: ResponsiveSpacing().lg,
                 children: [
                   ProfileHeader(
-                    userId: FirebaseAuth.instance.currentUser!.uid,
+                    userId: _auth.currentUser!.uid,
                     name: _name,
                     surname: _surname,
                     email: _email,
@@ -119,14 +148,16 @@ class _ProfilePageState extends State<ProfilePage> {
                   _buildActionButtons(),
                   ProfileBadgeSection(
                     badges: _badges,
-                    userId: FirebaseAuth.instance.currentUser!.uid
+                    userId: _auth.currentUser!.uid
                   ),
                   ProfileStatisticsSection(
                     userId: FirebaseAuth.instance.currentUser!.uid,
                   ),
                   ProfileActivitySections(
+                    sessionRepository: widget.sessionRepository,
+                    routeRepository: widget.routeRepository,
                     key: _activityKey,
-                    userId: FirebaseAuth.instance.currentUser!.uid,
+                    userId: _auth.currentUser!.uid,
                     isCurrentUser: true,
                     displayName: _name,
                   ),
@@ -174,7 +205,7 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   void _shareProfile(){
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _auth.currentUser;
             
     if (user == null) return;
     
@@ -201,10 +232,10 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   void _startProfileStream() {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _auth.currentUser;
     if (user == null) return;
 
-    _profileSub = FirebaseFirestore.instance
+    _profileSub = _db
       .collection('profiles')
       .doc(user.uid)
       .snapshots()
@@ -233,12 +264,27 @@ class _ProfilePageState extends State<ProfilePage> {
   }
 
   void _startBadgesStream() async {
-    final user =  FirebaseAuth.instance.currentUser;
+    final user = _auth.currentUser;
 
     if (user == null) return;
 
-    final staticBadges = await BadgeService().getProfileBadges(user.uid);
-    final prefs = await SharedPreferences.getInstance();
+    // Guarded because this is `async void`: nothing awaits it, so a throw
+    // here escapes as an unhandled async error rather than being caught by a
+    // caller. Badges are decoration — a failed read (a network blip, or a
+    // rules change like the one that used to deny `badge_progress`
+    // outright) must cost the badges, not the whole profile.
+    //
+    // Same fix, same reason, as `public_profile_page.dart` and
+    // `badge_page.dart`; this was the third copy of the bug.
+    final List<BadgeModel> staticBadges;
+    final SharedPreferences prefs;
+    try {
+      staticBadges = await _badgeService.getProfileBadges(user.uid);
+      prefs = await SharedPreferences.getInstance();
+    } catch (e) {
+      debugPrint('Could not load badges for ${user.uid}: $e');
+      return;
+    }
 
     for (final badge in staticBadges) {
       if (!_profileUrlCache.containsKey(badge.imagePath)) {
@@ -274,7 +320,7 @@ class _ProfilePageState extends State<ProfilePage> {
       });
     }
 
-    _badgeSub = FirebaseFirestore.instance
+    _badgeSub = _db
       .collection('profiles')
       .doc(user.uid)
       .collection('badge_progress')

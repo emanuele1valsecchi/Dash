@@ -135,18 +135,12 @@ const BADGE_RULES = {
     },
     target: 1
   },
-  'buuuu': {
-    calculateProgress: (session, stats) => session.beatGhost === true ? 1 : 0,
-    target: 1
-  },
-  'eat_my_dust': {
-    calculateProgress: (session, stats) => session.wonChallenge === true ? 1 : 0,
-    target: 1
-  },
-  'by_a_whisker': {
-    calculateProgress: (session, stats) => session.stoppedNearEnd === true ? 1 : 0,
-    target: 1
-  }
+  // Removed with the discarded badges they belonged to: 'buuuu',
+  // 'eat_my_dust' and 'by_a_whisker' read session.beatGhost /
+  // session.wonChallenge / session.stoppedNearEnd — fields nothing has ever
+  // written, left over from the ghost-race and challenge concepts that were
+  // cut along with "champion" re-timing.
+  // They could never have fired.
 };
 
 // ==============================================================================
@@ -514,8 +508,8 @@ async function awardSessionPoints({userId, sessionId, sessionData, totalAreaM2, 
 
   // Territory is score-affecting, so it is derived here from the run's real
   // GPS start point and never from the client-supplied `startLocality`
-  // string — see territory.js's header, and the standing rule in CLAUDE.md
-  // that the client must not set anything feeding points or ranking.
+  // string — see territory.js's header, and the standing rule that the
+  // client must not set anything feeding points or ranking.
   //
   // This used to read `const city = startLocality`, which threw the resolver's
   // answer away: a run starting in Seregno was filed under "Seregno" rather
@@ -549,15 +543,39 @@ async function awardSessionPoints({userId, sessionId, sessionData, totalAreaM2, 
   );
   await batch.commit();
 
-  // Which scoreboard the run counts toward: its curated metro area when one
-  // covers the start point, otherwise the broad (region) tier. `resolveTerritory`
-  // deliberately returns one tier or the other, and only the city tier was ever
-  // written to a leaderboard — so a runner outside every drawn polygon earned XP
-  // but appeared on no scoreboard at all, defeating the fallback's stated purpose
-  // of leaving nobody off every scoreboard.
+  // ── Which scoreboards the run counts toward ──
+  //
+  // **Two, not one**, and this must stay in step with
+  // `lib/utils/session_leaderboards.dart`, which is what the app actually
+  // renders its boards from:
+  //
+  //   * the locality the run started in (`startLocality`) — every real run has
+  //     one, so nobody is left off every scoreboard;
+  //   * the curated metropolitan area covering the start point, or the broad
+  //     region when no polygon does — only when one resolved.
+  //
+  // Filing a run under only its metro area buried the place it was actually
+  // run in; filing it under only the locality fragments each metro area into
+  // one board per village, which is what the coverage polygons exist to
+  // prevent. Counting it toward both makes each board mean its own name.
+  //
+  // `startLocality` being client-supplied is fine here and only here: it
+  // decides which *board* a run also appears on, never how much XP it earns
+  // (that is `xp`, computed above from server-side geometry). Territory
+  // placement, which is score-affecting, still comes from the resolver.
   const leaderboardTerritory = city || resolved.broad;
-  if (leaderboardTerritory) {
-    await updateCityRankAndNotify({userId, city: leaderboardTerritory, xp});
+  const locality = typeof sessionData.startLocality === 'string' ?
+    sessionData.startLocality.trim() :
+    '';
+
+  const boards = [];
+  if (locality) boards.push(locality);
+  if (leaderboardTerritory && leaderboardTerritory !== locality) {
+    boards.push(leaderboardTerritory);
+  }
+
+  for (const board of boards) {
+    await updateCityRankAndNotify({userId, city: board, xp});
   }
 }
 

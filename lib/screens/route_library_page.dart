@@ -1,6 +1,8 @@
 import 'package:dash/extensions/responsive_border_radius.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/screens/route_search_page.dart';
+import 'package:dash/services/favorite_route_repository.dart';
+import 'package:dash/services/route_repository.dart';
 import 'package:dash/widgets/routes/saved_routes_section.dart';
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
@@ -78,8 +80,16 @@ class RouteLibraryScope extends InheritedWidget {
 class RouteLibraryPage extends StatefulWidget {
   static const int savedRoutesSection = 0;
   static const int searchSection = 1;
+  /// Forwarded to [SavedRoutesSection], which reads them. Injectable for
+  /// tests, defaulting to the app-wide singletons, so no call site changes.
+  final RouteRepository? routeRepository;
+  final FavoriteRouteRepository? favoriteRepository;
 
-  const RouteLibraryPage({super.key});
+  const RouteLibraryPage({
+    super.key,
+    this.routeRepository,
+    this.favoriteRepository,
+  });
 
   @override
   State<RouteLibraryPage> createState() => _RouteLibraryPageState();
@@ -147,6 +157,8 @@ class _RouteLibraryPageState extends State<RouteLibraryPage> {
                   children: [
                     _KeepAlivePage(
                       child: SavedRoutesSection(
+                        routeRepository: widget.routeRepository,
+                        favoriteRepository: widget.favoriteRepository,
                         key: _savedRoutesKey,
                         onRunRoute: _runRoute,
                       ),

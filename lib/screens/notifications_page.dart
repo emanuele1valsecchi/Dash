@@ -89,15 +89,25 @@ class NotificationItem {
 // Notification Screen
 // ==========================================
 class NotificationsScreen extends StatefulWidget {
-  const NotificationsScreen({super.key});
+  /// Test seams. Production leaves both null and the state resolves
+  /// `.instance` lazily — the previous eager field initializers threw
+  /// `[core/no-app]` when the widget was *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseFirestore? firestore;
+  @visibleForTesting
+  final FirebaseAuth? auth;
+
+  const NotificationsScreen({super.key, this.firestore, this.auth});
 
   @override
   State<NotificationsScreen> createState() => _NotificationsScreenState();
 }
 
 class _NotificationsScreenState extends State<NotificationsScreen> {
-  final String _currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  late final FirebaseFirestore _db =
+      widget.firestore ?? FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+  late final String _currentUserId = _auth.currentUser?.uid ?? '';
 
   Future<void> _markAsRead(String notificationId) async {
     try {
@@ -210,7 +220,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             // CASE 2: IT'S A SAVED/PLANNED ROUTE
             else if (item.routeId != null && item.routeId!.isNotEmpty) {
               try {
-                final routeDoc = await FirebaseFirestore.instance
+                final routeDoc = await _db
                     .collection('routes')
                     .doc(item.routeId)
                     .get();
@@ -270,7 +280,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             break;
 
           case NotificationType.badgeUnlocked:
-            final currentUser = FirebaseAuth.instance.currentUser;
+            final currentUser = _auth.currentUser;
             if (currentUser != null) {
               Navigator.of(context).push(
                 MaterialPageRoute(
@@ -411,6 +421,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       return _FollowToggleWidget(
         currentUserId: _currentUserId,
         targetUserId: item.actorId!,
+        firestore: _db,
       );
     }
 
@@ -429,9 +440,14 @@ class _FollowToggleWidget extends StatefulWidget {
   final String currentUserId;
   final String targetUserId;
 
+  /// Handed down from the screen rather than resolved here, so a test that
+  /// renders a follow notification does not reach for the real Firebase.
+  final FirebaseFirestore firestore;
+
   const _FollowToggleWidget({
     required this.currentUserId,
     required this.targetUserId,
+    required this.firestore,
   });
 
   @override
@@ -447,7 +463,7 @@ class _FollowToggleWidgetState extends State<_FollowToggleWidget> {
   void initState() {
     super.initState();
     final followId = '${widget.currentUserId}_${widget.targetUserId}';
-    _sub = FirebaseFirestore.instance.collection('follows').doc(followId).snapshots().listen((doc) {
+    _sub = widget.firestore.collection('follows').doc(followId).snapshots().listen((doc) {
       if (mounted) {
         setState(() {
           _isFollowing = doc.exists;
@@ -465,7 +481,7 @@ class _FollowToggleWidgetState extends State<_FollowToggleWidget> {
 
   Future<void> _toggleFollow() async {
     final followId = '${widget.currentUserId}_${widget.targetUserId}';
-    final followRef = FirebaseFirestore.instance.collection('follows').doc(followId);
+    final followRef = widget.firestore.collection('follows').doc(followId);
 
     try {
       if (_isFollowing) {

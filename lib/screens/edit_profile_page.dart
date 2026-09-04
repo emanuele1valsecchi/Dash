@@ -11,13 +11,23 @@ import 'package:dash/utils/strings_utils.dart';
 import '../services/image_upload_service.dart';
 
 class EditProfilePage extends StatefulWidget {
-  const EditProfilePage({super.key});
+  /// Injectable for tests, defaulting to the real Firebase, so no call site
+  /// changes. Only the load and save paths use these; picking an image goes
+  /// through `ImageUploadService`'s static method, which needs a real photo
+  /// picker and is out of reach of a widget test either way.
+  final FirebaseFirestore? firestore;
+  final FirebaseAuth? auth;
+
+  const EditProfilePage({super.key, this.firestore, this.auth});
 
   @override
   State<EditProfilePage> createState() => _EditProfilePageState();
 }
 
 class _EditProfilePageState extends State<EditProfilePage> {
+  late final _db = widget.firestore ?? FirebaseFirestore.instance;
+  late final _auth = widget.auth ?? FirebaseAuth.instance;
+
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _surnameController = TextEditingController();
@@ -107,8 +117,8 @@ class _EditProfilePageState extends State<EditProfilePage> {
   Future<void> _saveProfileChanges() async {
     if (_formKey.currentState!.validate()) {
       try {
-        final user = FirebaseAuth.instance.currentUser!;
-        final firestore = FirebaseFirestore.instance;
+        final user = _auth.currentUser!;
+        final firestore = _db;
 
         final batch = firestore.batch();
 
@@ -210,9 +220,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
   Future<void> _loadCurrentProfile() async {
     try {
-      final user = FirebaseAuth.instance.currentUser;
+      final user = _auth.currentUser;
       if (user != null) {
-        final doc = await FirebaseFirestore.instance
+        final doc = await _db
             .collection('profiles')
             .doc(user.uid)
             .get();

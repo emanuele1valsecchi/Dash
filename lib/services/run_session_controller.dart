@@ -430,6 +430,35 @@ class RunSessionController extends ChangeNotifier {
   /// Visible for testing — normally driven by the Geolocator stream. Fakes can
   /// feed synthetic fixes through this to exercise distance/pace/loop logic
   /// without a device.
+  /// Arms route guidance without going through [prepare].
+  ///
+  /// **Tests only.** `prepare` sets the planned route and then reaches for
+  /// `LocationService.instance.start()`, which needs a real device — so
+  /// guidance, off-route detection and route progress could not be driven at
+  /// all from a unit test. This sets exactly what `prepare` sets, and nothing
+  /// else, so synthetic fixes fed to [onPosition] exercise the same code path
+  /// a real run does.
+  /// Test hook: puts the controller into the running state without the two
+  /// things `_beginRun` also does that need a real device — opening the
+  /// Geolocator stream and starting the Android foreground service.
+  ///
+  /// Reaching this state through the countdown is not an option in a unit
+  /// test for exactly that reason.
+  @visibleForTesting
+  void beginRunForTesting() {
+    _hasStarted = true;
+    _stopwatch.start();
+    notifyListeners();
+  }
+
+  @visibleForTesting
+  void armGuidanceForTesting(List<LatLng>? plannedRoute) {
+    _plannedRoute = plannedRoute;
+    _progressTracker = plannedRoute == null || plannedRoute.length < 2
+        ? null
+        : RouteProgressTracker(plannedRoute);
+  }
+
   @visibleForTesting
   void onPosition(Position pos) {
     if (_isPaused) return;

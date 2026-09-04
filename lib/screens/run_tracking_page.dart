@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui';
 
 import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -22,13 +21,15 @@ import '../services/run_session_controller.dart';
 import '../services/wear_bridge.dart';
 import '../services/water_fountain_service.dart';
 import '../utils/geometry_utils.dart';
-import '../utils/route_progress.dart';
 import '../utils/unit_formatter.dart';
 import '../widgets/units_scope.dart';
 import '../widgets/map/area_visibility_toggle.dart';
 import '../widgets/map/claimed_areas_layer.dart';
 import '../widgets/map/enhanced_map_gestures.dart';
 import '../widgets/map/water_fountain_marker_layer.dart';
+import '../widgets/run/expanded_stats_bar.dart';
+import '../widgets/run/loop_indicator.dart';
+import '../widgets/run/route_guidance_card.dart';
 import '../widgets/run_results_dialog.dart';
 import 'test_run_creator_page.dart';
 
@@ -65,10 +66,20 @@ Future<void> pushRunTracking(
       builder: (_) => RunTrackingPage(plannedRoute: plannedRoute),
     ),
   );
-  if (summary == null || !context.mounted) return;
+  if (summary == null) return;
+
+  // Reported through the *navigator's* context, not the caller's.
+  //
+  // A run takes minutes, and some callers do not survive it: the badge
+  // overlay pops its own dialog before starting the run, so by the time this
+  // resumes, `context` is unmounted and a `context.mounted` guard would
+  // silently swallow the result. The Navigator outlives every route it
+  // pushes, and `ScaffoldMessenger`/`Theme` resolve from there just as well.
+  final reportContext = navigator.context;
+  if (!reportContext.mounted) return;
 
   if (!summary.saved) {
-    context.showWarningSnackBar("Run discarded");
+    reportContext.showWarningSnackBar("Run discarded");
     return;
   }
 
@@ -77,7 +88,8 @@ Future<void> pushRunTracking(
   final loopsText = summary.loopsCompleted > 0
       ? ', ${summary.loopsCompleted} loop${summary.loopsCompleted == 1 ? '' : 's'} closed'
       : '';
-  context.showSuccessSnackBar('Run saved — $distance in $minutes min$loopsText');
+  reportContext
+      .showSuccessSnackBar('Run saved — $distance in $minutes min$loopsText');
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
@@ -954,7 +966,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                 _buildTimeDisplay(),
                 if (_controller.guidance != null) ...[
                   const SizedBox(height: 18),
-                  _RouteGuidanceCard(
+                  RouteGuidanceCard(
                     guidance: _controller.guidance!,
                     progress: _controller.routeProgress,
                     heading: _displayedHeading,
@@ -989,7 +1001,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
                   ],
                 ),
                 const SizedBox(height: 18),
-                _LoopIndicator(loopsCompleted: _controller.loopsCompleted),
+                LoopIndicator(loopsCompleted: _controller.loopsCompleted),
                 const SizedBox(height: 18),
                 _buildMapPreviewCard(),
               ],
@@ -1105,7 +1117,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
           top: 8,
           left: 12,
           right: 12,
-          child: _ExpandedStatsBar(
+          child: ExpandedStatsBar(
             time: _formatElapsed(),
             distance: _formatDistance(units),
             pace: _formatRateValue(units, _controller.currentPaceMinPerKm),
@@ -1356,281 +1368,6 @@ class _StatBlock extends StatelessWidget {
             style: const TextStyle(fontSize: 12, color: Color(0xFF6B7266), fontWeight: FontWeight.w500),
           ),
         ],
-      ),
-    );
-  }
-}
-
-// ── Route guidance (direction arrow) ─────────────────────────────────────────
-
-class _RouteGuidanceCard extends StatelessWidget {
-  final RouteGuidance guidance;
-
-  /// How much of the route has actually been covered. Null when there is no
-  /// planned route to track progress through, in which case arrival falls
-  /// back to the proximity test alone.
-  final RouteProgress? progress;
-
-  final double? heading;
-  final bool isVoiceEnabled;
-  final VoidCallback onToggleVoice;
-
-  const _RouteGuidanceCard({
-    required this.guidance,
-    required this.progress,
-    required this.heading,
-    required this.isVoiceEnabled,
-    required this.onToggleVoice,
-  });
-
-  static const double _arrivalRadiusMeters = 20.0;
-  static const double _sharpTurnDegrees = 70.0;
-  static const double _imminentTurnMeters = 15.0;
-
-  @override
-  Widget build(BuildContext context) {
-    final offRoute = guidance.isOffRoute;
-    final atFinish =
-        !offRoute && guidance.distanceRemainingMeters < _arrivalRadiusMeters;
-
-    // Being near the finish is not the same as having run the route. On a
-    // closed loop the two ends are the same place, so proximity alone reported
-    // "Route complete" before the runner had moved — see [RouteProgressTracker].
-    final covered = progress?.isCovered ?? true;
-    final arrived = atFinish && covered;
-    final shortOfFinish = atFinish && !covered;
-    final canPoint = heading != null && !arrived;
-
-    final (Color bg, Color fg) = switch ((offRoute, arrived)) {
-      (true, _) => (const Color(0xFFF4E3B2), const Color(0xFF7A5B12)),
-      (_, true) => (const Color(0xFFCAF0B8), const Color(0xFF2E7D32)),
-      _ => (const Color(0xFFF0F2EB), const Color(0xFF4A8C52)),
-    };
-
-    final units = Units.of(context);
-
-    final String title;
-    final String subtitle;
-    if (offRoute) {
-      title = 'Off route';
-      subtitle = '${units.shortDistance(guidance.offRouteMeters)} away '
-          '— follow the arrow back';
-    } else if (arrived) {
-      title = 'Route complete';
-      subtitle = 'You have reached the end of the planned route';
-    } else if (shortOfFinish) {
-      // Standing at the finish having skipped part of the route: the distance
-      // readout would say "0 m to go", which is true of the line but not of
-      // the run. Say what is actually outstanding instead.
-      final p = progress!;
-      title = 'Keep going';
-      subtitle = 'Part of the route was skipped — '
-          '${p.remaining} of ${p.total} checkpoints missed';
-    } else if (canPoint) {
-      title = _turnLabel(units);
-      subtitle = _formatRemaining(units, guidance.distanceRemainingMeters);
-    } else {
-      title = 'Getting your bearing';
-      subtitle =
-          '${_formatRemaining(units, guidance.distanceRemainingMeters)} '
-          '— start moving';
-    }
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 46,
-            height: 46,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.7),
-              shape: BoxShape.circle,
-            ),
-            child: Center(child: _buildArrow(fg, canPoint, arrived)),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: fg)),
-                const SizedBox(height: 2),
-                Text(subtitle, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: fg.withValues(alpha: 0.75))),
-              ],
-            ),
-          ),
-          // --- NUOVO PULSANTE MUTE A DESTRA ---
-          IconButton(
-            icon: Icon(
-              isVoiceEnabled ? Icons.volume_up_rounded : Icons.volume_off_rounded,
-              color: fg.withValues(alpha: 0.7),
-            ),
-            onPressed: onToggleVoice,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildArrow(Color fg, bool canPoint, bool arrived) {
-    if (arrived) {
-      return Icon(Icons.flag_rounded, size: 26, color: fg);
-    }
-    if (!canPoint) {
-      return Icon(Icons.explore_outlined, size: 26, color: fg);
-    }
-    final relative = (guidance.targetBearingDegrees - heading!) * math.pi / 180;
-    return Transform.rotate(
-      angle: relative,
-      child: Icon(Icons.navigation_rounded, size: 28, color: fg),
-    );
-  }
-
-  String _turnLabel(UnitFormatter units) {
-    final distance = guidance.distanceToTurnMeters;
-    final angle = guidance.turnAngleDegrees;
-    if (distance == null || angle == null) return 'Continue straight';
-
-    final side = angle < 0 ? 'left' : 'right';
-    final verb = angle.abs() >= _sharpTurnDegrees ? 'Turn' : 'Bear';
-    if (distance < _imminentTurnMeters) return '$verb $side now';
-
-    return '$verb $side in ${units.shortDistance(distance, roundTo: 10)}';
-  }
-
-  String _formatRemaining(UnitFormatter units, double meters) =>
-      '${units.distance(meters)} to go';
-}
-
-// ── Loop indicator ─────────────────────────────────────────────────────────
-
-class _LoopIndicator extends StatelessWidget {
-  final int loopsCompleted;
-
-  const _LoopIndicator({required this.loopsCompleted});
-
-  @override
-  Widget build(BuildContext context) {
-    final isActive = loopsCompleted > 0;
-    final bg = isActive ? const Color(0xFFCAF0B8) : const Color(0xFFECEFE6);
-    final fg = isActive ? const Color(0xFF2E7D32) : const Color(0xFF9AA294);
-
-    return TweenAnimationBuilder<double>(
-      key: ValueKey(loopsCompleted),
-      tween: Tween(begin: isActive ? 0.85 : 1.0, end: 1.0),
-      duration: const Duration(milliseconds: 320),
-      curve: Curves.elasticOut,
-      builder: (context, scale, child) => Transform.scale(scale: scale, child: child),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-        decoration: BoxDecoration(
-          color: bg,
-          borderRadius: BorderRadius.circular(18),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              isActive ? Icons.crop_free_rounded : Icons.crop_free_outlined,
-              size: 20,
-              color: fg,
-            ),
-            const SizedBox(width: 10),
-            Text(
-              isActive ? 'Loop closed — area claimed × $loopsCompleted' : 'No loop closed yet',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: fg),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ── Expanded-map compact stats bar ───────────────────────────────────────────
-
-class _ExpandedStatsBar extends StatelessWidget {
-  final String time;
-  final String distance;
-  final String pace;
-
-  final String rateUnitLabel;
-
-  final int loopsCompleted;
-  final VoidCallback onCollapse;
-
-  const _ExpandedStatsBar({
-    required this.time,
-    required this.distance,
-    required this.pace,
-    required this.rateUnitLabel,
-    required this.loopsCompleted,
-    required this.onCollapse,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      elevation: 4,
-      shadowColor: Colors.black45,
-      borderRadius: BorderRadius.circular(24),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(24),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-          child: InkWell(
-            onTap: onCollapse,
-            child: Container(
-              color: Colors.white.withValues(alpha: 0.92),
-              padding: const EdgeInsets.fromLTRB(22, 18, 16, 18),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    time,
-                    style: const TextStyle(
-                      fontSize: 32,
-                      fontWeight: FontWeight.w800,
-                      color: Color(0xFF1F3020),
-                      fontFeatures: [FontFeature.tabularFigures()],
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      Text(
-                        '$distance  ·  $pace $rateUnitLabel',
-                        style: const TextStyle(
-                          fontSize: 16,
-                          color: Color(0xFF425143),
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      if (loopsCompleted > 0) ...[
-                        const SizedBox(width: 10),
-                        const Icon(Icons.crop_free_rounded, size: 17, color: Color(0xFF2E7D32)),
-                        const SizedBox(width: 3),
-                        Text(
-                          '$loopsCompleted',
-                          style: const TextStyle(
-                              fontSize: 16, color: Color(0xFF2E7D32), fontWeight: FontWeight.w800),
-                        ),
-                      ],
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
       ),
     );
   }

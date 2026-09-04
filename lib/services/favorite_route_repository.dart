@@ -54,13 +54,47 @@ import 'route_repository.dart';
 /// by hand, or saved from a parameter search) — those stay owned copies.
 class FavoriteRouteRepository {
   static final FavoriteRouteRepository instance = FavoriteRouteRepository._();
-  FavoriteRouteRepository._();
+  /// Collaborators default to the real Firebase singletons, so
+  /// `FavoriteRouteRepository.instance` behaves exactly as it always has and no
+  /// call site changes. They are only ever passed by tests.
+  FavoriteRouteRepository._({
+    FirebaseFirestore? db,
+    FirebaseAuth? auth,
+  })  :         _db = db ?? FirebaseFirestore.instance,
+        _auth = auth ?? FirebaseAuth.instance;
 
-  final _db = FirebaseFirestore.instance;
-  final _auth = FirebaseAuth.instance;
+  /// A repository wired to test doubles (`FakeFirebaseFirestore`,
+  /// `MockFirebaseAuth`).
+  ///
+  /// **This is the seam that makes the data layer testable.** Reading
+  /// `FirebaseFirestore.instance` in a field initializer, as this class
+  /// used to, cannot be substituted from a test: there is no
+  /// `Firebase.initializeApp` in the test binding, so touching it throws
+  /// before a single assertion runs.
+  ///
+  /// A named constructor rather than a public `FavoriteRouteRepository()`: the singleton stays
+  /// the only way production code gets one, so this cannot quietly become
+  /// a second live instance with its own cache.
+  @visibleForTesting
+  factory FavoriteRouteRepository.withDependencies({
+    FirebaseFirestore? db,
+    FirebaseAuth? auth,
+  }) =>
+      FavoriteRouteRepository._(db: db, auth: auth);
+
+  final FirebaseFirestore _db;
+  final FirebaseAuth _auth;
 
   /// Same region as every other callable in this app (see `RoutingService`).
-  final _functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
+  ///
+  /// **`late` matters here.** As an eager field initializer this ran on
+  /// construction and threw `[core/no-app]` with no initialised Firebase —
+  /// which made the whole repository unconstructible in a test, even for the
+  /// Firestore-only methods that never touch a callable. Deferring it to
+  /// first use also means the app builds no Functions client for a user who
+  /// never favourites a run.
+  late final _functions =
+      FirebaseFunctions.instanceFor(region: 'europe-west1');
 
   String get _uid => _auth.currentUser!.uid;
 

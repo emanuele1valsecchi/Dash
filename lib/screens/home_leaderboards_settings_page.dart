@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import '../utils/leaderboard_order.dart';
+import '../utils/session_leaderboards.dart';
 
 class LeaderboardViewConfig {
   final String title;
@@ -24,13 +25,25 @@ class LeaderboardViewConfig {
 }
 
 class HomeLeaderboardsSettingsPage extends StatefulWidget {
-  const HomeLeaderboardsSettingsPage({super.key});
+  /// Test seams. Production leaves both null and the state resolves
+  /// `.instance` lazily — an eager field initializer would throw
+  /// `[core/no-app]` when the widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseFirestore? firestore;
+  @visibleForTesting
+  final FirebaseAuth? auth;
+
+  const HomeLeaderboardsSettingsPage({super.key, this.firestore, this.auth});
 
   @override
   State<HomeLeaderboardsSettingsPage> createState() => _HomeLeaderboardsSettingsPageState();
 }
 
 class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsPage> {
+  late final FirebaseFirestore _db =
+      widget.firestore ?? FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+
   List<LeaderboardViewConfig> _leaderboards = [];
   bool _isLoading = true;
 
@@ -51,9 +64,9 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
       loadedConfigs = decoded.map((e) => LeaderboardViewConfig.fromJson(e)).toList();
     }
 
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _auth.currentUser;
     if (user != null) {
-      final sessionsSnap = await FirebaseFirestore.instance
+      final sessionsSnap = await _db
           .collection('runningSessions')
           .where('userId', isEqualTo: user.uid)
           .get();
@@ -67,31 +80,25 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
 
       for (var doc in sessionsSnap.docs) {
         final data = doc.data();
-        // Same ordering fix as `home_page.dart` — see the comment there for
-        // why `territoryCity` must win over `startLocality`. The two lists
+        // The same board list `home_page.dart` accumulates into — the two
         // have to agree, or settings would offer leaderboards the home screen
-        // never shows.
-        final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
+        // never shows, or hide ones it does. A run counts toward both its
+        // locality and its metropolitan area; see `leaderboardsForSession`.
         final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
-        final rawBroad = (data['territoryBroad'] as String?)?.trim() ?? '';
-        // Must mirror the server's own choice of scoreboard exactly
-        // (`city || broad` in awardSessionPoints): `territoryCity` is only
-        // set when a curated metro polygon covers the start point, and a run
-        // outside every polygon is filed under the broad region tier instead.
-        // Falling straight through to `startLocality` there would show a
-        // village leaderboard the server never writes a single point to.
-        final city = rawTerritory.isNotEmpty
-            ? rawTerritory
-            : rawBroad.isNotEmpty
-                ? rawBroad
-                : (rawLocality.isNotEmpty ? rawLocality : 'Unknown');
+        final boards = leaderboardsForSession(
+          startLocality: data['startLocality'] as String?,
+          territoryCity: data['territoryCity'] as String?,
+          territoryBroad: data['territoryBroad'] as String?,
+        );
 
         final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
-        if (city == 'Unknown' || createdAt == null) continue;
+        if (boards.isEmpty || createdAt == null) continue;
 
-        final seen = territoryLastRun[city];
-        if (seen == null || createdAt.isAfter(seen)) {
-          territoryLastRun[city] = createdAt;
+        for (final city in boards) {
+          final seen = territoryLastRun[city];
+          if (seen == null || createdAt.isAfter(seen)) {
+            territoryLastRun[city] = createdAt;
+          }
         }
         // Only a curated metro polygon sets `territoryCity`; the broad region
         // fallback does not, and does not earn the promoted slot.
@@ -134,7 +141,13 @@ class _HomeLeaderboardsSettingsPageState extends State<HomeLeaderboardsSettingsP
 
   void _onReorder(int oldIndex, int newIndex) {
     setState(() {
-      if (newIndex > oldIndex) newIndex -= 1;
+      // No `if (newIndex > oldIndex) newIndex -= 1` here. That adjustment
+      // belongs to the deprecated `onReorder` callback, which reported the
+      // index the item was dropped *before* while it was still in the list.
+      // `onReorderItem` — used above — already accounts for the removal, so
+      // subtracting again cancelled every downward move: dragging a board
+      // down did nothing at all. Covered by
+      // `home_leaderboards_settings_page_test.dart`'s "moving a board down".
       final item = _leaderboards.removeAt(oldIndex);
       _leaderboards.insert(newIndex, item);
     });

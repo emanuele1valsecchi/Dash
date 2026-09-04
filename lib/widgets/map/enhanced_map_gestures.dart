@@ -18,8 +18,8 @@ import 'package:latlong2/latlong.dart';
 ///     a persistent rotation dead zone that doesn't lock zoom out", because
 ///     its gesture race picks one winner for an entire touch, not
 ///     continuously (this was investigated at length on the explore page
-///     before landing here — see CLAUDE.md for the full history). This
-///     widget tracks the first two fingers directly via a raw [Listener]
+///     before landing here). This widget tracks the first two fingers
+///     directly via a raw [Listener]
 ///     (which observes touches without competing in the gesture arena, so
 ///     it can't conflict with flutter_map's own zoom/pan handling) and only
 ///     starts rotating the map once cumulative twist since the two-finger

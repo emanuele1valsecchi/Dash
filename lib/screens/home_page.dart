@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../models/badge_model.dart';
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -20,6 +21,7 @@ import '../services/location_service.dart';
 import '../services/storage_service.dart';
 import '../services/unit_preferences.dart';
 import '../utils/run_estimates.dart';
+import '../utils/session_leaderboards.dart';
 import '../widgets/units_scope.dart';
 import '../services/water_fountain_service.dart';
 import 'route_create_page.dart';
@@ -50,13 +52,33 @@ class _NoOverscrollBehavior extends ScrollBehavior {
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  /// Injectable for tests, each defaulting to the real thing, so no call
+  /// site changes. The screen opens four Firestore listeners plus a badge
+  /// read, so all of them have to come through here for it to be pumpable.
+  @visibleForTesting
+  final FirebaseFirestore? firestore;
+  @visibleForTesting
+  final FirebaseAuth? auth;
+  @visibleForTesting
+  final BadgeService? badgeService;
+
+  const HomePage({
+    super.key,
+    this.firestore,
+    this.auth,
+    this.badgeService,
+  });
 
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
+  late final FirebaseFirestore _db =
+      widget.firestore ?? FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+  late final BadgeService _badgeService = widget.badgeService ?? BadgeService();
+
   final GlobalKey _fabKey = GlobalKey();
 
   // Leaderboard Carousel
@@ -224,9 +246,9 @@ class _HomePageState extends State<HomePage> {
 
   Widget _buildNotificationIconButton(){
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
+      stream: _db
         .collection('notifications')
-        .where('userId', isEqualTo: FirebaseAuth.instance.currentUser?.uid)
+        .where('userId', isEqualTo: _auth.currentUser?.uid)
         .where('isRead', isEqualTo: false)
         .snapshots(),
       
@@ -343,10 +365,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _startProfileStream() {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _auth.currentUser;
     if (user == null) return;
 
-    _profileSub = FirebaseFirestore.instance
+    _profileSub = _db
         .collection('profiles')
         .doc(user.uid)
         .snapshots()
@@ -362,12 +384,12 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _startMonthlyStatsStreams() {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _auth.currentUser;
     if (user == null) return;
 
     final sixtyDaysAgo = DateTime.now().subtract(const Duration(days: 60));
 
-    _sessionsSub = FirebaseFirestore.instance
+    _sessionsSub = _db
       .collection('runningSessions')
       .where('userId', isEqualTo: user.uid)
       .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(sixtyDaysAgo))
@@ -377,7 +399,7 @@ class _HomePageState extends State<HomePage> {
         _calculateMonthlyStats();
       });
 
-    _statsSub = FirebaseFirestore.instance
+    _statsSub = _db
         .collection('userStats')
         .doc(user.uid)
         .snapshots()
@@ -494,10 +516,10 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _startLeaderboardStream() {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _auth.currentUser;
     if (user == null) return;
     
-    final db = FirebaseFirestore.instance;
+    final db = _db;
 
     _globalSessionsSub = db.collection('runningSessions').snapshots().listen((sessionsSnap) async {
       if (!mounted) return;
@@ -519,33 +541,35 @@ class _HomePageState extends State<HomePage> {
           final points = (data['pointsEarned'] as num?)?.toInt() ?? 0;
           final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
 
-          final rawLocality = (data['startLocality'] as String?)?.trim() ?? '';
           final rawTerritory = (data['territoryCity'] as String?)?.trim() ?? '';
-          final rawBroad = (data['territoryBroad'] as String?)?.trim() ?? '';
-          
-          final city = rawTerritory.isNotEmpty
-              ? rawTerritory
-              : rawBroad.isNotEmpty
-                  ? rawBroad
-                  : (rawLocality.isNotEmpty ? rawLocality : 'Unknown');
+
+          // A run counts toward BOTH the place it started in and the
+          // metropolitan area covering it — see `leaderboardsForSession`.
+          final boards = leaderboardsForSession(
+            startLocality: data['startLocality'] as String?,
+            territoryCity: data['territoryCity'] as String?,
+            territoryBroad: data['territoryBroad'] as String?,
+          );
 
           if (userId != null && createdAt != null) {
             globalUserPoints[userId] = (globalUserPoints[userId] ?? 0) + points;
 
-            if (city != 'Unknown') {
+            for (final city in boards) {
               cityUserPoints.putIfAbsent(city, () => {});
               cityUserPoints[city]![userId] = (cityUserPoints[city]![userId] ?? 0) + points;
 
-              if (userId == user.uid) {
-                if (!currentUserCities.containsKey(city) || createdAt.isAfter(currentUserCities[city]!)) {
-                  currentUserCities[city] = createdAt;
-                }
-                if (rawTerritory.isNotEmpty &&
-                    (myMetroAt == null || createdAt.isAfter(myMetroAt))) {
-                  myMetroTerritory = rawTerritory;
-                  myMetroAt = createdAt;
-                }
+              if (userId == user.uid &&
+                  (!currentUserCities.containsKey(city) ||
+                      createdAt.isAfter(currentUserCities[city]!))) {
+                currentUserCities[city] = createdAt;
               }
+            }
+
+            if (userId == user.uid &&
+                rawTerritory.isNotEmpty &&
+                (myMetroAt == null || createdAt.isAfter(myMetroAt))) {
+              myMetroTerritory = rawTerritory;
+              myMetroAt = createdAt;
             }
           }
         }
@@ -667,13 +691,26 @@ class _HomePageState extends State<HomePage> {
   }
   
   void _startBadgesStream() async {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _auth.currentUser;
 
     if (user == null) return;
 
-    final staticBadges = await BadgeService().getHomeBadges(user.uid);
-    
-    _badgeProgressSub = FirebaseFirestore.instance
+    // Guarded because this is `async void`: nothing awaits it, so a throw
+    // here escapes as an unhandled async error rather than being caught by
+    // a caller. Badges are decoration on the home screen — a failed read
+    // must cost the badge row, not the whole screen.
+    //
+    // Same fix, same reason, as `profile_page.dart`,
+    // `public_profile_page.dart` and `badge_page.dart`.
+    final List<BadgeModel> staticBadges;
+    try {
+      staticBadges = await _badgeService.getHomeBadges(user.uid);
+    } catch (e) {
+      debugPrint('Could not load home badges for ${user.uid}: $e');
+      return;
+    }
+
+    _badgeProgressSub = _db
       .collection('profiles')
       .doc(user.uid)
       .collection('badge_progress')

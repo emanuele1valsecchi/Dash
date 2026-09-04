@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:dash/extensions/responsive_border_radius.dart';
-import 'package:dash/extensions/responsive_spacing.dart';
+import 'config/app_theme.dart';
+
 import 'package:dash/root_screen.dart';
 import 'package:dash/screens/public_profile_page.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -12,6 +12,9 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'screens/onboarding_page.dart';
 import 'services/unit_preferences.dart';
 import 'widgets/units_scope.dart';
+import 'services/profile_service.dart';
+import 'screens/welcome_register_page.dart';
+import 'screens/email_confirmation_page.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
@@ -145,62 +148,53 @@ class _DashAppState extends State<DashApp> with WidgetsBindingObserver {
         navigatorKey: navigatorKey,
         debugShowCheckedModeBanner: false,
         title: 'Dash',
-        theme: _buildAppTheme(),
+        theme: buildAppTheme(),
         home: StreamBuilder<User?>(
           stream: FirebaseAuth.instance.authStateChanges(),
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
               return const _SplashScreen();
             }
-            if (snapshot.hasData) {
-              return const RootScreen();
+
+            final user = snapshot.data;
+
+            if (user == null) {
+              return const OnboardingScreen();
             }
-            return const OnboardingScreen();
+
+            if (!user.emailVerified) {
+              return EmailConfirmationScreen(email: user.email ?? '');
+            }
+
+            return const _ProfileGate();
           },
         ),
       ),
     );
   }
 
-  ThemeData _buildAppTheme() {
-    const ResponsiveSpacing responsiveSpacing = ResponsiveSpacing();
-    const ResponsiveBorderRadius responsiveBorderRadius = ResponsiveBorderRadius();
+}
 
-    final ColorScheme materialColorScheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF37693D),
-    );
-    
-    return ThemeData(
-      useMaterial3: true,
-      colorScheme: materialColorScheme,
-      extensions: const [
-        responsiveSpacing,
-        responsiveBorderRadius,
-      ],
-      cardTheme: CardThemeData(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(responsiveBorderRadius.md), 
-        ),
-      ),
-      dialogTheme: DialogThemeData(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(responsiveBorderRadius.lg),
-        ),
-      ),
-      bottomSheetTheme: BottomSheetThemeData(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(
-            top: Radius.circular(responsiveBorderRadius.xl),
-          ),
-        ),
-      ),
-      iconTheme: const IconThemeData(
-        weight: 600,
-      ),
-      progressIndicatorTheme: ProgressIndicatorThemeData(
-        color: materialColorScheme.tertiary,           
-        circularTrackColor: materialColorScheme.surfaceContainer,
-      ),
+class _ProfileGate extends StatelessWidget {
+  const _ProfileGate();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<bool>(
+      future: ProfileService().isProfileComplete(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const _SplashScreen();
+        }
+
+        final profileExists = snapshot.data ?? false;
+
+        if (!profileExists) {
+          return const WelcomeRegisterScreen();
+        }
+
+        return const RootScreen();
+      },
     );
   }
 }

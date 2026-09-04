@@ -5,9 +5,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart'; // <-- Add this import
 
 class PushNotificationService {
-  final FirebaseMessaging _fcm = FirebaseMessaging.instance;
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
-  final FirebaseAuth _auth = FirebaseAuth.instance;
+  // `late` so construction never touches Firebase: `LoginPage` builds this
+  // service inline, and an eager read of any `.instance` here throws
+  // `[core/no-app]` before the screen can render in a test.
+  late final FirebaseMessaging _fcm = FirebaseMessaging.instance;
+  late final FirebaseFirestore _db = FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = FirebaseAuth.instance;
   final FlutterLocalNotificationsPlugin _localNotificationsPlugin = FlutterLocalNotificationsPlugin(); // <-- Add this
 
   Future<void> initialize() async {

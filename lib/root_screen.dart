@@ -6,12 +6,15 @@ import 'package:dash/widgets/dash_navigation_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:dash/screens/email_confirmation_page.dart';
+import 'package:dash/screens/welcome_register_page.dart';
 
-// Ensure the import path for your login screen is correct
 import 'package:dash/screens/login_page.dart';
 
 class RootScreen extends StatefulWidget {
   const RootScreen({super.key});
+
+  static bool isIntentionalLogout = false;
 
   @override
   State<RootScreen> createState() => _RootScreenState();
@@ -34,11 +37,11 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    
-    // Check on cold start
-    _verifyAccountIntegrity(); 
-    
-    // Start foreground real-time listeners
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _verifyAccountIntegrity();
+    });
+
     _startAuthWatcher();
     _startRealtimeAccountWatcher();
   }
@@ -95,28 +98,69 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
 
   // Validates token and doc (mostly useful for cold starts and background returns)
   Future<void> _verifyAccountIntegrity() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
+  final user = FirebaseAuth.instance.currentUser;
+  if (user == null) {
+    _triggerAccountError();
+    return;
+  }
+
+  try {
+    await user.reload();
+    final refreshedUser = FirebaseAuth.instance.currentUser;
+
+    if (refreshedUser == null) {
       _triggerAccountError();
       return;
     }
 
-    try {
-      await user.reload(); 
-
-      final doc = await FirebaseFirestore.instance.collection('profiles').doc(user.uid).get();
-      if (!doc.exists) {
-        _triggerAccountError();
-      }
-    } catch (e) {
-      _triggerAccountError(); 
+    if (!refreshedUser.emailVerified) {
+      _redirectToEmailConfirmation();
+      return;
     }
+
+    final doc = await FirebaseFirestore.instance
+        .collection('profiles')
+        .doc(user.uid)
+        .get();
+
+    if (!doc.exists) {
+      _redirectToProfileSetup();
+      return;
+    }
+  } catch (e) {
+    _triggerAccountError();
   }
+}
+
+void _redirectToEmailConfirmation() {
+  if (!mounted) return;
+  Navigator.of(context).pushAndRemoveUntil(
+    MaterialPageRoute(
+      builder: (_) => EmailConfirmationScreen(
+        email: FirebaseAuth.instance.currentUser?.email ?? '',
+      ),
+    ),
+    (route) => false,
+  );
+}
+
+void _redirectToProfileSetup() {
+  if (!mounted) return;
+  Navigator.of(context).pushAndRemoveUntil(
+    MaterialPageRoute(builder: (_) => const WelcomeRegisterScreen()),
+    (route) => false,
+  );
+}
 
   // The unclosable error dialog
   void _triggerAccountError() {
+    if (RootScreen.isIntentionalLogout) {
+      RootScreen.isIntentionalLogout = false;
+      return;
+    }
+
     if (_isShowingErrorDialog || !mounted) return;
-    
+
     setState(() => _isShowingErrorDialog = true);
 
     showDialog(
@@ -136,7 +180,7 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
                 if (context.mounted) {
                   Navigator.of(context).pushAndRemoveUntil(
                     MaterialPageRoute(
-                      builder: (context) => const LoginScreen(), 
+                      builder: (context) => const LoginScreen(),
                     ),
                     (route) => false,
                   );

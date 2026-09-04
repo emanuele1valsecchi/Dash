@@ -5,15 +5,29 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 class NotificationSettingsPage extends StatefulWidget {
-  const NotificationSettingsPage({super.key});
+  /// Test seams. Production leaves both null and the state resolves
+  /// `.instance` lazily — the previous eager field initializers threw
+  /// `[core/no-app]` when the widget was *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseFirestore? firestore;
+  @visibleForTesting
+  final FirebaseAuth? auth;
+
+  const NotificationSettingsPage({
+    super.key,
+    this.firestore,
+    this.auth,
+  });
 
   @override
   State<NotificationSettingsPage> createState() => _NotificationSettingsPageState();
 }
 
 class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
-  final String _currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  late final FirebaseFirestore _db =
+      widget.firestore ?? FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+  late final String _currentUserId = _auth.currentUser?.uid ?? '';
   
   bool _isLoading = true;
 
@@ -39,7 +53,14 @@ class _NotificationSettingsPageState extends State<NotificationSettingsPage> {
 
   // Reads preferences saved on Firestore
   Future<void> _loadPreferences() async {
-    if (_currentUserId.isEmpty) return;
+    // Stop loading before returning, not just `return`: the early exit is
+    // above the `try`, so its `finally` never runs and the page would sit on
+    // its spinner forever. There is nothing to fetch without a user, but
+    // there is also nothing to wait for.
+    if (_currentUserId.isEmpty) {
+      if (mounted) setState(() => _isLoading = false);
+      return;
+    }
 
     try {
       final doc = await _db.collection('profiles').doc(_currentUserId).get();

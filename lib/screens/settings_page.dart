@@ -8,9 +8,16 @@ import 'login_page.dart';
 import 'legal_page.dart';
 import 'notification_settings_page.dart';
 import 'home_leaderboards_settings_page.dart';
+import 'package:dash/root_screen.dart';
 
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key});
+  /// Test seam. Production leaves it null and `_handleLogout` resolves
+  /// `.instance` lazily — a field initializer here would throw
+  /// `[core/no-app]` when the widget is constructed.
+  @visibleForTesting
+  final FirebaseAuth? auth;
+
+  const SettingsPage({super.key, this.auth});
 
   Future<void> _handleLogout(BuildContext context) async {
     final bool? confirm = await showDialog<bool>(
@@ -34,7 +41,8 @@ class SettingsPage extends StatelessWidget {
     );
 
     if (confirm == true) {
-      await FirebaseAuth.instance.signOut();
+      RootScreen.isIntentionalLogout = true;
+      await (auth ?? FirebaseAuth.instance).signOut();
       
       if (context.mounted) {
         Navigator.of(context).pushAndRemoveUntil(

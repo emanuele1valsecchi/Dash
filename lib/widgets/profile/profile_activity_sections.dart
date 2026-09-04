@@ -28,8 +28,7 @@ import 'package:material_symbols_icons/symbols.dart';
 ///
 /// **Reads are one-time, not listeners**, unlike the `snapshots()` streams
 /// this replaced — a profile's run and route lists change rarely, and a
-/// standing stream per profile visit costs reads for nothing (see "Security &
-/// performance" in CLAUDE.md).
+/// standing stream per profile visit costs reads for nothing.
 class ProfileActivitySections extends StatefulWidget {
   final String userId;
 
@@ -40,11 +39,21 @@ class ProfileActivitySections extends StatefulWidget {
   /// Used in the empty states of another user's profile.
   final String displayName;
 
+  /// The two repositories this widget reads, injectable for tests and
+  /// defaulting to the app-wide singletons — so neither profile page changes.
+  ///
+  /// Shared by `ProfilePage` and `PublicProfilePage`, which is why the seam
+  /// lives here rather than being duplicated in both.
+  final RunSessionRepository? sessionRepository;
+  final RouteRepository? routeRepository;
+
   const ProfileActivitySections({
     super.key,
     required this.userId,
     required this.isCurrentUser,
     required this.displayName,
+      this.sessionRepository,
+    this.routeRepository,
   });
 
   @override
@@ -53,6 +62,10 @@ class ProfileActivitySections extends StatefulWidget {
 }
 
 class ProfileActivitySectionsState extends State<ProfileActivitySections> {
+  late final _sessions =
+      widget.sessionRepository ?? RunSessionRepository.instance;
+  late final _routeRepo = widget.routeRepository ?? RouteRepository.instance;
+
   /// Fraction of the screen each row occupies. The cards fill this height
   /// rather than setting their own, since inside a horizontal list the cross
   /// axis is already tightly constrained.
@@ -101,7 +114,7 @@ class ProfileActivitySectionsState extends State<ProfileActivitySections> {
 
   Future<void> _loadRuns() async {
     try {
-      final runs = await RunSessionRepository.instance
+      final runs = await _sessions
           .fetchUserSessions(userId: widget.userId);
       if (!mounted) return;
       setState(() {
@@ -121,8 +134,8 @@ class ProfileActivitySectionsState extends State<ProfileActivitySections> {
       // they have published — which is not just a filter, it is what makes the
       // query permissible at all (see `fetchRoutesForUser`).
       final routes = widget.isCurrentUser
-          ? await RouteRepository.instance.fetchUserRoutes()
-          : await RouteRepository.instance
+          ? await _routeRepo.fetchUserRoutes()
+          : await _routeRepo
               .fetchRoutesForUser(widget.userId, publicOnly: true);
       if (!mounted) return;
       setState(() {
@@ -213,7 +226,7 @@ class ProfileActivitySectionsState extends State<ProfileActivitySections> {
     if (confirmed != true || !mounted) return;
 
     try {
-      await RouteRepository.instance.deleteRoute(route.id);
+      await _routeRepo.deleteRoute(route.id);
       if (!mounted) return;
       setState(() => _routes = _routes.where((r) => r.id != route.id).toList());
     } catch (e) {
@@ -231,7 +244,7 @@ class ProfileActivitySectionsState extends State<ProfileActivitySections> {
     if (newName == null || newName == route.name || !mounted) return;
 
     try {
-      await RouteRepository.instance.renameRoute(route.id, newName);
+      await _routeRepo.renameRoute(route.id, newName);
       if (mounted) await reload();
     } catch (e) {
       debugPrint('Could not rename route ${route.id}: $e');
