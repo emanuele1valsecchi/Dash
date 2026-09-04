@@ -173,34 +173,41 @@ class _ProfileStatisticsSectionState extends State<ProfileStatisticsSection> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _buildReferenceLine(labelStyle, labelWidth, hasData ? _formatValueLabel(safeMax) : ''),
-          _buildReferenceLine(labelStyle, labelWidth, hasData ? _formatValueLabel(safeMax * 2 / 3) : ''),
-          _buildReferenceLine(labelStyle, labelWidth, hasData ? _formatValueLabel(safeMax / 3) : ''),
-          _buildReferenceLine(labelStyle, labelWidth, ''),
+          _buildReferenceLine(labelStyle, labelWidth, 1, hasData ? _formatValueLabel(safeMax) : ''),
+          _buildReferenceLine(labelStyle, labelWidth, 1, hasData ? _formatValueLabel(safeMax * 2 / 3) : ''),
+          _buildReferenceLine(labelStyle, labelWidth, 1, hasData ? _formatValueLabel(safeMax / 3) : ''),
+          _buildReferenceLine(labelStyle, labelWidth, 3, ''),
         ],
       )
     );
   }
 
-  Widget _buildReferenceLine(TextStyle labelStyle, double labelWidth, String label) {
+  Widget _buildReferenceLine(TextStyle labelStyle, double labelWidth, double labelHeight, String label) {
     return Row(
       spacing: ResponsiveSpacing().sm,
       children: [
         Expanded(
           child: Container(
-            height: 1,
+            height: labelHeight,
             color: Theme.of(context).colorScheme.outlineVariant.withAlpha(80),
           ),
         ),
-        
-        SizedBox(
+
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 400),
+          curve: Curves.easeOutCubic,
           width: labelWidth,
-          child: Text(
-            label,
-            maxLines: 1,
-            textAlign: TextAlign.right,
-            style: labelStyle.copyWith(
-              color: Theme.of(context).colorScheme.outline,
+          alignment: Alignment.centerRight,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 400),
+            child: Text(
+              label,
+              key: ValueKey<String>(label),
+              maxLines: 1,
+              textAlign: TextAlign.right,
+              style: labelStyle.copyWith(
+                color: Theme.of(context).colorScheme.outline,
+              ),
             ),
           ),
         ),
@@ -214,7 +221,9 @@ class _ProfileStatisticsSectionState extends State<ProfileStatisticsSection> {
       bottom: ResponsiveSpacing().sm,
       left: 0.0,
       right: 0.0,
-      child: Padding(
+      child: AnimatedPadding(
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeOutCubic,
         padding: EdgeInsetsGeometry.fromLTRB(0.0, 0.0, labelWidth, 0.0),
         child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -242,7 +251,9 @@ class _ProfileStatisticsSectionState extends State<ProfileStatisticsSection> {
   Widget _buildDaysRow(TextStyle labelStyle, double barWidth, double labelWidth){
     final currentDayIndex = DateTime.now().weekday - 1;
 
-    return Padding(
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeOutCubic,
       padding: EdgeInsetsGeometry.fromLTRB(0.0, 0.0, labelWidth, 0.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -252,8 +263,8 @@ class _ProfileStatisticsSectionState extends State<ProfileStatisticsSection> {
           return SizedBox(
             width: barWidth,
             child: Text(
-              maxLines: 1,
               _days[index],
+              maxLines: 1,
               textAlign: TextAlign.center,
               style: labelStyle.copyWith(
                 color: isToday ? Theme.of(context).colorScheme.onSurface : Theme.of(context).colorScheme.outline,
