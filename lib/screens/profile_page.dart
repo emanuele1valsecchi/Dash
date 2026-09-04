@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'package:dash/root_screen.dart';
+import 'package:dash/widgets/dash_navigation_bar.dart';
+
 import '../models/badge_model.dart';
 import '../services/route_repository.dart';
 import '../services/run_session_repository.dart';
@@ -28,6 +31,9 @@ class ProfilePage extends StatefulWidget {
   /// Injectable for tests, each defaulting to the real thing, so no call
   /// site changes. Mirrors `PublicProfilePage`'s seam set — the two screens
   /// are twins and should stay testable the same way.
+  
+  final bool isStandalone;
+
   @visibleForTesting
   final FirebaseFirestore? firestore;
   @visibleForTesting
@@ -41,6 +47,7 @@ class ProfilePage extends StatefulWidget {
 
   const ProfilePage({
     super.key,
+    this.isStandalone = false,
     this.firestore,
     this.auth,
     this.badgeService,
@@ -165,6 +172,16 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
             ),
           ),
+
+      bottomNavigationBar: widget.isStandalone
+        ? DashNavigationbar(
+            selectedIndex: 2,
+            onDestinationSelected: (index) {
+              Navigator.popUntil(context, (route) => route.isFirst);
+              RootScreen.tabNotifier.value = index;
+            },
+          )
+        : null,
     );
   }
 

@@ -9,7 +9,9 @@ class ProfileNavigation {
     final isSelf = currentUserId != null && currentUserId == targetUserId;
 
     final route = MaterialPageRoute<void>(
-      builder: (context) => isSelf ? const ProfilePage() : PublicProfilePage(userId: targetUserId),
+      builder: (context) => isSelf 
+          ? const ProfilePage(isStandalone: true) // Push the version with the bottom nav bar
+          : PublicProfilePage(userId: targetUserId),
     );
 
     if (replace) {
