@@ -1,9 +1,10 @@
 import 'dart:async';
 
+import 'package:dash/utils/profile_navigator.dart';
+
 import 'config/app_theme.dart';
 
 import 'package:dash/root_screen.dart';
-import 'package:dash/screens/public_profile_page.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -129,13 +130,11 @@ class _DashAppState extends State<DashApp> with WidgetsBindingObserver {
       final sharedUserId = uri.pathSegments[1];
 
       if (FirebaseAuth.instance.currentUser != null) {
-        if (sharedUserId == FirebaseAuth.instance.currentUser!.uid) return;
-
-        navigatorKey.currentState?.push(
-          MaterialPageRoute(
-            builder: (context) => PublicProfilePage(userId: sharedUserId),
-          ),
-        );
+        final context = navigatorKey.currentContext;
+        
+        if (context != null) {
+          ProfileNavigation.openProfile(context, sharedUserId);
+        }
       }
     }
   }
