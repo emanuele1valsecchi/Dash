@@ -8,13 +8,40 @@ import 'package:material_symbols_icons/symbols.dart';
 import '../widgets/profile_avatar_widget.dart';
 
 class SetupProfileScreen extends StatefulWidget {
-  const SetupProfileScreen({super.key});
+  /// Test seams. Production leaves both null and the state resolves
+  /// `.instance` lazily — an eager field initializer would throw
+  /// `[core/no-app]` when the widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseFirestore? firestore;
+  @visibleForTesting
+  final FirebaseAuth? auth;
+
+  /// What to show once the profile is saved. Defaults to [RootScreen].
+  ///
+  /// Overridden only in tests: `RootScreen` is the whole app shell and its
+  /// `initState` reaches straight for `FirebaseAuth.instance`, so building it
+  /// in a widget test throws `[core/no-app]` on every frame. Without this the
+  /// success path could not be asserted at all — the write lands, then the
+  /// navigation buries it under exceptions.
+  @visibleForTesting
+  final WidgetBuilder? destinationBuilder;
+
+  const SetupProfileScreen({
+    super.key,
+    this.firestore,
+    this.auth,
+    this.destinationBuilder,
+  });
 
   @override
   State<SetupProfileScreen> createState() => _SetupProfileScreenState();
 }
 
 class _SetupProfileScreenState extends State<SetupProfileScreen> {
+  late final FirebaseFirestore _db =
+      widget.firestore ?? FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+
   final _usernameController = TextEditingController();
   final _nameController = TextEditingController();
   final _surnameController = TextEditingController();
@@ -27,7 +54,7 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
   @override
   void initState() {
     super.initState();
-    _profileImageUrl = FirebaseAuth.instance.currentUser?.photoURL;
+    _profileImageUrl = _auth.currentUser?.photoURL;
   }
 
   @override
@@ -51,8 +78,8 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final user = FirebaseAuth.instance.currentUser!;
-      final firestore = FirebaseFirestore.instance;
+      final user = _auth.currentUser!;
+      final firestore = _db;
 
       // Check username availability before writing
       final nicknameDoc = await firestore.collection('nicknames').doc(username).get();
@@ -104,7 +131,9 @@ class _SetupProfileScreenState extends State<SetupProfileScreen> {
         context.showSuccessSnackBar("Profile saved successfully");
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const RootScreen()),
+          MaterialPageRoute(
+            builder: widget.destinationBuilder ?? (_) => const RootScreen(),
+          ),
         );
       }
     } catch (e) {

@@ -27,9 +27,19 @@ class LeaderboardEntry {
 class LeaderboardScreen extends StatefulWidget {
   final String cityFilter; // Città specifica o 'Global Leaderboard'
 
+  /// Test seams. Production leaves both null and the state resolves
+  /// `.instance` lazily — an eager field initializer would throw
+  /// `[core/no-app]` when the widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseFirestore? firestore;
+  @visibleForTesting
+  final FirebaseAuth? auth;
+
   const LeaderboardScreen({
     super.key,
     required this.cityFilter,
+    this.firestore,
+    this.auth,
   });
 
   @override
@@ -37,6 +47,9 @@ class LeaderboardScreen extends StatefulWidget {
 }
 
 class _LeaderboardScreenState extends State<LeaderboardScreen> {
+  late final FirebaseFirestore _db = widget.firestore ?? FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+
   bool _isLoading = true;
   List<LeaderboardEntry> _leaderboard = [];
   LeaderboardEntry? _currentUserEntry;
@@ -49,10 +62,10 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
 
   Future<void> _fetchLeaderboardData() async {
     try {
-      final sessionsSnapshot = await FirebaseFirestore.instance.collection('runningSessions').get();
+      final sessionsSnapshot = await _db.collection('runningSessions').get();
       
       Map<String, int> userPointsMap = {};
-      final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+      final currentUserId = _auth.currentUser?.uid;
       final isGlobal = widget.cityFilter == 'Global Leaderboard';
 
       for (var doc in sessionsSnapshot.docs) {
@@ -87,7 +100,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         final userId = entry.key;
         final totalPoints = entry.value;
 
-        final profileDoc = await FirebaseFirestore.instance.collection('profiles').doc(userId).get();
+        final profileDoc = await _db.collection('profiles').doc(userId).get();
         final profileData = profileDoc.data() ?? {};
 
         final name = profileData['name'] as String? ?? 'Unknown';
@@ -154,7 +167,11 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                 // Substitute current page with the global leaderboard
                 Navigator.of(context).pushReplacement(
                   MaterialPageRoute(
-                    builder: (_) => const LeaderboardScreen(cityFilter: 'Global Leaderboard'),
+                    builder: (_) => LeaderboardScreen(
+                      cityFilter: 'Global Leaderboard',
+                      firestore: widget.firestore,
+                      auth: widget.auth,
+                    ),
                   ),
                 );
               },

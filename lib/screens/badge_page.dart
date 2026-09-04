@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
+import 'package:dash/models/badge_model.dart';
 import 'package:dash/models/home_badge_ui_model.dart';
 import 'package:dash/services/badge_service.dart';
 import 'package:dash/services/storage_service.dart';
@@ -13,9 +14,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 class BadgePage extends StatefulWidget {
   final String userId;
 
-	const BadgePage({
-    super.key, 
-    required this.userId
+  /// Injectable for tests, defaulting to what the app already uses, so no
+  /// call site changes. Badge *progress* is a live `snapshots()` query, which
+  /// `FakeFirebaseFirestore` supports — so a test can seed progress rows and
+  /// watch the grid react.
+  final BadgeService? badgeService;
+  final FirebaseFirestore? firestore;
+
+  const BadgePage({
+    super.key,
+    required this.userId,
+    this.badgeService,
+    this.firestore,
   });
 
 	@override
@@ -23,6 +33,9 @@ class BadgePage extends StatefulWidget {
 }
 
 class _BadgePageState extends State<BadgePage> {
+  late final _badgeService = widget.badgeService ?? BadgeService();
+  late final _db = widget.firestore ?? FirebaseFirestore.instance;
+
   static const int _badgesColumn = 3;
 
   bool _isLoading = true;
@@ -80,9 +93,21 @@ class _BadgePageState extends State<BadgePage> {
 	}
 
   void _startBadgesStream() async {
-    
-    final staticBadges = await BadgeService().getAllBadges(widget.userId);
-    final prefs = await SharedPreferences.getInstance();
+    // Guarded because this is `async void`: nothing awaits it, so a throw
+    // escapes as an unhandled async error *and* leaves `_isLoading` true —
+    // stranding the page on its spinner forever. `badges` is shared reference
+    // data, so a denied read or a network blip is entirely possible. Same fix
+    // as `public_profile_page.dart`.
+    final List<BadgeModel> staticBadges;
+    final SharedPreferences prefs;
+    try {
+      staticBadges = await _badgeService.getAllBadges(widget.userId);
+      prefs = await SharedPreferences.getInstance();
+    } catch (e) {
+      debugPrint('Could not load badges for ${widget.userId}: $e');
+      if (mounted) setState(() => _isLoading = false);
+      return;
+    }
 
     for (final badge in staticBadges) {
       if (!_urlCache.containsKey(badge.imagePath)) {
@@ -119,7 +144,7 @@ class _BadgePageState extends State<BadgePage> {
       });
     }
 
-    _badgeSub = FirebaseFirestore.instance
+    _badgeSub = _db
       .collection('profiles')
       .doc(widget.userId)
       .collection('badge_progress')

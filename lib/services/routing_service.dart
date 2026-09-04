@@ -96,8 +96,26 @@ class DrawMatchNetworkError extends DrawMatchResult {
 ///
 /// Returns null on any failure; callers fall back to a straight-line segment.
 class RoutingService {
-  static final FirebaseFunctions _functions =
+  static final FirebaseFunctions _realFunctions =
       FirebaseFunctions.instanceFor(region: 'europe-west1');
+
+  /// Test seam. Every backend call in this class goes through [_functions],
+  /// so setting this substitutes the whole transport without touching a
+  /// single call site.
+  ///
+  /// It has to be a static override rather than a constructor parameter
+  /// because this class is entirely static — there is no instance to inject
+  /// into, and making one would touch every caller in the app. Tests must
+  /// reset it in `tearDown`; a leaked override would silently point later
+  /// tests at the previous one's stub.
+  ///
+  /// `_realFunctions` stays lazy (Dart initialises `static final` on first
+  /// use), so a test that sets this never causes Firebase to be touched.
+  @visibleForTesting
+  static FirebaseFunctions? functionsOverride;
+
+  static FirebaseFunctions get _functions =>
+      functionsOverride ?? _realFunctions;
 
   static Map<String, dynamic> _asStringMap(dynamic v) =>
       Map<String, dynamic>.from(v as Map);

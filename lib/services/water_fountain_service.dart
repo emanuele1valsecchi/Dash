@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -69,6 +70,25 @@ class WaterFountainService {
   /// letting it grow unboundedly as a user visits more areas over time.
   /// Eviction is by oldest [_CacheEntry.fetchedAt] first.
   static const int _maxCachedEntries = 150;
+
+  /// Test seam. The one network call goes through [_http].
+  @visibleForTesting
+  http.Client? clientOverride;
+
+  http.Client get _http => clientOverride ?? http.Client();
+
+  /// Test hook: forgets everything, including the memoised warm-up.
+  ///
+  /// This is an app-lifetime singleton, so without it one test's cached
+  /// fountains — and its already-resolved `_warmUpFuture`, which makes
+  /// `warmUp()` a no-op forever after — leak into every test that follows.
+  @visibleForTesting
+  void resetForTest() {
+    _cache.clear();
+    _inFlight.clear();
+    _warmUpFuture = null;
+    clientOverride = null;
+  }
 
   final Map<String, _CacheEntry> _cache = {};
 
@@ -144,7 +164,7 @@ class WaterFountainService {
     try {
       // Overpass's server rejects requests with no User-Agent (406) — same
       // requirement as the Nominatim calls elsewhere in the app.
-      final response = await http
+      final response = await _http
           .post(
             Uri.parse(_overpassUrl),
             headers: {'User-Agent': 'DashApp/1.0'},

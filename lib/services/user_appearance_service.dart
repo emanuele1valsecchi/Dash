@@ -69,6 +69,13 @@ class UserAppearanceService extends ChangeNotifier {
   /// split across several queries run in parallel.
   static const int _batchSize = 30;
 
+  /// Test seam. Production leaves it null and the getter resolves
+  /// `.instance` lazily.
+  @visibleForTesting
+  FirebaseFirestore? firestoreOverride;
+
+  FirebaseFirestore get _db => firestoreOverride ?? FirebaseFirestore.instance;
+
   final Map<String, UserAppearance> _cache = {};
   final Set<String> _inFlight = {};
 
@@ -128,7 +135,7 @@ class UserAppearanceService extends ChangeNotifier {
   }
 
   Future<List<UserAppearance>> _fetchBatch(List<String> uids) async {
-    final snap = await FirebaseFirestore.instance
+    final snap = await _db
         .collection('profiles')
         .where(FieldPath.documentId, whereIn: uids)
         .get();
@@ -174,5 +181,6 @@ class UserAppearanceService extends ChangeNotifier {
     _cache.clear();
     _inFlight.clear();
     _missing.clear();
+    firestoreOverride = null;
   }
 }

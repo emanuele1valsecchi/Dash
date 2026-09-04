@@ -6,6 +6,11 @@ class BadgeModel {
   final bool defaultVisible;
   final int order;
   final double requiredValue;
+  /// **A percentage, 0-100** — the scale the Cloud Function stores it in, not
+  /// the 0..1 fraction `DashBadge` renders. Nothing draws this value directly;
+  /// the badge screens each build their own `HomeBadgeUiModel` from a live
+  /// `badge_progress` snapshot and divide there. Here it exists so
+  /// `BadgeService` can order badges by how close they are to done.
   final double progress;
   final bool unlocked;
 
