@@ -1,6 +1,7 @@
 import 'package:dash/extensions/responsive_border_radius.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
 import 'package:dash/screens/public_profile_page.dart';
+import 'package:dash/utils/profile_link.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -124,30 +125,22 @@ class _QrScannerPageState extends State<QrScannerPage> {
     final List<Barcode> barcodes = capture.barcodes;
 
     for (final barcode in barcodes) {
-      final String? rawValue = barcode.rawValue;
+      final String? scannedUserId = ProfileLink.userIdFrom(barcode.rawValue);
+      if (scannedUserId == null) continue;
 
-      if (rawValue == null) continue;
+      setState(() {
+        _hasScanned = true;
+      });
 
-      final Uri? uri = Uri.tryParse(rawValue);
-      if (uri != null && uri.pathSegments.length >= 2 && uri.pathSegments.first == 'profile') {
-        final String scannedUserId = uri.pathSegments[1];
+      _controller?.stop();
 
-        if (scannedUserId.isNotEmpty) {
-          setState(() {
-            _hasScanned = true;
-          });
-
-          _controller?.stop();
-          
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (context) => PublicProfilePage(userId: scannedUserId),
-            ),
-          );
-          return;
-        }
-      }
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => PublicProfilePage(userId: scannedUserId),
+        ),
+      );
+      return;
     }
   }
 }

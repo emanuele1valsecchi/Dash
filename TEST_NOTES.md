@@ -8,8 +8,106 @@
 > **fixed** by addressing the document by the owner's uid.
 > Write-up in [section 5](#the-finding-private-metrics-squatting-fixed).
 
-**Status:** 671 Dart tests + **109 Firestore rules tests**, `flutter analyze`
-clean, all green.
+**Status:** 1,291 phone tests + **8 watch tests** (`wear/`, separate app) +
+**13 protocol tests** + **109 Firestore rules tests** + **51 Cloud Functions
+tests**, `flutter analyze` clean everywhere, all green.
+
+---
+
+## 0. HANDOFF — where the work is right now (2026-09-04, Linux machine)
+
+Written mid-session on the Linux box so the work can be picked up on the
+Windows machine. Delete this section once it has been read and acted on.
+
+### State when this was written
+
+All green, everywhere:
+
+| Suite | Where | Count |
+|---|---|---|
+| Phone app | repo root, `flutter test` | **1,291** |
+| Watch app | `cd wear && flutter test` | **8** |
+| Watch protocol | `cd packages/dash_watch_protocol && flutter test` | **13** |
+| Firestore rules | `cd test/rules && npm test` | **109** |
+| Cloud Functions | `cd functions && npm test` | **51** |
+
+`flutter analyze` clean in both apps. Honest coverage (phone only)
+**66.2%**, `dart run tool/coverage.dart`.
+
+### Done since this note was started
+
+**All three remaining phone services now have tests.** Every service in
+`lib/services/` is now reached by at least one test.
+
+- `run_foreground_service_test.dart` (**10 tests**) — the useful one. Pins
+  that a refused permission, a refused background start and a *missing
+  plugin* are each survived rather than taking the run down; that nothing is
+  sent to the channel off Android; and that `stop` omits the text keys rather
+  than sending nulls. **3 mutations, all caught**, including narrowing the
+  catch back to `PlatformException` — the documented regression that once
+  broke every controller test, since `MissingPluginException` is not one.
+- `cached_tile_provider_test.dart` (**5 tests**) — one shared instance, tiles
+  served through `CachedNetworkImageProvider`, the URL matching the layer
+  template, and the cache manager being a tile-only one rather than
+  `DefaultCacheManager` (so panning a city cannot evict avatars).
+  **Harness trap:** build the `TileLayer` *inside* a test — its constructor
+  makes a `NetworkTileProvider` and therefore an `HttpClient`, which
+  `flutter_test` refuses at top level. And mock `path_provider` in
+  `setUpAll`, not `setUp`: the cache managers are lazy singletons that capture
+  the directory on first use, so deleting it between tests leaves the next one
+  building under a parent that no longer exists.
+- `storage_service_test.dart` (**4 tests**) — **weak, and knowingly so. Read
+  this before trusting them.** They pin the contract that
+  `getDownloadUrlSafe` answers null rather than throwing for a null/empty/
+  whitespace path. They do **not** pin the guard clause: deleting
+  `path.trim().isEmpty` leaves every test green, because the call then reaches
+  `FirebaseStorage.instance`, throws `[core/no-app]`, and the method's own
+  catch-all returns null anyway. The two behaviours are indistinguishable
+  without a Storage fake. Closing this needs `firebase_storage_mocks` plus an
+  injection seam on `StorageService` — see the dependency question below.
+
+### Next up — nothing else is queued ahead of it
+
+`route_search_page.dart` (908 uncovered lines) and `route_create_page.dart`
+(837) — **1,745 lines, over half of everything still uncovered.** Deliberately
+last: their real logic (loop detection, routing, guidance, geometry) is
+already unit-tested in `route_loops_test`, `routing_service_test`,
+`route_guidance_test` and `drawn_route_converter_test`, so what is left is
+mostly UI wiring. Smoke depth was the agreed target, not deep behavioural
+tests.
+
+### Decisions taken this session that are easy to undo by accident
+
+- **`test_run_creator_page.dart` is being deleted** — do not write tests for
+  it. Full note in section 4.
+- **The `_verify_*.js` scripts were kept**, deliberately, alongside the new
+  `functions/test/` suites that supersede them. Both still pass.
+- **Nothing was removed from this file.** Section 4's duplicated bullets and
+  the contradictory dead-screens entries are still there, untouched, pending
+  context from the Windows machine.
+- **Section 6 describes CI that does not exist.** Verified: there is no
+  `.github/workflows/`. Section 3 is the accurate one.
+
+### Two live findings worth acting on outside the tests
+
+- **Google Sign-In cannot work from this Linux machine.** Its debug SHA-1
+  `2F:50:00:91:82:46:A9:46:C6:7F:1C:AB:51:FE:48:C7:DD:89:29:0A` is not among
+  the three fingerprints in `android/app/google-services.json`, so
+  Credential Manager has no matching OAuth client. Add it in the Firebase
+  console, or use an email/password account for testing on this box.
+- **`npm run lint` in `functions/` is broken and was already broken.**
+  `.eslintrc.js` is committed but `eslint ^10.8.0` resolves to 10.8.0, which
+  removed `.eslintrc` support entirely. Needs a migration to
+  `eslint.config.js`; untouched here because it is its own change.
+
+### One dependency question left open
+
+`ImageUploadService._uploadToStorage` and `StorageService` both need
+`firebase_storage_mocks` to be testable, and it is not currently a
+dev-dependency. Adding it is the obvious move, but it is a new package on a
+student project — worth a deliberate yes rather than slipping it in. The
+security-relevant half of the upload path (validation) is already covered
+without it.
 
 ---
 
@@ -330,6 +428,7 @@ differ, and arrange that — do not just add another assertion.
 | **Dragging a leaderboard *down* in Customize Home did nothing.** The handler subtracted one from `newIndex` when moving down — the convention for the deprecated `onReorder` callback — but the screen uses `onReorderItem`, which already accounts for the removed item. `old=1, new=2` became `new=1`, so the item was removed and reinserted at the same index. Moving *up* was unaffected, which is why it went unnoticed. | `home_leaderboards_settings_page.dart` | **Fixed** — adjustment removed. Covered by "moving a board down works too". |
 | **Two more unguarded `async void` badge loads** — `ProfilePage._startBadgesStream` and `HomePage._startBadgesStream` both awaited their badge read with no try/catch, so a failure escaped as an unhandled async error instead of costing only the badges. The third and fourth copies of the bug already fixed in `public_profile_page.dart` and `badge_page.dart`, and realistic rather than hypothetical: this read was denied outright before the `badge_progress` rule was widened. | `profile_page.dart`, `home_page.dart` | **Both fixed** — same guard as the twins. Each pinned by a "a failed badge read does not take the page down" test, confirmed failing first. |
 | **A signed-out user was stuck on a permanent spinner** on Push Notification settings. `_loadPreferences` returns early when there is no uid — but that `return` sits *above* the `try`, so the `finally` that clears `_isLoading` never ran. | `notification_settings_page.dart` | **Fixed** — clears the loading flag before returning. Pinned by "a signed-out user is not left on a spinner forever", which fails with `pumpAndSettle timed out` before the fix. |
+| **Magic-byte sniffing on profile-picture upload did not actually reject arbitrary content.** `lookupMimeType(fileName, headerBytes: ...)` tries the magic number *first* and, when it matches nothing, **falls back to the path's extension** — so a file of arbitrary bytes named `avatar.png` resolved to `image/png`, passed the allow-list, and then matched itself in the extension/content cross-check. A real JPEG mislabelled `.png` *was* caught (its magic resolves to a different known type), which is why the control looked like it worked. | `image_upload_service.dart` | **Fixed** — sniff with an empty path (`lookupMimeType('', headerBytes: ...)`) so there is no extension to fall back to. Verified first that every allowed format is magic-detectable, HEIC included, so nothing legitimate is lost. |
 | "Badge progress off by 100x" | — | **Not real.** See below. |
 | Two "overflow" bugs | — | **Not real.** See 1.2. |
 
@@ -348,6 +447,15 @@ Also noticed while reading, **not** fixed:
   `start_run_overlay_test.dart`'s `only the icon is tappable, not the label
   beside it`, so a refactor that accidentally makes the label swallow-through
   to the backdrop will fail rather than pass silently.
+
+- **The upload validator rejects any filename with more than one dot.**
+  `_validate` splits the base name and requires exactly two parts, so
+  `avatar.png.exe` is refused — good — but so is an innocent `my.holiday.png`,
+  with the unhelpful message "Nome file non valido". Left as-is deliberately:
+  the strict form is the safe direction, and `image_picker` supplies the name,
+  so a user rarely sees it. Both behaviours are pinned in
+  `image_upload_service_test.dart` so the trade-off is visible rather than
+  surprising. Worth revisiting only if it is ever reported from the field.
 
 - **`RouteSearchPage._removeStop` disposes a controller before `setState`.**
   Between those two lines the `TextField` is still mounted and bound to a
@@ -613,17 +721,63 @@ rather than treated as parity work.
    Every screen that reaches Firebase directly (27 of them) needs the same
    constructor-injection treatment `LoginScreen` and `RegisterScreen` now have
    before its success paths are reachable.
-2. **`functions/_verify_*.js` are not tests in any runner's sense** — hand-rolled
-   assertion scripts run with plain `node`, producing no machine-readable
-   result and invisible to any coverage or CI summary. Moving them to
-   `node:test` would fix that without rewriting the assertions.
+2. ~~**`functions/_verify_*.js` are not tests in any runner's sense**~~ —
+   **done (2026-09-04).** All four were ported to `node:test` under
+   `functions/test/`, run with `npm test` in `functions/`, and now exit
+   non-zero on failure: **51 tests**. The scenarios were carried over
+   unchanged and the originals were **kept** at the project owner's request,
+   so `_verify_*.js` still run standalone under plain `node`.
+
+   The port was not a straight copy — it added coverage the scripts did not
+   have, and the most valuable piece was `computeClaim`'s **two-pass
+   ordering**, which had no test at all. Same-owner areas are unioned *first*
+   so the grown shape is what gets subtracted from other players; subtract the
+   raw loop instead and ground that only becomes contested *because* of the
+   merge is silently left with its old owner. Also new: the
+   `MAX_CONTRIBUTIONS` cap (unbounded, that array eventually pushes the claim
+   document past Firestore's 1 MiB limit and it stops being writable),
+   multi-victim steals, geohash false positives, `earliestCreatedAtMillis`,
+   and the guard against a claim scheduling its own document for deletion.
+
+   `functions/test/` is in `firebase.json`'s functions `ignore` list — without
+   that entry the suite is uploaded with every deploy.
 
 ### Medium
 
-3. **`widgets/` is 14.5%.** ~20 Firebase-free widgets remain untested, including
-   `EnhancedMapGestures` (440 lines) — the rotation dead zone and multi-touch
-   release fix are the most intricate untested logic in the app, and the most
-   likely to regress silently.
+3. **`widgets/` is 82.8%.** ~20 Firebase-free widgets remain untested.
+   ~~`EnhancedMapGestures` — the rotation dead zone and multi-touch release
+   fix are the most intricate untested logic in the app~~ — **done
+   (2026-09-04)**, `enhanced_map_gestures_test.dart`, 10 tests.
+
+   **The harness detail that matters:** the map under it must be built with
+   `flags: InteractiveFlag.all & ~InteractiveFlag.rotate` — exactly what the
+   six screens wrapping this widget set. Leave flutter_map's own rotate
+   enabled and it fights the widget under test, and the rotation the
+   assertions read is *its* rotation, not the dead zone's. The first version
+   of these tests measured values like 348° for a 10° twist because of this.
+   Fling is dropped too, so a released gesture is not still animating the
+   camera under the next assertion. And `release()` pumps 400 ms after
+   lifting: flutter_map starts a double-tap timer on pointer-up, so a test
+   whose fingers barely moved otherwise fails on `!timersPending` rather
+   than on anything it asserted.
+
+   **Two mutations survive, both checked and neither a coverage gap:**
+   `_pointers.length == 2` → `>= 2` in `_rearmOrClearRotationTracking` is
+   **equivalent code** — `_updateRotation` independently returns unless
+   exactly two pointers are down, so the re-arm branch cannot produce
+   different behaviour. And moving `_settleMultiTouchRelease` out of its
+   microtask cannot be distinguished: the deferral exists to land after
+   flutter_map's *synchronous* recognizer work, which synthetic pointers do
+   not reproduce.
+
+   **The release-jump test had to be made discriminating.** Asserting only
+   that the camera is unchanged across a release passes whether or not the
+   correction exists — the real focal-point discontinuity comes from inside
+   Flutter's `ScaleGestureRecognizer` and cannot be provoked from synthetic
+   pointers. The test now displaces the camera itself between the last
+   two-finger move and the release, which is the widget's actual contract
+   ("restore the last known-good camera when a 2+ touch drops below 2").
+   Straight out of 1.16: the first version was vacuous.
 4. **`models/` is 43.9%** and only 41 lines. Cheap to finish.
 5. **The loose `*_test.dart` files at the root of `test/`** predate the
    `unit/`/`widget/` split. Move them into `test/unit_test/` when next touched.
@@ -645,6 +799,29 @@ rather than treated as parity work.
   leaks into every later test, and since test order is not guaranteed the
   failure would come and go. Call it in `setUp` **and** `tearDown` when touching
   units.
+- **`PushNotificationService.initialize()` is untestable and is left so.**
+  It asks the OS for notification permission, fetches a token from FCM, and
+  registers two platform-channel listeners (`onTokenRefresh`,
+  `FirebaseMessaging.onMessage`) — none of which a unit test can drive, and
+  substituting `FirebaseMessaging` would leave the test asserting against its
+  own stub rather than any real behaviour.
+
+  What *is* tested is the piece with consequences: `saveTokenToDatabase`,
+  reached through a `@visibleForTesting` seam. A token filed under the wrong
+  profile sends one user's notifications to another user's phone, and a plain
+  `set` instead of `arrayUnion` silently unsubscribes every other device that
+  person owns. Both are pinned, along with the signed-out guard (this runs at
+  startup, before sign-in has necessarily completed) and the swallowed write
+  failure (push is an enhancement; losing it must not cost the session).
+
+- **`ImageUploadService`'s upload half is untested, only its validator.**
+  `_uploadToStorage` needs Firebase Storage, and there is no
+  `firebase_storage_mocks` in `dev_dependencies`. The security-relevant half
+  — size cap, extension allow-list, magic-byte sniffing, extension/content
+  cross-check — is fully covered through the `validate` seam, which is where
+  the bug in section 2 was found. Adding the Storage fake would be the way to
+  close the rest, and is not currently worth a new dependency.
+
 - **`qr_scanner_page.dart` needs a camera** and is untestable at this level.
 - **Four dead screens were deleted** (863 lines): `registration_page.dart`
   (272 — an abandoned twin of the live `register_page.dart`, actively
@@ -658,13 +835,22 @@ rather than treated as parity work.
   through the `pushRunTracking` *function*, not its class. Verify imports and
   function-level entry points before deleting anything.
 
-- **`test_run_creator_page.dart` (1,669 lines) is deliberately untested and
-  excluded from the coverage denominator.** It is a developer-only tool,
-  reached from a hidden entry point on the run countdown screen, that
-  fabricates running sessions so the area-claiming logic can be exercised
-  against specific loop shapes without physically running them. It is
-  scaffolding *for* testing the app, not part of the app. **Kept in the
-  codebase — do not delete it — just do not spend tests on it.**
+- **`test_run_creator_page.dart` (1,669 lines) is deliberately untested, and
+  is now slated for removal.** It is a developer-only tool, reached from a
+  hidden entry point on the run countdown screen, that fabricates running
+  sessions so the area-claiming logic can be exercised against specific loop
+  shapes without physically running them. It is scaffolding *for* testing the
+  app, not part of the app.
+
+  **Do not write tests for it.** The project owner has confirmed (2026-09-04)
+  that the page will be **deleted**, which supersedes the earlier "kept in the
+  codebase — do not delete it" note. Any test written against it is work that
+  gets thrown away with the page, and would also have to be un-picked from the
+  coverage exclusion below.
+
+  When it goes, three things go with it: its entry on `_excludedFromCoverage`
+  in `tool/coverage.dart`, the hidden entry point on the run countdown screen
+  (`run_tracking_page.dart` imports it), and this bullet.
 
   The exclusion lives in `_excludedFromCoverage` in `tool/coverage.dart`
   alongside `firebase_options.dart`, and the report prints the list every run
@@ -701,9 +887,72 @@ rather than treated as parity work.
 
 ---
 
+## 4.5 The watch app (`wear/`)
+
+**It is a separate Flutter app with its own `pubspec.yaml`, and `flutter test`
+at the repo root never touches it.** Every headline figure elsewhere in this
+file — test count and coverage alike — is the phone app only. Run it on its
+own:
+
+```sh
+cd wear && flutter test
+cd packages/dash_watch_protocol && flutter test
+```
+
+Until 2026-09-04 it had **no `test/` directory at all**: 2,326 lines, zero
+tests. What *was* covered was the wire between the two devices — the shared
+`dash_watch_protocol` package (13 tests) and the phone side of the bridge
+(`test/unit_test/wear_bridge_test.dart`, 22 tests) — so the two apps could not
+disagree about message shapes, while the watch's own decisions went unchecked.
+
+### `watch_run_coordinator_test.dart` (8 tests)
+
+Started with the coordinator because it decides **who is recording**, and it
+has already been wrong once in a way that destroyed data. Three branches that
+look alike and mean very different things:
+
+* a local run **seconds old** when the phone reports a live run is a duplicate
+  of it — importing both would claim the same ground twice, so it is
+  abandoned and its pending file deleted;
+* a local run **past `_yieldWindow` (20 s)** is a genuine run of its own and
+  is left alone;
+* a **finished** local run is real, recorded, undelivered data. The handover
+  is display-only and the file on disk must survive.
+
+None of the three throws when it goes wrong.
+
+**The trap, and it is 1.16 again.** The finished-run test first asserted a
+flag on the injected fake recorder — and passed with the regression
+reinstated, because `_yieldToPhone` deletes through the **static**
+`StandaloneRecorder.clearPending()`, which never touches an instance. The
+assertion now reads the artefact that is actually destroyed, the
+`standalone_run.json` file under a temp `path_provider` root, and a mirror
+test asserts the yield path *does* delete it — so "the file survives" is a
+real distinction rather than something trivially true. Mutating the finished
+branch to route through `_yieldToPhone` now fails.
+
+**Harness notes.** `WatchRunCoordinator` already takes an optional
+`StandaloneRecorder`, so no production change was needed — a subclass
+overriding `start`/`stop`/`elapsed` keeps GPS out of it. Three channels are
+answered at the channel: `dash/wear_bridge`, `dash/run_service` and
+`plugins.flutter.io/path_provider` (pointed at a temp directory, because the
+recorder's static helpers do real file I/O). `_yieldToPhone` is fired with
+`unawaited` and awaits three things before flipping `_standalone`, so a single
+event-loop turn is not enough to observe it — hence the `settle()` helper.
+
+### Still untested on the watch
+
+`standalone_recorder.dart` (301 lines) is the biggest remaining piece and the
+one most worth doing next: it is the watch's own GPS pipeline, with the same
+8 m/s spike filter as the phone (see 1.11), and `_onPosition` has no
+`@visibleForTesting` seam yet. Then `phone_relay_stats_source.dart` (179).
+`watch_home.dart` (440) is UI.
+
+---
+
 ## 5. Firestore rules tests
 
-`test/rules/` — 98 tests, Node, run against the **local Firestore emulator**.
+`test/rules/` — 109 tests, Node, run against the **local Firestore emulator**.
 No test account, no real project, nothing to keep secret.
 
 ```sh
@@ -850,10 +1099,21 @@ PROBE alice deletes her own        : ALLOWED
 
 ---
 
-## 6. CI
+## 6. CI — NOT PRESENT. This section describes a setup that does not exist.
 
-`.github/workflows/tests.yml` — runs on every push to `main` or `dev/**`, and
-on every pull request into `main`. Two **independent** jobs:
+> **Read section 3's "No CI. Tests are run locally." first — it is the one
+> that is true.** There is no `.github/workflows/` directory in this repo
+> (verified 2026-09-04); the workflow described below was written, evaluated
+> and **removed** by the project owner, and section 3 says not to re-add it.
+>
+> What follows is kept only as the design that *would* be used if that
+> decision is ever revisited — the reasoning about job independence, the
+> pinned SDK and the coverage ratchet is still sound. **Nothing below is
+> running today**, so do not cite it as evidence that anything is checked
+> automatically. Every number in this file comes from a local run.
+
+`.github/workflows/tests.yml` *would* run on every push to `main` or `dev/**`,
+and on every pull request into `main`. Two **independent** jobs:
 
 | Job | What it does |
 |---|---|
@@ -901,14 +1161,15 @@ has `core.autocrlf=true`, so a local run of that `git diff` is never empty.
 ## 7. Quick reference
 
 ```sh
-flutter test                              # 391 tests, ~17s
+flutter test                              # 1,272 tests, ~66s
 flutter test test/widget_test/                 # one layer
 flutter test --plain-name "private"       # by name
 dart run tool/coverage.dart --html        # honest coverage + coverage/report.html
 dart run tool/coverage.dart --min 40      # exit 1 below a threshold (for CI)
 dart run build_runner build               # regenerate test/mocks.mocks.dart
 flutter test integration_test             # needs a device attached
-cd test/rules && npm test                 # 98 rules tests, local emulator
+cd test/rules && npm test                 # 109 rules tests, local emulator
+cd functions && npm test                  # 51 Cloud Functions tests (node:test)
 ```
 
 Add a mock by editing the `@GenerateMocks` list in `test/mocks.dart`, then

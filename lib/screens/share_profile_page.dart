@@ -1,5 +1,6 @@
 import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
+import 'package:dash/utils/profile_link.dart';
 import 'package:dash/utils/strings_utils.dart';
 import 'package:dash/widgets/dash_action_button.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
@@ -24,7 +25,7 @@ class ShareProfilePage extends StatelessWidget {
     required this.profileImageUrl,
   });
 
-  String get profileLink => 'https://dash-efb1d.web.app/profile/$userId';
+  String get profileLink => ProfileLink.forUser(userId);
 
   @override
   Widget build(BuildContext context) {

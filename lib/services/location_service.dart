@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -17,11 +18,31 @@ class LocationService {
   LocationService._();
 
   StreamSubscription<Position>? _positionSub;
-  final _controller = StreamController<LatLng>.broadcast();
+  var _controller = StreamController<LatLng>.broadcast();
 
   LatLng? _current;
   bool _permissionGranted = false;
   Future<void>? _inFlight;
+
+  /// Test hook: drops the shared stream and forgets the cached fix.
+  ///
+  /// This is an app-lifetime singleton, so without it one test's granted
+  /// permission, its last known position and its live Geolocator
+  /// subscription all leak into the next — and a test asserting "no fix
+  /// yet" would then pass or fail on what happened to run before it.
+  /// The [StreamController] is replaced rather than reused because a closed
+  /// one cannot be added to again, and leaving the previous test's listeners
+  /// attached would have them receive the next test's fixes.
+  @visibleForTesting
+  Future<void> resetForTest() async {
+    await _positionSub?.cancel();
+    _positionSub = null;
+    _current = null;
+    _permissionGranted = false;
+    _inFlight = null;
+    await _controller.close();
+    _controller = StreamController<LatLng>.broadcast();
+  }
 
   /// Latest known position, if any fix has been obtained yet. Screens should
   /// read this first (it may already be populated) before falling back to

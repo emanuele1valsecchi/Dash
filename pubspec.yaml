@@ -133,6 +133,19 @@ dev_dependencies:
   # can be tested without five real seconds per case. Reached transitively via
   # flutter_test, declared directly because the tests import it.
   fake_async: ^1.3.1
+
+  # Substitute the permission_handler platform channel in
+  # location_service_test, so the real `LocationService` can be driven with
+  # synthetic permission answers instead of a device. `permission_handler`
+  # itself re-exports only `Permission`/`PermissionStatus`, not
+  # `PermissionHandlerPlatform`, so the interface package is needed directly;
+  # `plugin_platform_interface` supplies the `MockPlatformInterfaceMixin` that
+  # lets a fake pass the interface's own token check. Both are reached
+  # transitively, declared here because the tests import them
+  # (depend_on_referenced_packages). Geolocator needs no equivalent entry —
+  # `package:geolocator/geolocator.dart` does re-export `GeolocatorPlatform`.
+  permission_handler_platform_interface: ^4.4.0
+  plugin_platform_interface: ^2.1.8
   # Lets `firebase_auth_mocks`' MockUser be told to throw a specific
   # FirebaseAuthException — it already uses this internally, but the
   # `whenCalling` half is not re-exported, so tests need it directly.

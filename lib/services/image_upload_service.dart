@@ -1,4 +1,6 @@
 import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
@@ -49,6 +51,15 @@ class ImageUploadService {
     }
   }
 
+  /// Test seam for [_validate] — the half of [pickAndUpload] that enforces
+  /// the upload rules (size cap, extension allow-list, magic-byte sniffing,
+  /// extension/content cross-check). Reaching it through [pickAndUpload]
+  /// would mean driving the `image_picker` platform channel, which tests
+  /// nothing about the rules themselves.
+  @visibleForTesting
+  static Future<String?> validate(File file, String fileName) =>
+      _validate(file, fileName);
+
   static Future<String?> _validate(File file, String fileName) async {
     if (!await file.exists()) return "File non trovato.";
 
@@ -70,7 +81,20 @@ class ImageUploadService {
     }
 
     final headerBytes = await file.openRead(0, 12).first;
-    final mimeType = lookupMimeType(fileName, headerBytes: headerBytes);
+    // Sniff from the magic bytes ALONE — note the empty path.
+    //
+    // Passing `fileName` here looks right and is not: `lookupMimeType` tries
+    // the magic number first and, when it matches nothing, *falls back to the
+    // path's extension*. Content that is not a recognised image therefore came
+    // back as `image/png` purely because it was named `.png`, sailed through
+    // the allow-list, and then matched itself in the extension/content
+    // cross-check below. Arbitrary bytes named `avatar.png` were accepted.
+    //
+    // With no path there is no extension to fall back to, so an unrecognised
+    // header resolves to null and is rejected. Every allowed format is
+    // magic-detectable (PNG, JPEG, WebP, and HEIC/HEIF via their `ftyp`
+    // brands), so nothing legitimate is lost.
+    final mimeType = lookupMimeType('', headerBytes: headerBytes);
 
     if (mimeType == null || !_allowedMimeTypes.contains(mimeType)) {
       return "Il contenuto del file non è un'immagine valida.";
