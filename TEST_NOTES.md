@@ -8,7 +8,7 @@
 > **fixed** by addressing the document by the owner's uid.
 > Write-up in [section 5](#the-finding-private-metrics-squatting-fixed).
 
-**Status:** 578 Dart tests + **109 Firestore rules tests**, `flutter analyze`
+**Status:** 671 Dart tests + **109 Firestore rules tests**, `flutter analyze`
 clean, all green.
 
 ---
@@ -94,7 +94,7 @@ A widget that sizes itself to a fraction of screen width gets stretched back to
 full width inside `Scaffold(body:)`, so the assertion passes or fails for
 reasons unrelated to the widget. Wrap the subject in `Align` — which is what a
 real `Column`/`ListView` caller does anyway. See the `width` group in
-`test/widget/dash_text_form_field_test.dart`.
+`test/widget_test/dash_text_form_field_test.dart`.
 
 ### 1.4 `binding.setSurfaceSize` does not move `MediaQuery`
 
@@ -153,6 +153,167 @@ That is a test-harness artifact, not an app bug — every real caller is a
 Scaffold-based page — but it costs a confusing round if the harness pumps the
 page under a plain `Builder`. Give the parent route a `Scaffold`.
 
+### 1.10 `thenThrow` throws synchronously
+
+Mockito's `thenThrow` raises at the *call site*, not in the returned Future. A
+class that stores a service result in a field initializer —
+`late final _future = service.fetchThing()` — therefore explodes while
+constructing its `State`, long before the `FutureBuilder` that would have
+handled it. The test then fails with a bare exception instead of exercising the
+error branch.
+
+Model a rejected Future the way a real service produces one:
+
+```dart
+when(service.fetchThing()).thenAnswer((_) async => throw Exception('denied'));
+```
+
+### 1.11 GPS fixtures have to be plausibly slow
+
+`StandaloneRunImporter` and `RunSessionController` both reject a leg implying
+more than **8 m/s** — the same spike filter, so a watch run and a phone run of
+one route report the same distance. A fixture spaced `0.0001` degrees apart at
+one-second intervals is ~11 m/s (40 km/h), so every leg is discarded and the
+run measures **zero**, which looks like a broken distance calculation rather
+than a badly-chosen fixture. About `0.00003` degrees per second (~12 km/h) is a
+realistic jog.
+
+### 1.12 The same spike filter silently voids off-route tests
+
+A corollary of 1.11 that is much harder to spot, because the test *passes*.
+`onPosition` returns early on a spike — **before** `_updateGuidance` — so a
+fixture that teleports the runner 200 m sideways to "leave the route" is
+discarded outright and guidance is never recomputed. The assertion
+`isOffRoute, isFalse` then holds for entirely the wrong reason, and its mirror
+(`isOffRoute, isTrue` after several such fixes) fails with no clue why.
+
+The off-route fixtures therefore **drift**: `0.00025` degrees (~28 m) per fix
+at 5 s intervals is 5.6 m/s, under the cap, so each one is actually accepted.
+Six of them are needed to confirm off-route, not five — the first step lands
+inside the 35 m threshold and does not count.
+
+The same applies on the way back in: walking from 167 m out to the line in one
+fix is also a spike. The rejoin test steps back at the same pace.
+
+**Rule of thumb: if a controller test asserts something about state that
+`onPosition` computes, check the fixture's implied speed first.** A silently
+ignored fix makes the whole pipeline downstream of it untested.
+
+---
+
+### 1.13 An exception can be blamed on the wrong test
+
+When the Update Email crash was first reproduced, four tests failed: the two
+dialog ones (correctly) and both `export data` ones (which have nothing to do
+with it). Run on their own, the export tests passed.
+
+The crash was thrown from a frame pumped *after* the dialog test's body had
+finished, and `flutter_test` attributes a late exception to whichever test is
+running when it surfaces — reported as `Multiple exceptions (3) were detected
+during the running of the current test`.
+
+**That wording is the tell.** "Multiple exceptions were detected" in a test
+that only does one thing means the failure probably belongs to the test
+before it. Run the suspect test alone before debugging it; if it passes,
+go and look at its predecessor.
+
+---
+
+### 1.14 `tester.drag` cannot reorder a `ReorderableListView`
+
+Two separate obstacles, and the first one hides the second.
+
+On mobile the list starts a reorder from a **long press**, so `tester.drag`
+does nothing at all — and nothing fails either: the list simply does not move,
+so an assertion like "the order changed" quietly passes or fails for the wrong
+reason. The gesture has to be held first:
+
+```dart
+final gesture = await tester.startGesture(tester.getCenter(find.text('X')));
+await tester.pump(kLongPressTimeout + kPressTimeout);   // flutter/gestures.dart
+```
+
+Then: **one big `moveBy` is not enough for a downward move.** Dragging up
+worked in a single jump, dragging down silently never fired the callback at
+all. Ten small moves with a `pump` between each does fire it. Measure the
+distance from the two rows' real centres rather than guessing a pixel count,
+or a card height change turns the test into a no-op that still passes.
+
+**Always assert the resulting order explicitly.** The first version of this
+test asserted only `isNot(originalOrder)`, which would have passed while the
+drag did nothing — and it was the exact-order assertion that exposed the real
+`onReorderItem` bug in section 2.
+
+---
+
+### 1.15 Two `MockUser`s with the same fields are the same object
+
+`firebase_auth_mocks`' `MockUser` mixes in `EquatableMixin`, so
+`MockUser(uid: 'me', email: 'x')` built twice compares `==` and shares a
+`hashCode`. `mock_exceptions` — the package that lets you make a mock user's
+method throw — keys its registry by object in a **global** map that is never
+cleared between tests.
+
+So a stub registered in one test lands on an identically-built user in the
+next, and `maybeThrowException` throws whichever was registered first. The
+symptom is the giveaway: **the test passes alone and fails in the file**, with
+the *previous* test's error message on screen.
+
+Give each test's user a distinct `uid` when it stubs an exception. Grepping
+`mock_user.dart` for `operator ==` finds nothing — the mixin supplies it.
+
+---
+
+### 1.16 A mutation that survives usually means a vacuous test
+
+Two `syncFromCloud` tests asserted the rule that matters most in
+`UnitPreferences` — *a stale cloud copy must never undo a choice made on this
+device* — and both passed with the guard deleted.
+
+The reason was ordering. The test wrote a conflicting value to the cloud
+*first*, then made the local choice. But every setter mirrors itself up
+unawaited, so by the time `syncFromCloud` ran, that mirror had already
+overwritten the cloud with the same value the test then asserted. The two
+agreed, so adopting the cloud copy and refusing to adopt it produced
+identical results.
+
+The fix was to make the cloud start disagreeing *after* the local choice had
+settled. With that, deleting the guard fails both tests.
+
+**Generalise this.** A surviving mutation is rarely "the test does not cover
+that line" — it is usually "the test covers it but the assertion cannot
+distinguish the two behaviours". Look at what the setup does *before* the
+thing under test, not just at the assertion.
+
+Two other traps sit next to this one: mutations applied together can mask each
+other (see the calendar and `UnitPreferences` cases — always confirm a
+survivor in isolation), and an unawaited background write means the state you
+assert on may have been rewritten by the code under test.
+
+---
+
+### 1.17 Two mutations that survived, and what both had in common
+
+Bucket A ran ~30 mutations. Three survived on the first pass, and none of
+them meant "that line is uncovered":
+
+* `UnitPreferences.syncFromCloud`'s guard (see 1.16) — the setup made the
+  cloud agree with local before the assertion.
+* `UserAppearanceService`'s in-flight dedupe — the test asserted the
+  resulting username, which is correct whether one fetch ran or two. Fixed by
+  counting notifications instead: a deduplicated second call finds nothing to
+  want and never notifies.
+* `ProfileActivitySections`' independent failure flags — the failing row
+  resolved *first*, so a shared flag was harmlessly overwritten by the row
+  that succeeded after it. Fixed by delaying the failure so it lands after
+  the success, which is the only ordering that distinguishes the two designs.
+
+**The pattern: a surviving mutation is usually a setup problem, not a
+coverage gap.** Ask what ordering or what value would make the two behaviours
+differ, and arrange that — do not just add another assertion.
+
+---
+
 ---
 
 ## 2. Bugs the tests actually found
@@ -164,6 +325,12 @@ page under a plain `Builder`. Give the parent route a `Scaffold`.
 | **`Expanded` inside a `Padding`** — `_buildFollowersCount` returned an `Expanded`, but both call sites are already `Row > Expanded > InkWell > Padding`, so the inner one had a non-Flex parent. Flutter's "Incorrect use of ParentDataWidget" assertion fired on **every render of a profile header**. | `profile_header.dart` | **Fixed.** Found while getting `PublicProfilePage` to render at all. |
 | **Unhandled async error on a badge read** — `_startBadgesStream()` is `async void` with no guard around `getProfileBadges`, so a failure escapes as an unhandled zone error nothing can catch. Realistic: this exact read was denied outright before the `badge_progress` rule was widened. | `public_profile_page.dart` | **Fixed** — badges now degrade to absent. |
 | **`maxLines`/`ellipsis` that could never take effect** — the stat title sat in a `Row` with `mainAxisSize: min` and no `Flexible`, so it was never width-constrained and its truncation properties were inert. The intent was already in the code; it simply could not work. | `statistic_tachometer.dart` | **Fixed** — title wrapped in `Flexible`, matching `DashMapCard`. |
+| **A second unguarded `async void` load** — `_startBadgesStream()` had no try/catch, so a failed `getAllBadges` escaped as an unhandled error *and* left `_isLoading` true, stranding the page on its spinner forever. Same shape as the `public_profile_page.dart` one. | `badge_page.dart` | **Fixed.** |
+| **A `TextEditingController` used after disposal, crashing the Update Email dialog on every open.** The controller was created in the method, `await showDialog(...)`, then disposed — which is when the dialog *starts* its exit transition, with the `TextField` still mounted and bound to it. CLAUDE.md had flagged this file as "the same crash waiting to happen" after the identical bug was fixed in the rename dialog; it was not hypothetical. | `personal_information_page.dart` | **Fixed** — `_UpdateEmailDialog`, a `StatefulWidget` owning its controller, same shape as `rename_route_dialog.dart`. Reproduced before the fix. |
+| **Dragging a leaderboard *down* in Customize Home did nothing.** The handler subtracted one from `newIndex` when moving down — the convention for the deprecated `onReorder` callback — but the screen uses `onReorderItem`, which already accounts for the removed item. `old=1, new=2` became `new=1`, so the item was removed and reinserted at the same index. Moving *up* was unaffected, which is why it went unnoticed. | `home_leaderboards_settings_page.dart` | **Fixed** — adjustment removed. Covered by "moving a board down works too". |
+| **Two more unguarded `async void` badge loads** — `ProfilePage._startBadgesStream` and `HomePage._startBadgesStream` both awaited their badge read with no try/catch, so a failure escaped as an unhandled async error instead of costing only the badges. The third and fourth copies of the bug already fixed in `public_profile_page.dart` and `badge_page.dart`, and realistic rather than hypothetical: this read was denied outright before the `badge_progress` rule was widened. | `profile_page.dart`, `home_page.dart` | **Both fixed** — same guard as the twins. Each pinned by a "a failed badge read does not take the page down" test, confirmed failing first. |
+| **A signed-out user was stuck on a permanent spinner** on Push Notification settings. `_loadPreferences` returns early when there is no uid — but that `return` sits *above* the `try`, so the `finally` that clears `_isLoading` never ran. | `notification_settings_page.dart` | **Fixed** — clears the loading flag before returning. Pinned by "a signed-out user is not left on a spinner forever", which fails with `pumpAndSettle timed out` before the fix. |
+| "Badge progress off by 100x" | — | **Not real.** See below. |
 | Two "overflow" bugs | — | **Not real.** See 1.2. |
 
 Also noticed while reading, **not** fixed:
@@ -182,12 +349,88 @@ Also noticed while reading, **not** fixed:
   beside it`, so a refactor that accidentally makes the label swallow-through
   to the backdrop will fail rather than pass silently.
 
+- **`RouteSearchPage._removeStop` disposes a controller before `setState`.**
+  Between those two lines the `TextField` is still mounted and bound to a
+  disposed controller. It appears safe in practice — `removeListener` is one of
+  the few `ChangeNotifier` methods with no not-disposed assertion, and the
+  rebuild is synchronous — so this is **not** the crash fixed in
+  `personal_information_page.dart`. But the ordering is load-bearing by
+  accident rather than by design, and the stop `TextField`s are unkeyed in a
+  `Column`, so removal reconciles by index. Swapping the two lines would make
+  it obviously correct. Left alone deliberately: that file has no tests yet, so
+  the change could not be verified. Check it when it gets some.
+
+- **`WearBridge.dispose()` is one-way, and only tests call it.** It closes
+  both broadcast `StreamController`s while also setting `_started = false`,
+  which implies a restart is contemplated — but a second `start()` afterwards
+  runs its timer and then silently drops every command and import message,
+  because the `isClosed` guards skip the closed controllers. Nothing in
+  `lib/` calls it (three test files do, to stop the 1-second timer that would
+  otherwise fail the run), so this is a test-only hazard rather than a live
+  bug. `resetForTest()` was added for tests that need more than one case:
+  it stops everything `dispose` does and rebuilds the controllers.
+
+- **The `async void` sweep, and a warning about how it was first done wrong.**
+  Six `void ...() async` methods exist in `lib/`. All four badge streams
+  (`badge_page`, `home_page`, `profile_page`, `public_profile_page`) are now
+  guarded — verified by *reading each one up to its awaited call*, not by
+  grepping. The first attempt used an `awk` heuristic looking for `try {`
+  within ~20 lines of the method start, and it reported `home_page` as
+  guarded when it was not: the `try` it matched belonged to a listener body
+  further down. The widget test found the truth the heuristic missed.
+  **Do not trust a proximity grep to answer "is this guarded?"** — the
+  question is which statement the `try` encloses, which needs the structure,
+  not a line count.
+
+  The two remaining unguarded ones are `SearchFriendPage._removeRecent` (a
+  `SharedPreferences` write) and `ShareProfilePage._copyLink` (a `Clipboard`
+  write) — platform-channel calls with no known failure mode here. Left alone
+  deliberately: no test can currently make either throw, so a guard would be
+  unverifiable. Worth revisiting if a crash report ever names one.
+
+- **`lib/services/follow_service.dart` is not used by the app.** Nothing in
+  `lib/` references `FollowService`; the `follows` writes that actually happen
+  are inline in `notifications_page.dart`. It has tests, so the suite covers a
+  service no screen calls. Kept rather than deleted — `follows` is listed as a
+  planned feature in CLAUDE.md, so this is forward-looking infrastructure
+  rather than an accident — but the duplication should be resolved when that
+  feature lands, not by writing more tests for it.
+
 - **`ClaimedAreaRepository` contradicts its own doc comment.** It documents
   itself as *"One-time read rather than a real-time listener"*, but its only
   method is `areasStream()` using `.snapshots()` — a live listener on the
   entire `claimedAreas` collection. Same shape as the `home_page.dart` problem
   already flagged in CLAUDE.md, and against the read-cost rule in
   "Security & performance — non-negotiable".
+
+
+### The badge-progress "bug" that was not one
+
+Reported here briefly as a 100x scale error, then withdrawn after the project
+owner said badges had always rendered correctly — **they were right**. Kept as
+a record because the reasoning that produced the false alarm is exactly the
+reasoning someone will repeat.
+
+The call chain *looks* broken: the Cloud Function stores `progress` as a
+percentage (0-100), `BadgeService` passes it through raw, and `DashBadge`
+documents `1.0 -> fully unlocked`. Following those three facts gives "a badge at
+1% renders as complete".
+
+What that misses is that **nothing renders `BadgeModel.progress`**. Every badge
+screen — `ProfilePage`, `PublicProfilePage`, `BadgePage` — builds its own
+`HomeBadgeUiModel` from a live `badge_progress` snapshot and does its own
+`/100` there. `BadgeService`'s value reaches only the sort, which is
+scale-invariant.
+
+The change was reverted. `BadgeModel.progress` now carries a doc comment
+saying which scale it is in and why it is not converted, and
+`badge_service_test.dart` pins the pass-through with the reasoning attached —
+so the next person to spot the apparent mismatch finds the answer instead of
+"fixing" it.
+
+**The lesson, and it is the same one as the test-font overflows in 1.2:** trace
+to the *rendering* site before calling something a display bug. A plausible
+call chain is not evidence.
 
 ---
 
@@ -289,6 +532,53 @@ shape a given screen needs before starting:
    updates, rather than stubbed return values. `followings_followers_page_test`
    asserts that adding a follow document makes a row appear with no reload.
 
+### Extracting a private widget to reach it, when it moves no logic
+
+`run_tracking_page.dart` cannot be pumped — flutter_map, a live GPS stream and
+`FirebaseAuth.instance`. Everything below it was therefore unreachable,
+including `_RouteGuidanceCard`, which holds a five-way state machine (off route
+/ arrived / arrived-but-skipped-part / pointing / no-heading) and the
+turn-vs-bear split at 70 degrees. That is real logic, and exactly the kind that
+a field test already caught being wrong once.
+
+Three such classes moved to `lib/widgets/run/` and went from unreachable to
+93-100% covered, with 23 tests. The bar for doing this again:
+
+* **The widget must be pure presentation.** These take formatted strings,
+  a `RouteGuidance`, and callbacks. No Firebase, no map, no controller.
+* **The move must change no behaviour.** The bodies were copied verbatim; only
+  the leading underscore and the import paths changed. `flutter analyze` clean
+  and the whole suite green is the check.
+* **Do not extract to inflate coverage.** `_StatBlock` was left where it is: it
+  is a padded `Column` with no branch in it, so a test would assert that
+  Flutter renders a `Text`.
+
+What this does *not* do is make the screen testable — `run_tracking_page.dart`
+is still 0.2%, and the map shell around it stays integration-test territory.
+It makes the *decisions* testable, which is the part that can be wrong.
+
+### No CI. Tests are run locally.
+
+Decided by the project owner. A GitHub Actions workflow was written and then
+removed: it would not have tested anything new — the same `flutter analyze`,
+the same Dart suite, the same rules suite — only run them automatically on
+push. For a project this size, with the suite already run locally, that is a
+reasonable trade.
+
+**Do not re-add it.** The reference project this suite is benchmarked against
+has no CI either.
+
+### The layout mirrors the reference project
+
+`test/unit_test/`, `test/widget_test/`, `mocks.dart`, `mocks.mocks.dart` — the
+same names, so the two are directly comparable. Two additions it does not
+have: `helpers/` (the shared pump harness) and `rules/` (the Firestore
+security-rule tests, which found the squatting bug in section 5).
+
+The nine loose `*_test.dart` files that used to sit at the root of `test/` were
+moved into `unit_test/`, and the default `widget_test.dart` stub — an empty
+`void main() {}` left over from `flutter create` — was deleted.
+
 ### No fake test account. Integration tests stay a smoke test.
 
 Decided deliberately: standing up a dedicated Firebase account for tests means
@@ -336,11 +626,17 @@ rather than treated as parity work.
    likely to regress silently.
 4. **`models/` is 43.9%** and only 41 lines. Cheap to finish.
 5. **The loose `*_test.dart` files at the root of `test/`** predate the
-   `unit/`/`widget/` split. Move them into `test/unit/` when next touched.
+   `unit/`/`widget/` split. Move them into `test/unit_test/` when next touched.
 
 
 ### Known limits, accepted for now
 
+- **The Duke badge on the area sheet can only ever be tested absent.** It
+  renders only when *both* the `badge_progress` read and the badge image URL
+  resolve, and the image goes through Firebase Storage, which is unreachable
+  in a widget test. Per the widget's own design an unresolved badge renders
+  nothing — identical to "not a Duke" — so there is no state a test can
+  distinguish. Recorded rather than worked around.
 - **Google/Apple sign-in cannot be driven** past the service boundary; we verify
   the screen calls `signInWithGoogle()` and handles null (cancelled) and throw
   (failed), which is as far as a widget test can go.
@@ -606,7 +902,7 @@ has `core.autocrlf=true`, so a local run of that `git diff` is never empty.
 
 ```sh
 flutter test                              # 391 tests, ~17s
-flutter test test/widget/                 # one layer
+flutter test test/widget_test/                 # one layer
 flutter test --plain-name "private"       # by name
 dart run tool/coverage.dart --html        # honest coverage + coverage/report.html
 dart run tool/coverage.dart --min 40      # exit 1 below a threshold (for CI)

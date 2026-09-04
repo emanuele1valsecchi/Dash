@@ -156,7 +156,7 @@ void main() {
   });
 
   group('UnitPreferences.system', () {
-    tearDown(() => UnitPreferences.instance.resetForTest());
+    tearDown(() => UnitPreferences.instance.resetForTesting());
 
     test('reads as custom when the measurement rows disagree', () {
       final prefs = UnitPreferences.instance;

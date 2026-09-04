@@ -44,18 +44,45 @@ void main() {
     });
 
     test('merges the user\'s progress onto the definition', () async {
+      // Stored as a percentage — see the group below.
       await defineBadge('duke', order: 1);
-      await setProgress('duke', progress: 0.4);
+      await setProgress('duke', progress: 40);
 
       final badge = (await service.getAllBadges('runner-1')).single;
 
-      expect(badge.progress, 0.4);
+      expect(badge.progress, 40);
       expect(badge.unlocked, isFalse);
+    });
+
+    group('progress stays in the stored percentage scale', () {
+      // The Cloud Function writes 0-100 and this passes it through unchanged.
+      //
+      // That is correct, and worth a test because it looks like a bug: the
+      // value never reaches a `DashBadge`, which wants a 0..1 fraction. Every
+      // badge screen builds its own `HomeBadgeUiModel` from a live
+      // `badge_progress` snapshot and divides by 100 there; here the number is
+      // only ever used for ordering, which does not care about the scale.
+      //
+      // Converting it "for consistency" would give the same field two
+      // meanings depending on the path taken, and change nothing on screen.
+      test('a percentage is passed through unchanged', () async {
+        await defineBadge('duke', order: 1);
+        await setProgress('duke', progress: 1);
+
+        expect((await service.getAllBadges('runner-1')).single.progress, 1);
+      });
+
+      test('a complete badge reads as 100, not 1.0', () async {
+        await defineBadge('duke', order: 1);
+        await setProgress('duke', progress: 100, unlocked: true);
+
+        expect((await service.getAllBadges('runner-1')).single.progress, 100);
+      });
     });
 
     test('marks an unlocked badge as unlocked', () async {
       await defineBadge('duke', order: 1);
-      await setProgress('duke', progress: 1.0, unlocked: true);
+      await setProgress('duke', progress: 100, unlocked: true);
 
       expect((await service.getAllBadges('runner-1')).single.unlocked, isTrue);
     });
@@ -79,10 +106,10 @@ void main() {
           .doc('someone-else')
           .collection('badge_progress')
           .doc('duke')
-          .set({'progress': 0.9, 'unlocked': false});
+          .set({'progress': 90, 'unlocked': false});
 
       final badge = (await service.getAllBadges('someone-else')).single;
-      expect(badge.progress, 0.9);
+      expect(badge.progress, 90);
     });
 
     test('returns empty when no badges are defined', () async {
@@ -97,7 +124,7 @@ void main() {
     test('in-progress badges come before untouched ones', () async {
       await defineBadge('started', order: 5);
       await defineBadge('untouched', order: 1);
-      await setProgress('started', progress: 0.3);
+      await setProgress('started', progress: 30);
 
       final badges = await service.getAllBadges('runner-1');
 
@@ -107,7 +134,7 @@ void main() {
     test('unlocked badges sink below everything else', () async {
       await defineBadge('done', order: 1);
       await defineBadge('untouched', order: 9);
-      await setProgress('done', progress: 1.0, unlocked: true);
+      await setProgress('done', progress: 100, unlocked: true);
 
       final badges = await service.getAllBadges('runner-1');
 
@@ -118,8 +145,8 @@ void main() {
         () async {
       await defineBadge('nearly', order: 9);
       await defineBadge('barely', order: 1);
-      await setProgress('nearly', progress: 0.9);
-      await setProgress('barely', progress: 0.1);
+      await setProgress('nearly', progress: 90);
+      await setProgress('barely', progress: 10);
 
       final badges = await service.getAllBadges('runner-1');
 
@@ -140,8 +167,8 @@ void main() {
       await defineBadge('done', order: 1);
       await defineBadge('untouched', order: 2);
       await defineBadge('started', order: 3);
-      await setProgress('done', progress: 1.0, unlocked: true);
-      await setProgress('started', progress: 0.5);
+      await setProgress('done', progress: 100, unlocked: true);
+      await setProgress('started', progress: 50);
 
       final badges = await service.getAllBadges('runner-1');
 

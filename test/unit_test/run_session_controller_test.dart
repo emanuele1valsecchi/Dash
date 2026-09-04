@@ -1,3 +1,4 @@
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
@@ -347,6 +348,316 @@ void main() {
       controller.onPosition(_fix(45.4642, 9.1913, seconds: 30, accuracy: 99));
 
       expect(notifications, 0);
+    });
+  });
+
+  group('RunSessionController countdown', () {
+    // A five-second pre-run countdown driven by `Timer.periodic`. Run on a
+    // virtual clock so a case costs microseconds rather than five real seconds.
+    test('starts at five', () {
+      fakeAsync((async) {
+        controller.startCountdown();
+
+        expect(controller.isCountingDown, isTrue);
+        expect(controller.countdownValue, 5);
+      });
+    });
+
+    test('ticks down one second at a time', () {
+      fakeAsync((async) {
+        controller.startCountdown();
+
+        async.elapse(const Duration(seconds: 1));
+        expect(controller.countdownValue, 4);
+
+        async.elapse(const Duration(seconds: 2));
+        expect(controller.countdownValue, 2);
+      });
+    });
+
+    test('pausing freezes the clock', () {
+      fakeAsync((async) {
+        controller.startCountdown();
+        async.elapse(const Duration(seconds: 2));
+        expect(controller.countdownValue, 3);
+
+        controller.pauseCountdown();
+        async.elapse(const Duration(seconds: 3));
+
+        expect(controller.countdownPaused, isTrue);
+        expect(controller.countdownValue, 3, reason: 'frozen while paused');
+      });
+    });
+
+    test('resuming restarts from five rather than continuing', () {
+      // Deliberate: a runner who paused with one second left needs time to get
+      // back to the start line, not to be launched the instant they resume.
+      fakeAsync((async) {
+        controller.startCountdown();
+        async.elapse(const Duration(seconds: 4));
+        expect(controller.countdownValue, 1);
+
+        controller.toggleCountdownPause(); // pause
+        controller.toggleCountdownPause(); // resume
+
+        expect(controller.countdownValue, 5);
+        expect(controller.countdownPaused, isFalse);
+      });
+    });
+
+    test('a paused countdown never starts the run on its own', () {
+      fakeAsync((async) {
+        controller.startCountdown();
+        controller.pauseCountdown();
+
+        async.elapse(const Duration(minutes: 1));
+
+        expect(controller.hasStarted, isFalse);
+      });
+    });
+  });
+
+  group('RunSessionController pause during a run', () {
+    test('a fix arriving while paused is ignored entirely', () {
+      // `onPosition` returns immediately when paused — a runner waiting at a
+      // crossing must not accumulate distance from GPS drift.
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: 0));
+      final before = controller.distanceMeters;
+
+      controller.togglePause();
+      controller.onPosition(_fix(45.4642, 9.1913, seconds: 30));
+
+      expect(controller.isPaused, isTrue);
+      expect(controller.distanceMeters, before);
+    });
+
+    test('the breadcrumb does not grow while paused', () {
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: 0));
+      final before = controller.breadcrumb.length;
+
+      controller.togglePause();
+      controller.onPosition(_fix(45.4642, 9.1913, seconds: 30));
+
+      expect(controller.breadcrumb.length, before);
+    });
+
+    test('resuming accepts fixes again', () {
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: 0));
+      controller.togglePause();
+      controller.onPosition(_fix(45.4642, 9.1913, seconds: 30));
+
+      controller.togglePause();
+      controller.onPosition(_fix(45.4642, 9.1913, seconds: 60));
+
+      expect(controller.isPaused, isFalse);
+      expect(controller.distanceMeters, greaterThan(0));
+    });
+  });
+
+  group('RunSessionController heart rate', () {
+    // Reported by the watch over the Data Layer; the phone measures none of it.
+    // It ends up in the owner-only private subcollection, never on the public
+    // session document.
+    test('starts with none', () {
+      expect(controller.heartRateBpm, isNull);
+      expect(controller.avgHeartRateBpm, isNull);
+      expect(controller.maxHeartRateBpm, isNull);
+    });
+
+    test('records what the watch reports', () {
+      controller.reportHeartRate(current: 148, average: 152, max: 178);
+
+      expect(controller.heartRateBpm, 148);
+      expect(controller.avgHeartRateBpm, 152);
+      expect(controller.maxHeartRateBpm, 178);
+    });
+
+    test('notifies listeners so the readout repaints', () {
+      var notifications = 0;
+      void listener() => notifications++;
+      controller.addListener(listener);
+      addTearDown(() => controller.removeListener(listener));
+
+      controller.reportHeartRate(current: 148);
+
+      expect(notifications, 1);
+    });
+
+    test('a reset run reports no heart rate', () {
+      controller.reportHeartRate(current: 148, average: 152, max: 178);
+
+      controller.reset();
+
+      expect(controller.heartRateBpm, isNull);
+      expect(controller.avgHeartRateBpm, isNull);
+      expect(controller.maxHeartRateBpm, isNull);
+    });
+  });
+
+  group('RunSessionController claimed area', () {
+    test('is zero before any loop closes', () {
+      expect(controller.claimedAreaM2, 0);
+      expect(controller.loopsCompleted, 0);
+    });
+
+    test('reports the area of a closed loop', () {
+      for (final fix in _squareLoopFixes()) {
+        controller.onPosition(fix);
+      }
+
+      expect(controller.loopsCompleted, 1);
+      // A ~100 m square is about 10,000 m2; generous bounds for GPS geometry.
+      expect(controller.claimedAreaM2, greaterThan(5000));
+      expect(controller.claimedAreaM2, lessThan(20000));
+    });
+
+    test('matches the polygon the loop actually encloses', () {
+      for (final fix in _squareLoopFixes()) {
+        controller.onPosition(fix);
+      }
+
+      final expected =
+          GeometryUtils.polygonAreaM2(controller.closedLoops.single);
+      expect(controller.claimedAreaM2, closeTo(expected, 0.001));
+    });
+  });
+
+  group('RunSessionController route guidance', () {
+    // A straight line running east, dense enough that the guidance search has
+    // real segments to match against.
+    List<LatLng> straightRoute() => [
+          for (var i = 0; i <= 40; i++) LatLng(45.4642, 9.1900 + i * 0.0002),
+        ];
+
+    test('reports no guidance without a planned route', () {
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: 0));
+
+      expect(controller.guidance, isNull);
+      expect(controller.routeProgress, isNull);
+    });
+
+    test('produces guidance once a route is armed', () {
+      controller.armGuidanceForTesting(straightRoute());
+
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: 0));
+
+      expect(controller.guidance, isNotNull);
+    });
+
+    test('a runner on the line is not flagged off route', () {
+      controller.armGuidanceForTesting(straightRoute());
+
+      for (var i = 0; i < 6; i++) {
+        controller.onPosition(
+          _fix(45.4642, 9.1900 + i * 0.0002, seconds: i * 5),
+        );
+      }
+
+      expect(controller.guidance!.isOffRoute, isFalse);
+    });
+
+    // Drifting north, away from the line. One step per fix, sized so the
+    // implied pace stays under the 8 m/s spike cap — a fix that trips that
+    // cap is discarded before guidance ever sees it, so an instantaneous
+    // teleport off the route would test nothing at all.
+    const stepDegrees = 0.00025; // ~28 m north per fix
+    void driftNorth(int steps) {
+      for (var i = 1; i <= steps; i++) {
+        controller.onPosition(
+          _fix(45.4642 + stepDegrees * i, 9.1900, seconds: i * 5),
+        );
+      }
+    }
+
+    test('a single stray fix does not trigger off-route', () {
+      // Debounced over several consecutive fixes: cutting a roundabout at the
+      // crosswalk should not buzz the runner and swing the arrow around.
+      controller.armGuidanceForTesting(straightRoute());
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: 0));
+
+      // ~56 m north of the line — well past the 35 m threshold, but once.
+      controller.onPosition(_fix(45.4647, 9.1900, seconds: 10));
+
+      expect(controller.guidance!.offRouteFixes, 1);
+      expect(controller.guidance!.isOffRoute, isFalse);
+    });
+
+    test('four consecutive strays are still not enough', () {
+      // The threshold is five. Pinned so that loosening the debounce has to
+      // be a deliberate edit, not an accident.
+      controller.armGuidanceForTesting(straightRoute());
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: 0));
+
+      driftNorth(5); // the first step is inside 35 m, so four count
+
+      expect(controller.guidance!.offRouteFixes, 4);
+      expect(controller.guidance!.isOffRoute, isFalse);
+    });
+
+    test('a sustained deviation does trigger it', () {
+      controller.armGuidanceForTesting(straightRoute());
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: 0));
+
+      driftNorth(6);
+
+      expect(controller.guidance!.isOffRoute, isTrue);
+    });
+
+    test('the arrow points back at the route once off it', () {
+      // Off route the guidance aims at the nearest point on the line, not
+      // further along it — the runner has to get back first.
+      controller.armGuidanceForTesting(straightRoute());
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: 0));
+
+      driftNorth(6);
+
+      // Due north of the line, so the way back is due south.
+      expect(controller.guidance!.targetBearingDegrees, closeTo(180, 5));
+      expect(controller.guidance!.offRouteMeters, greaterThan(35));
+    });
+
+    test('rejoining clears it immediately, without a debounce', () {
+      // Asymmetric on purpose: a runner who has rejoined is told at once, even
+      // though leaving takes five fixes to confirm.
+      controller.armGuidanceForTesting(straightRoute());
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: 0));
+      driftNorth(6);
+      expect(controller.guidance!.isOffRoute, isTrue);
+
+      // Walk back in at the same plausible pace. Still off route the whole
+      // way, because forgiveness happens at the tighter 25 m.
+      var t = 30;
+      for (var i = 5; i >= 1; i--) {
+        t += 5;
+        controller
+            .onPosition(_fix(45.4642 + stepDegrees * i, 9.1900, seconds: t));
+      }
+      expect(controller.guidance!.isOffRoute, isTrue,
+          reason: 'hysteresis - forgiven at 25 m, not at the 35 m it left on');
+
+      // One single fix back on the line is enough — no debounce on the way in.
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: t + 5));
+      expect(controller.guidance!.isOffRoute, isFalse);
+    });
+
+    test('route progress is tracked alongside guidance', () {
+      controller.armGuidanceForTesting(straightRoute());
+
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: 0));
+
+      expect(controller.routeProgress, isNotNull);
+    });
+
+    test('a reset run forgets the route', () {
+      controller.armGuidanceForTesting(straightRoute());
+      controller.onPosition(_fix(45.4642, 9.1900, seconds: 0));
+      expect(controller.guidance, isNotNull);
+
+      controller.reset();
+
+      expect(controller.plannedRoute, isNull);
+      expect(controller.guidance, isNull);
+      expect(controller.routeProgress, isNull);
     });
   });
 }
