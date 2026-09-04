@@ -113,7 +113,7 @@ class StatisticTachometer extends StatelessWidget{
           children: [
             Icon(
               itemData.icon, 
-              size: minorStyle.fontSize! * 1.5, 
+              size: minorStyle.fontSize! * 2, 
               color: minorStyle.color
             ),
             Text(
