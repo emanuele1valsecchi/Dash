@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 
@@ -33,6 +34,18 @@ class Place {
 /// [rank] for why a weighted score doesn't work here.
 class PlaceSearchService {
   PlaceSearchService._();
+
+  /// Test seam. Both network calls go through [_http], so substituting this
+  /// replaces the transport without touching a call site.
+  ///
+  /// A static override rather than a constructor parameter because this
+  /// class is entirely static. Tests must reset it in `tearDown` — a leaked
+  /// override would silently serve later tests the previous one's canned
+  /// responses.
+  @visibleForTesting
+  static http.Client? clientOverride;
+
+  static http.Client get _http => clientOverride ?? http.Client();
 
   /// Half-width/height (in degrees) of the "viewbox" sent to Nominatim
   /// around [near] — roughly a 75km-wide box, generous enough to cover an
@@ -94,7 +107,7 @@ class PlaceSearchService {
         'https://nominatim.openstreetmap.org/search'
         '?q=${Uri.encodeComponent(query)}&format=json&limit=$rawLimit$viewbox',
       );
-      final res = await http
+      final res = await _http
           .get(uri, headers: {'User-Agent': 'DashApp/1.0'})
           .timeout(const Duration(seconds: 5));
       if (res.statusCode == 200) {
@@ -225,7 +238,7 @@ class PlaceSearchService {
         ');'
         'out center 6;';
 
-    final res = await http
+    final res = await _http
         .post(
           Uri.parse('https://overpass-api.de/api/interpreter'),
           headers: {'User-Agent': 'DashApp/1.0'},

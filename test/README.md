@@ -4,7 +4,7 @@
 
 ```sh
 flutter test                 # everything
-flutter test test/widget/    # one layer
+flutter test test/widget_test/    # one layer
 flutter test --coverage      # writes coverage/lcov.info
 
 cd test/rules && npm test    # 98 Firestore rules tests (own emulator, own npm package)
@@ -42,15 +42,16 @@ That is a stale build hook cache. Delete `.dart_tool/hooks_runner` and re-run.
 
 | Path | What lives there |
 |---|---|
-| `test/unit/` | Pure Dart: geometry, formatting, leaderboard rules. No widgets. |
-| `test/widget/` | Single widgets rendered and driven with `WidgetTester`. |
+| `test/unit_test/` | Pure Dart: geometry, formatting, leaderboard rules. No widgets. |
+| `test/widget_test/` | Single widgets rendered and driven with `WidgetTester`. |
 | `test/helpers/` | Shared harness (`pump_app.dart`). |
 | `test/rules/` | Firestore security-rule tests (Node, local emulator). |
 | `integration_test/` | Whole-app smoke test on a device/emulator. |
 
-The loose `*_test.dart` files at the root of `test/` predate this split and are
-pure unit tests; they can move into `test/unit/` whenever someone is touching
-them anyway.
+The layout deliberately mirrors the reference project this suite was
+benchmarked against (`unit_test/`, `widget_test/`, `mocks.dart`,
+`mocks.mocks.dart`), plus two additions it does not have: `helpers/` for the
+shared pump harness, and `rules/` for the Firestore security-rule tests.
 
 ## The harness
 
@@ -118,6 +119,26 @@ device — which also covers a large accessibility text scale. So keep such
 assertions where they pass; just never read a failure as a bug without
 measuring first. Where a page trips the artifact (see `login_page_test.dart`),
 widen the test viewport and assert behaviour instead of pixels.
+
+
+## CI
+
+`.github/workflows/tests.yml` runs both suites on every push to `main` or
+`dev/**` and on every PR into `main`:
+
+- **Analyze + test** — `flutter analyze`, then
+  `dart run tool/coverage.dart --min 30`. Coverage reports are uploaded as
+  build artifacts, so you can download `report.html` from a run.
+- **Firestore rules** — boots the emulator and runs the 109 rules tests.
+
+The two jobs are independent on purpose: a rules regression should not be
+hidden behind a Dart compile error, or the reverse.
+
+Flutter is pinned to **3.44.0**, not `stable` — see TEST_NOTES.md section 1.1
+for why a floating channel is a trap in this repo specifically.
+
+`--min 30` is a **ratchet**. Raise it as coverage climbs; never lower it to
+turn a red build green.
 
 ## What is not covered yet, and why
 

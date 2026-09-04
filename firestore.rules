@@ -305,32 +305,64 @@ service cloud.firestore {
       // distance * 70 kcal/km, and distance is public, so a private copy would
       // protect nothing while adding a second source of truth. See
       // `lib/utils/run_estimates.dart`.
-      match /private/{docId} {
-        // Note there is deliberately no `resource == null` escape hatch here,
-        // unlike the favoriteRoutes rule below. A missing document has no
-        // userId to check, so reading one is an evaluation error and denies —
-        // including for its own owner, which is the normal case for a
-        // phone-only run. That is the stronger choice: if absence read as an
-        // empty snapshot while presence read as denied, any signed-in user
-        // could tell which of someone else's runs carry watch data. Denying
-        // both leaks nothing. `RunSessionRepository.fetchPrivateMetrics`
-        // treats permission-denied as "no metrics" for exactly this reason.
-        allow read: if isSignedIn()
-          && resource.data.userId == request.auth.uid;
-        allow create: if isSignedIn()
-          && request.resource.data.userId == request.auth.uid
+      // **The document ID IS the owner's uid.** That is a security property,
+      // not a naming convention, and it is what closes a hole the previous
+      // fixed `metrics` ID left open.
+      //
+      // Before, any signed-in user could create `.../private/metrics` under
+      // *anyone's* session simply by stamping their own uid in the body — the
+      // rule authorized off the document's own `userId` field and nothing
+      // checked the parent's owner. Worse than litter: the real owner's later
+      // write then became an `update`, which is gated on the *existing*
+      // document's `userId`, so she was locked out of her own heart-rate data
+      // and could neither read nor delete the squatter's document to clear it.
+      // Verified against the emulator before the change; pinned by tests in
+      // `test/rules/running_sessions.test.js`.
+      //
+      // Addressing the document by uid makes that unreachable rather than
+      // merely forbidden: a client can only ever name its own slot, so there
+      // is no path on which one user's write can collide with another's. It
+      // costs nothing — the alternative, a `get()` on the parent session, is a
+      // billed read on every evaluation.
+      //
+      // A user may still create a (useless) document in their own slot under
+      // someone else's session. That is accepted: it blocks nobody, is
+      // readable by nobody else, and is swept with the session on account
+      // deletion. Preventing it would need exactly the `get()` this avoids.
+      match /private/{ownerUid} {
+        // Absence now reads as an empty snapshot for the owner rather than a
+        // permission error, which is a simplification the old shape could not
+        // have: another user is denied by the *path*, before existence is ever
+        // consulted, so "denied" and "empty" are no longer distinguishable to
+        // anyone but the owner. Nothing leaks about whose runs carry watch
+        // data.
+        allow read: if isSelf(ownerUid)
+          // TRANSITIONAL: lets an owner still read a document written under
+          // the old fixed `metrics` ID. Writes can no longer land there, so
+          // this set can only shrink. Delete once
+          // `_migrate_private_metrics.js` has moved them (production held
+          // zero heart-rate records at last check, so this may already be a
+          // no-op).
+          || (isSignedIn() && ownerUid == 'metrics'
+              && resource.data.userId == request.auth.uid);
+
+        allow create: if isSelf(ownerUid)
+          && request.resource.data.userId == ownerUid
           && validHeartRate(request.resource.data, 'avgHeartRateBpm')
           && validHeartRate(request.resource.data, 'maxHeartRateBpm');
-        allow update: if isSignedIn()
-          && resource.data.userId == request.auth.uid
-          && request.resource.data.userId == resource.data.userId
+
+        allow update: if isSelf(ownerUid)
+          && request.resource.data.userId == ownerUid
           && validHeartRate(request.resource.data, 'avgHeartRateBpm')
           && validHeartRate(request.resource.data, 'maxHeartRateBpm');
+
         // Deleting your own is allowed; account deletion also sweeps these
         // (see `deleteMyAccount` — a subcollection is not removed with its
-        // parent).
-        allow delete: if isSignedIn()
-          && resource.data.userId == request.auth.uid;
+        // parent). The transitional clause lets an owner clear a legacy
+        // document too.
+        allow delete: if isSelf(ownerUid)
+          || (isSignedIn() && ownerUid == 'metrics'
+              && resource.data.userId == request.auth.uid);
       }
     }
 

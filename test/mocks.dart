@@ -1,10 +1,12 @@
 import 'package:dash/services/auth_service.dart';
 import 'package:dash/services/badge_service.dart';
+import 'package:dash/services/favorite_route_repository.dart';
 import 'package:dash/services/follow_service.dart';
 import 'package:dash/services/profile_service.dart';
 import 'package:dash/services/push_notification_service.dart';
 import 'package:dash/services/route_repository.dart';
 import 'package:dash/services/run_session_repository.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:mockito/annotations.dart';
 
@@ -32,11 +34,19 @@ import 'package:mockito/annotations.dart';
   ProfileService,
   PushNotificationService,
   RouteRepository,
+  FavoriteRouteRepository,
   RunSessionRepository,
   FollowService,
   BadgeService,
   // Returned by AuthService's sign-in methods, so a stubbed success needs one.
   UserCredential,
   User,
+  // `personal_information_page` calls `clearUserProgress`/`deleteMyAccount`.
+  // There is no in-memory fake for Cloud Functions the way there is for
+  // Firestore, so these three are mocked as a chain: functions -> callable ->
+  // result.
+  FirebaseFunctions,
+  HttpsCallable,
+  HttpsCallableResult,
 ])
 void main() {}

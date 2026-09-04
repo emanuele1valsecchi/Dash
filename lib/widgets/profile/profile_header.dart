@@ -104,22 +104,26 @@ class ProfileHeader extends StatelessWidget{
   }
 
   Widget _buildFollowersCount(BuildContext context, String value, String label) {
-    return Expanded(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            value,
-            style: Theme.of(context).textTheme.labelLarge!.copyWith(
-              fontWeight: FontWeight.bold,
-            ),
+    // Deliberately NOT wrapped in `Expanded`. Both call sites are already
+    // `Row > Expanded > InkWell > Padding`, so a second `Expanded` here lands
+    // inside the `Padding` and throws "Incorrect use of ParentDataWidget" —
+    // an `Expanded` may only be a direct child of a `Flex`. That assertion
+    // fired on every render of a profile header. Caught by
+    // `public_profile_page_test.dart`.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          value,
+          style: Theme.of(context).textTheme.labelLarge!.copyWith(
+            fontWeight: FontWeight.bold,
           ),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelMedium,
-          ),
-        ],
-      ),
+        ),
+        Text(
+          label,
+          style: Theme.of(context).textTheme.labelMedium,
+        ),
+      ],
     );
   }
 

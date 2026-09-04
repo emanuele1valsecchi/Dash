@@ -7,7 +7,22 @@ import 'login_page.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
 class PersonalInformationPage extends StatefulWidget {
-  const PersonalInformationPage({super.key});
+  /// Test seams. Production leaves all three null and the state resolves
+  /// `.instance` lazily — an eager field initializer would throw
+  /// `[core/no-app]` when the widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseAuth? auth;
+  @visibleForTesting
+  final FirebaseFirestore? firestore;
+  @visibleForTesting
+  final FirebaseFunctions? functions;
+
+  const PersonalInformationPage({
+    super.key,
+    this.auth,
+    this.firestore,
+    this.functions,
+  });
 
   @override
   State<PersonalInformationPage> createState() =>
@@ -17,18 +32,20 @@ class PersonalInformationPage extends StatefulWidget {
 class _PersonalInformationPageState extends State<PersonalInformationPage> {
   bool _isLoading = false;
 
-  User? get user => FirebaseAuth.instance.currentUser;
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+  late final FirebaseFirestore _db =
+      widget.firestore ?? FirebaseFirestore.instance;
+  late final FirebaseFunctions _functions =
+      widget.functions ?? FirebaseFunctions.instanceFor(region: 'europe-west1');
 
-  FirebaseFunctions get _functions => FirebaseFunctions.instanceFor(
-        region: 'europe-west1',
-      );
+  User? get user => _auth.currentUser;
 
   Future<void> _sendPasswordReset() async {
     final email = user?.email;
     if (email == null || email.isEmpty) return;
 
     try {
-      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      await _auth.sendPasswordResetEmail(email: email);
       if (mounted) {
         _showSnackBar('Password reset email sent!');
       }
@@ -40,43 +57,12 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
   }
 
   Future<void> _updateEmailDialog() async {
-    final controller = TextEditingController();
-
-    final confirm = await showDialog<bool>(
+    final newEmail = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Update Email'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            hintText: 'Enter new email address',
-          ),
-          keyboardType: TextInputType.emailAddress,
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Colors.grey),
-            ),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text(
-              'Send Link',
-              style: TextStyle(color: Color(0xFF4A8C52)),
-            ),
-          ),
-        ],
-      ),
+      builder: (_) => const _UpdateEmailDialog(),
     );
 
-    final newEmail = controller.text.trim();
-    controller.dispose();
-
-    if (confirm != true || newEmail.isEmpty) return;
+    if (newEmail == null || newEmail.isEmpty) return;
 
     try {
       await user?.verifyBeforeUpdateEmail(newEmail);
@@ -86,8 +72,19 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
       }
     } on FirebaseAuthException catch (e) {
       if (mounted) {
+        // Changing the address an account signs in with is one of Firebase's
+        // *sensitive* operations: it refuses unless the ID token is fresh,
+        // which it stops being a few minutes after sign-in. Firebase's own
+        // message for this ("This operation is sensitive and requires recent
+        // authentication...") is accurate but says nothing the user can act
+        // on, so it is replaced with the instruction — matching what
+        // `_deleteAccount` already says for the same situation. There is no
+        // re-authentication prompt anywhere in the app yet; logging out and
+        // back in is genuinely the only way through.
         _showSnackBar(
-          'Error: ${e.message ?? e.code}',
+          e.code == 'requires-recent-login'
+              ? 'Please log out and log back in before changing your email.'
+              : 'Error: ${e.message ?? e.code}',
           isError: true,
         );
       }
@@ -115,7 +112,7 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
     setState(() => _isLoading = true);
 
     try {
-      await FirebaseFirestore.instance.collection('mail').add({
+      await _db.collection('mail').add({
         'to': [
           email,
           'noreply.dashapp@gmail.com',
@@ -234,7 +231,7 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
 
       // The callable deletes the Firebase Auth account on the server.
       // Do not call user.delete() here.
-      await FirebaseAuth.instance.signOut();
+      await _auth.signOut();
 
       if (!mounted) return;
 
@@ -416,6 +413,70 @@ class _PersonalInformationPageState extends State<PersonalInformationPage> {
         color: Colors.grey,
       ),
       onTap: onTap,
+    );
+  }
+}
+
+/// The "update email" prompt.
+///
+/// **It owns its own `TextEditingController`, and that is the whole reason it
+/// is a widget rather than an inline `AlertDialog` in a builder** — the same
+/// fix, for the same bug, as [showRenameRouteDialog]'s own dialog. Creating
+/// the controller, `await showDialog(...)`, then disposing it disposes it the
+/// instant the future completes, which is when the dialog *starts* its exit
+/// transition. The `TextField` stays mounted and bound to it for the rest of
+/// the animation, so the next frame throws `A TextEditingController was used
+/// after being disposed` — confirmed reproducible, see
+/// `test/widget_test/personal_information_page_test.dart`.
+///
+/// Owning the controller in a [State] ties its disposal to the dialog
+/// subtree's actual unmount, which is the only correct moment.
+///
+/// Pops the trimmed address, or null if cancelled.
+class _UpdateEmailDialog extends StatefulWidget {
+  const _UpdateEmailDialog();
+
+  @override
+  State<_UpdateEmailDialog> createState() => _UpdateEmailDialogState();
+}
+
+class _UpdateEmailDialogState extends State<_UpdateEmailDialog> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Update Email'),
+      content: TextField(
+        controller: _controller,
+        decoration: const InputDecoration(
+          hintText: 'Enter new email address',
+        ),
+        keyboardType: TextInputType.emailAddress,
+        autofocus: true,
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text(
+            'Cancel',
+            style: TextStyle(color: Colors.grey),
+          ),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, _controller.text.trim()),
+          child: const Text(
+            'Send Link',
+            style: TextStyle(color: Color(0xFF4A8C52)),
+          ),
+        ),
+      ],
     );
   }
 }

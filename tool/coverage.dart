@@ -29,6 +29,25 @@ import 'dart:io';
 
 const _generatedTest = 'test/all_lib_imports_for_coverage_test.dart';
 
+/// Files left out of the coverage denominator, and why.
+///
+/// Kept deliberately short and justified: excluding code is how a coverage
+/// number becomes a lie, so anything here has to be something a test *should
+/// not* be written for, not merely something awkward to test. The report
+/// prints this list and the line count it removes, so the exclusion is always
+/// visible alongside the percentage.
+const _excludedFromCoverage = <String>[
+  // Generated per-environment Firebase config; not ours to test.
+  'firebase_options.dart',
+
+  // A developer-only tool, reached from a hidden entry point on the run
+  // countdown screen. It exists to fabricate running sessions so the
+  // area-claiming logic can be exercised against specific loop shapes without
+  // physically running them — it is scaffolding for testing the app, not part
+  // of the app. Kept in the codebase, deliberately untested.
+  'test_run_creator_page.dart',
+];
+
 Future<void> main(List<String> args) async {
   final wantHtml = args.contains('--html');
   final skipRun = args.contains('--no-run');
@@ -126,8 +145,7 @@ void _writeAllImportsTest() {
       .whereType<File>()
       .map((f) => f.path.replaceAll(r'\', '/'))
       .where((p) => p.endsWith('.dart'))
-      // Generated Firebase config is environment-specific and not ours to test.
-      .where((p) => !p.endsWith('firebase_options.dart'))
+      .where((p) => !_excludedFromCoverage.any(p.endsWith))
       .toList()
     ..sort();
 
@@ -205,6 +223,10 @@ void _printReport(Map<String, _FileCoverage> files) {
     '/${all.fold<int>(0, (a, f) => a + f.total)} lines)',
   );
   stdout.writeln('Files       $covered/${all.length} have any coverage at all');
+  stdout.writeln(
+    'Excluded    ${_excludedFromCoverage.length} file(s) from the denominator: '
+    '${_excludedFromCoverage.join(", ")}',
+  );
 
   // Per top-level directory, which is where the real story is.
   final byDir = <String, List<int>>{};

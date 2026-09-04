@@ -46,9 +46,9 @@ class _DukeBadge {
   /// Whether [uid] has unlocked it. `badge_progress` is readable by any
   /// signed-in user (see `firestore.rules`) precisely so achievements can be
   /// shown next to someone's name.
-  static Future<bool> isHeldBy(String uid) async {
+  static Future<bool> isHeldBy(String uid, [FirebaseFirestore? db]) async {
     try {
-      final doc = await FirebaseFirestore.instance
+      final doc = await (db ?? FirebaseFirestore.instance)
           .collection('profiles')
           .doc(uid)
           .collection('badge_progress')
@@ -68,8 +68,12 @@ class _DukeBadge {
 void showAreaDetailsSheet(
   BuildContext context,
   List<ClaimedArea> areas,
-  String areaId,
-) {
+  String areaId, {
+  /// Injectable for tests, each defaulting to what the app already uses, so
+  /// no call site changes.
+  ProfileService? profileService,
+  FirebaseFirestore? firestore,
+}) {
   ClaimedArea? area;
   for (final a in areas) {
     if (a.id == areaId) {
@@ -90,7 +94,11 @@ void showAreaDetailsSheet(
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
-    builder: (_) => AreaDetailsSheet(area: found),
+    builder: (_) => AreaDetailsSheet(
+      area: found,
+      profileService: profileService,
+      firestore: firestore,
+    ),
   );
 }
 
@@ -104,11 +112,19 @@ void showAreaDetailsSheet(
 bool handleAreaTap(
   BuildContext context,
   LayerHitNotifier<String> hitNotifier,
-  List<ClaimedArea> areas,
-) {
+  List<ClaimedArea> areas, {
+  ProfileService? profileService,
+  FirebaseFirestore? firestore,
+}) {
   final hitValues = hitNotifier.value?.hitValues;
   if (hitValues == null || hitValues.isEmpty) return false;
-  showAreaDetailsSheet(context, areas, hitValues.first);
+  showAreaDetailsSheet(
+    context,
+    areas,
+    hitValues.first,
+    profileService: profileService,
+    firestore: firestore,
+  );
   return true;
 }
 
@@ -136,8 +152,15 @@ String _formatDuration(int ms) {
 /// handling needed here.
 class AreaDetailsSheet extends StatefulWidget {
   final ClaimedArea area;
+  final ProfileService? profileService;
+  final FirebaseFirestore? firestore;
 
-  const AreaDetailsSheet({super.key, required this.area});
+  const AreaDetailsSheet({
+    super.key,
+    required this.area,
+    this.profileService,
+    this.firestore,
+  });
 
   @override
   State<AreaDetailsSheet> createState() => _AreaDetailsSheetState();
@@ -145,10 +168,11 @@ class AreaDetailsSheet extends StatefulWidget {
 
 class _AreaDetailsSheetState extends State<AreaDetailsSheet> {
   late final Future<String?> _usernameFuture =
-      ProfileService().fetchUsername(widget.area.userId);
+      (widget.profileService ?? ProfileService())
+          .fetchUsername(widget.area.userId);
 
   late final Future<bool> _hasDukeBadgeFuture =
-      _DukeBadge.isHeldBy(widget.area.userId);
+      _DukeBadge.isHeldBy(widget.area.userId, widget.firestore);
 
   /// Deliberately small — it sits beside a name, not in a trophy case, and
   /// should read as a mark of rank rather than compete with the username.

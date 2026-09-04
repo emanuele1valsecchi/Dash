@@ -39,11 +39,22 @@ class SavedRouteDetailPage extends StatefulWidget {
   /// deliberately no longer knowable.
   final String? authorName;
 
+  /// Injectable for tests, each defaulting to what the app already uses, so
+  /// no call site changes. `auth` decides `_isOwner`, which is what gates the
+  /// rename pencil and the delete action — without it a test cannot render
+  /// this page as its owner at all.
+  final FirebaseAuth? auth;
+  final RouteRepository? routeRepository;
+  final FavoriteRouteRepository? favoriteRepository;
+
   const SavedRouteDetailPage({
     super.key,
     required this.route,
     required this.source,
     this.authorName,
+    this.auth,
+    this.routeRepository,
+    this.favoriteRepository,
   });
 
   @override
@@ -51,6 +62,11 @@ class SavedRouteDetailPage extends StatefulWidget {
 }
 
 class _SavedRouteDetailPageState extends State<SavedRouteDetailPage> {
+  late final _auth = widget.auth ?? FirebaseAuth.instance;
+  late final _routeRepo = widget.routeRepository ?? RouteRepository.instance;
+  late final _favoriteRepo =
+      widget.favoriteRepository ?? FavoriteRouteRepository.instance;
+
   /// Held in state rather than read from the widget, so a rename shows
   /// immediately instead of waiting for the list behind to re-read.
   late String _name = widget.route.name;
@@ -75,7 +91,7 @@ class _SavedRouteDetailPageState extends State<SavedRouteDetailPage> {
 
   bool get _isOwner =>
       widget.route.userId != null &&
-      widget.route.userId == FirebaseAuth.instance.currentUser?.uid;
+      widget.route.userId == _auth.currentUser?.uid;
 
 
   @override
@@ -175,10 +191,9 @@ class _SavedRouteDetailPageState extends State<SavedRouteDetailPage> {
     try {
       switch (widget.source) {
         case RouteSource.owned:
-          await RouteRepository.instance.renameRoute(widget.route.id, newName);
+          await _routeRepo.renameRoute(widget.route.id, newName);
         case RouteSource.favorite:
-          await FavoriteRouteRepository.instance
-              .renameFavorite(widget.route.id, newName);
+          await _favoriteRepo.renameFavorite(widget.route.id, newName);
         case RouteSource.created:
           return;
       }

@@ -1,7 +1,11 @@
 import 'package:firebase_storage/firebase_storage.dart';
 
 class StorageService {
-  final FirebaseStorage _storage = FirebaseStorage.instance;
+  // `late` so construction never touches Firebase. `PublicProfilePage` builds
+  // this in a field initializer, and an eager `.instance` there throws
+  // `[core/no-app]` before the screen can render at all in a test — the same
+  // pattern already applied to AuthService, ProfileService and the rest.
+  late final FirebaseStorage _storage = FirebaseStorage.instance;
 
   /// Restituisce l'URL di download per il path indicato.
   /// Lancia un'eccezione se il file non esiste o l'accesso è negato:

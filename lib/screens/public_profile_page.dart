@@ -3,9 +3,12 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
+import 'package:dash/models/badge_model.dart';
 import 'package:dash/models/home_badge_ui_model.dart';
 import 'package:dash/screens/share_profile_page.dart';
 import 'package:dash/services/badge_service.dart';
+import 'package:dash/services/route_repository.dart';
+import 'package:dash/services/run_session_repository.dart';
 import 'package:dash/services/storage_service.dart';
 import 'package:dash/widgets/dash_action_button.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
@@ -20,9 +23,28 @@ import 'package:material_symbols_icons/symbols.dart';
 class PublicProfilePage extends StatefulWidget {
   final String userId;
 
+  /// Injectable for tests, each defaulting to the real thing, so no call site
+  /// changes.
+  ///
+  /// This screen needs the most of any so far — it runs three concurrent
+  /// `snapshots()` subscriptions (profile, badge progress, follow state) and
+  /// embeds `ProfileActivitySections`, which reads two repositories of its
+  /// own. `FakeFirebaseFirestore` supports streams, so with `firestore`
+  /// supplied all three become real queries over real in-memory documents.
+  final FirebaseFirestore? firestore;
+  final FirebaseAuth? auth;
+  final BadgeService? badgeService;
+  final RunSessionRepository? sessionRepository;
+  final RouteRepository? routeRepository;
+
   const PublicProfilePage({
     super.key,
     required this.userId,
+      this.firestore,
+    this.auth,
+    this.badgeService,
+    this.sessionRepository,
+    this.routeRepository,
   });
 
   @override
@@ -54,6 +76,10 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
   /// cached reads rather than listeners (see `ProfileActivitySections`).
   final GlobalKey<ProfileActivitySectionsState> _activityKey =
       GlobalKey<ProfileActivitySectionsState>();
+
+  late final _db = widget.firestore ?? FirebaseFirestore.instance;
+  late final _auth = widget.auth ?? FirebaseAuth.instance;
+  late final _badgeService = widget.badgeService ?? BadgeService();
 
   final StorageService _storageService = StorageService();
   
@@ -149,6 +175,8 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
               userId: widget.userId,
             ),
             ProfileActivitySections(
+              sessionRepository: widget.sessionRepository,
+              routeRepository: widget.routeRepository,
               key: _activityKey,
               userId: widget.userId,
               isCurrentUser: false,
@@ -161,7 +189,7 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
   }
 
   Widget _buildActionButtons() { 
-    final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+    final currentUserId = _auth.currentUser?.uid;
     final isSelf = currentUserId == widget.userId;
 
     return Row(
@@ -201,7 +229,7 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
   }
 
   void _startProfileStream() {
-    _profileSub = FirebaseFirestore.instance
+    _profileSub = _db
         .collection('profiles')
         .doc(widget.userId)
         .snapshots()
@@ -243,7 +271,18 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
   }
 
   void _startBadgesStream() async {
-    final staticBadges = await BadgeService().getProfileBadges(widget.userId);
+    // Guarded because this is `async void`: nothing awaits it, so a throw
+    // here escapes as an unhandled async error rather than being caught by a
+    // caller. Badges are decoration on someone else's profile — a failed read
+    // (a network blip, or a rules change like the one that used to deny
+    // `badge_progress` outright) must cost the badges, not the page.
+    final List<BadgeModel> staticBadges;
+    try {
+      staticBadges = await _badgeService.getProfileBadges(widget.userId);
+    } catch (e) {
+      debugPrint('Could not load badges for ${widget.userId}: $e');
+      return;
+    }
 
     for (final badge in staticBadges) {
       if (!_publicUrlCache.containsKey(badge.imagePath)) {
@@ -256,7 +295,7 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
       }
     }
 
-    _badgeSub = FirebaseFirestore.instance
+    _badgeSub = _db
         .collection('profiles')
         .doc(widget.userId)
         .collection('badge_progress')
@@ -294,13 +333,13 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
   }
 
   void _startFollowStream() {
-    final currentUser = FirebaseAuth.instance.currentUser;
+    final currentUser = _auth.currentUser;
     if (currentUser == null) return;
 
     // Use a composite ID to prevent duplicate follow records
     final followId = '${currentUser.uid}_${widget.userId}';
 
-    _followSub = FirebaseFirestore.instance
+    _followSub = _db
         .collection('follows')
         .doc(followId)
         .snapshots()
@@ -315,14 +354,14 @@ class _PublicProfilePageState extends State<PublicProfilePage> {
   }
 
   Future<void> _toggleFollow() async {
-    final currentUser = FirebaseAuth.instance.currentUser;
+    final currentUser = _auth.currentUser;
     if (currentUser == null) return;
 
     // Prevent following yourself
     if (currentUser.uid == widget.userId) return;
 
     final followId = '${currentUser.uid}_${widget.userId}';
-    final followRef = FirebaseFirestore.instance.collection('follows').doc(followId);
+    final followRef = _db.collection('follows').doc(followId);
 
     try {
       if (_isFollowing) {

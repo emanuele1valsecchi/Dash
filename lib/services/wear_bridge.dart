@@ -52,7 +52,8 @@ class WearBridge {
   /// for finish), and one callback slot would have them silently overwrite
   /// each other.
   Stream<WatchCommand> get commands => _commands.stream;
-  final _commands = StreamController<WatchCommand>.broadcast();
+  // Not `final`: [resetForTest] replaces it. See that method for why.
+  var _commands = StreamController<WatchCommand>.broadcast();
 
   /// Whether a watch was reachable at the last check. Best-effort only — the
   /// Data Layer reports connected *nodes*, not whether the app is running on
@@ -235,7 +236,8 @@ class WearBridge {
   /// Firestore with no indication anything happened, which reads as the send
   /// button having done nothing at all.
   Stream<String> get importMessages => _importMessages.stream;
-  final _importMessages = StreamController<String>.broadcast();
+  // Not `final`: [resetForTest] replaces it.
+  var _importMessages = StreamController<String>.broadcast();
 
   void _announce(String message) {
     if (!_importMessages.isClosed) _importMessages.add(message);
@@ -319,5 +321,33 @@ class WearBridge {
     _commands.close();
     _importMessages.close();
     _started = false;
+  }
+
+  /// Test hook: stops everything [dispose] does, but leaves the bridge
+  /// usable again.
+  ///
+  /// **[dispose] is one-way and that matters here.** It closes both
+  /// broadcast controllers, and this is an app-lifetime singleton — so a
+  /// second `start()` after a `dispose()` runs, sets its timer, and then
+  /// silently drops every command and import message, because adding to a
+  /// closed controller is skipped by the `isClosed` guards. Nothing in
+  /// `lib/` calls `dispose()` today (only tests do, to stop the 1-second
+  /// timer that would otherwise fail the run), so this is a test-only
+  /// hazard rather than a live bug — but a test file with more than one
+  /// case needs a reset that actually resets.
+  @visibleForTesting
+  void resetForTest() {
+    _controller.removeListener(_onControllerChanged);
+    _incoming?.cancel();
+    _incoming = null;
+    _publishTimer?.cancel();
+    _publishTimer = null;
+    if (!_commands.isClosed) _commands.close();
+    if (!_importMessages.isClosed) _importMessages.close();
+    _commands = StreamController<WatchCommand>.broadcast();
+    _importMessages = StreamController<String>.broadcast();
+    _started = false;
+    _lastPublishedPhase = null;
+    _hasWatch = false;
   }
 }

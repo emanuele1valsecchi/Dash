@@ -55,13 +55,12 @@ describe('runningSessions', () => {
         setDoc(doc(alice, 'runningSessions/s1'), sessionDoc(BOB)));
     });
 
-    test('pointsEarned must be zero — XP is the server\'s to award',
-      async () => {
-        const alice = await asUser(ALICE);
+    test('pointsEarned must be zero, XP is the server to award', async () => {
+      const alice = await asUser(ALICE);
 
-        await assertFails(setDoc(doc(alice, 'runningSessions/s1'),
-          sessionDoc(ALICE, { pointsEarned: 9999 })));
-      });
+      await assertFails(setDoc(doc(alice, 'runningSessions/s1'),
+        sessionDoc(ALICE, { pointsEarned: 9999 })));
+    });
 
     describe('heart rate may not be published', () => {
       // The whole reason the private subcollection exists. A session doc is
@@ -161,7 +160,11 @@ describe('runningSessions', () => {
   });
 
   describe('the private metrics subcollection', () => {
-    const path = 'runningSessions/s1/private/metrics';
+    // The document ID *is* the owner's uid. That is what makes one user's
+    // write structurally unable to collide with another's — see the block
+    // comment in firestore.rules.
+    const alicePath = `runningSessions/s1/private/${ALICE}`;
+    const bobPath = `runningSessions/s1/private/${BOB}`;
 
     beforeEach(() => seed((db) =>
       setDoc(doc(db, 'runningSessions/s1'), sessionDoc(ALICE))));
@@ -169,102 +172,133 @@ describe('runningSessions', () => {
     test('the owner may write their own metrics', async () => {
       const alice = await asUser(ALICE);
 
-      await assertSucceeds(setDoc(doc(alice, path), {
+      await assertSucceeds(setDoc(doc(alice, alicePath), {
         userId: ALICE, avgHeartRateBpm: 152, maxHeartRateBpm: 178,
       }));
     });
 
     test('the owner may read them back', async () => {
-      await seed((db) => setDoc(doc(db, path), {
+      await seed((db) => setDoc(doc(db, alicePath), {
         userId: ALICE, avgHeartRateBpm: 152,
       }));
       const alice = await asUser(ALICE);
 
-      await assertSucceeds(getDoc(doc(alice, path)));
+      await assertSucceeds(getDoc(doc(alice, alicePath)));
     });
 
-    test('another user may NOT read them, though the parent is public',
-      async () => {
-        // The point of the whole subcollection. Rules do not cascade, so this
-        // block is the only thing granting access - and it grants it to the
-        // owner alone.
-        await seed((db) => setDoc(doc(db, path), {
+    test('the owner may delete their own', async () => {
+      await seed((db) => setDoc(doc(db, alicePath), { userId: ALICE }));
+      const alice = await asUser(ALICE);
+
+      await assertSucceeds(deleteDoc(doc(alice, alicePath)));
+    });
+
+    describe('one user cannot reach the slot of another', () => {
+      // The fix for the squatting hole. Previously every user addressed the
+      // same `.../private/metrics` document, so Bob could occupy Alice's slot
+      // and lock her out of her own heart rate permanently.
+      test('another user may NOT read it', async () => {
+        await seed((db) => setDoc(doc(db, alicePath), {
           userId: ALICE, avgHeartRateBpm: 152,
         }));
         const bob = await asUser(BOB);
 
-        await assertFails(getDoc(doc(bob, path)));
+        await assertFails(getDoc(doc(bob, alicePath)));
       });
 
-    test('another user may NOT overwrite metrics that exist', async () => {
-      // The real boundary. Update is gated on the *existing* document's
-      // userId, so once the owner has written theirs, nobody else can touch
-      // it.
-      await seed((db) => setDoc(doc(db, path), {
-        userId: ALICE, avgHeartRateBpm: 152,
-      }));
-      const bob = await asUser(BOB);
-
-      await assertFails(setDoc(doc(bob, path), {
-        userId: BOB, avgHeartRateBpm: 999,
-      }));
-    });
-
-    // ─────────────────────────────────────────────────────────────────
-    // OPEN SECURITY QUESTION — this test asserts the behaviour we WANT and
-    // currently FAILS. Marked `todo` so it shows up as a red line in every
-    // run without breaking the build. See TEST_NOTES.md section 5.
-    //
-    // `create` on this subcollection authorizes off the document's own
-    // denormalized `userId`, not the parent session's owner. So any signed-in
-    // user can write a metrics document under ANYONE's session, as long as
-    // they stamp their own uid on it.
-    //
-    // Delete this `todo` marker the moment the rule is tightened; node:test
-    // reports a passing todo, which is the prompt to do so.
-    // ─────────────────────────────────────────────────────────────────
-    test('another user may NOT create metrics under someone elses session',
-      { todo: 'private-metrics squatting - unresolved, see TEST_NOTES.md #5' },
-      async () => {
+      test('another user may NOT create in it', async () => {
         const bob = await asUser(BOB);
 
-        await assertFails(setDoc(doc(bob, path), {
+        await assertFails(setDoc(doc(bob, alicePath), {
           userId: BOB, avgHeartRateBpm: 152,
         }));
       });
 
-    // The consequence that makes the above more than untidy: once the slot is
-    // squatted, the owner's own write becomes an *update*, which is gated on
-    // the EXISTING document's userId — so she is locked out of her own run's
-    // metrics, and cannot read or delete the squatter's document to clear it.
-    // Verified empirically: create ALLOWED for Bob, then write/read/delete all
-    // DENIED for Alice. Also `todo` — same unresolved issue.
-    test('the owner can still save metrics after someone squats the slot',
-      { todo: 'private-metrics squatting - unresolved, see TEST_NOTES.md #5' },
-      async () => {
+      test('another user may NOT overwrite it', async () => {
+        await seed((db) => setDoc(doc(db, alicePath), {
+          userId: ALICE, avgHeartRateBpm: 152,
+        }));
         const bob = await asUser(BOB);
-        await setDoc(doc(bob, path), { userId: BOB, avgHeartRateBpm: 152 });
+
+        await assertFails(setDoc(doc(bob, alicePath), {
+          userId: BOB, avgHeartRateBpm: 999,
+        }));
+      });
+
+      test('another user may NOT delete it', async () => {
+        await seed((db) => setDoc(doc(db, alicePath), { userId: ALICE }));
+        const bob = await asUser(BOB);
+
+        await assertFails(deleteDoc(doc(bob, alicePath)));
+      });
+
+      test('the body cannot claim an owner the path does not', async () => {
+        // Belt and braces: the path already decides, but a document whose
+        // `userId` disagreed with its own ID would be a confusing lie to
+        // anything reading the field.
+        const alice = await asUser(ALICE);
+
+        await assertFails(setDoc(doc(alice, alicePath), { userId: BOB }));
+      });
+    });
+
+    describe('the squatting attack is now impossible', () => {
+      // Regression tests for the finding. Both of these were `todo` markers
+      // because they FAILED: Bob could create under Alice's session and
+      // thereby lock her out of her own data.
+      test('a squat attempt is refused outright', async () => {
+        const bob = await asUser(BOB);
+
+        await assertFails(setDoc(doc(bob, alicePath), {
+          userId: BOB, avgHeartRateBpm: 152,
+        }));
+      });
+
+      test('the owner can still save metrics afterwards', async () => {
+        // Bob writes the only thing he can — his own slot under her session —
+        // and Alice is entirely unaffected.
+        const bob = await asUser(BOB);
+        await assertSucceeds(
+          setDoc(doc(bob, bobPath), { userId: BOB, avgHeartRateBpm: 152 }));
 
         const alice = await asUser(ALICE);
-        await assertSucceeds(setDoc(doc(alice, path), {
+        await assertSucceeds(setDoc(doc(alice, alicePath), {
           userId: ALICE, avgHeartRateBpm: 140,
         }));
       });
 
-    test('a missing document denies rather than reading as empty', async () => {
-      // Deliberate: if absence read as an empty snapshot while presence read
-      // as denied, any signed-in user could tell which of someone else's runs
-      // carry watch data. Denying both leaks nothing.
+      test('and Bob still cannot read what she wrote', async () => {
+        await seed((db) => setDoc(doc(db, alicePath), {
+          userId: ALICE, avgHeartRateBpm: 140,
+        }));
+        const bob = await asUser(BOB);
+
+        await assertFails(getDoc(doc(bob, alicePath)));
+      });
+    });
+
+    test('a missing document reads as empty for the owner', async () => {
+      // Deliberately changed. It used to deny, because the rule had to
+      // authorize off a `userId` a missing document does not have. Now the
+      // path decides, so the owner gets a clean empty answer while another
+      // user is refused before existence is ever consulted - which is what
+      // stops anyone probing whose runs carry watch data.
       const alice = await asUser(ALICE);
 
-      await assertFails(getDoc(doc(alice, path)));
+      await assertSucceeds(getDoc(doc(alice, alicePath)));
+    });
+
+    test('another user probing an absent slot is still denied', async () => {
+      const bob = await asUser(BOB);
+
+      await assertFails(getDoc(doc(bob, alicePath)));
     });
 
     describe('heart rate must be plausible', () => {
       test('zero is refused', async () => {
         const alice = await asUser(ALICE);
 
-        await assertFails(setDoc(doc(alice, path), {
+        await assertFails(setDoc(doc(alice, alicePath), {
           userId: ALICE, avgHeartRateBpm: 0,
         }));
       });
@@ -272,7 +306,7 @@ describe('runningSessions', () => {
       test('above 250 is refused', async () => {
         const alice = await asUser(ALICE);
 
-        await assertFails(setDoc(doc(alice, path), {
+        await assertFails(setDoc(doc(alice, alicePath), {
           userId: ALICE, avgHeartRateBpm: 251,
         }));
       });
@@ -280,16 +314,58 @@ describe('runningSessions', () => {
       test('a non-integer is refused', async () => {
         const alice = await asUser(ALICE);
 
-        await assertFails(setDoc(doc(alice, path), {
+        await assertFails(setDoc(doc(alice, alicePath), {
           userId: ALICE, avgHeartRateBpm: '152',
         }));
       });
 
-      test('absent is fine — most runs have no watch', async () => {
+      test('absent is fine, most runs have no watch', async () => {
         const alice = await asUser(ALICE);
 
-        await assertSucceeds(setDoc(doc(alice, path), { userId: ALICE }));
+        await assertSucceeds(
+          setDoc(doc(alice, alicePath), { userId: ALICE }));
       });
+    });
+
+    describe('transitional legacy documents', () => {
+      // Written under the old fixed `metrics` ID. Readable and deletable by
+      // their owner so nothing breaks before the migration runs; not
+      // writable, so the set can only shrink.
+      const legacyPath = 'runningSessions/s1/private/metrics';
+
+      test('the owner may still read one', async () => {
+        await seed((db) => setDoc(doc(db, legacyPath), {
+          userId: ALICE, avgHeartRateBpm: 152,
+        }));
+        const alice = await asUser(ALICE);
+
+        await assertSucceeds(getDoc(doc(alice, legacyPath)));
+      });
+
+      test('another user may not', async () => {
+        await seed((db) => setDoc(doc(db, legacyPath), {
+          userId: ALICE, avgHeartRateBpm: 152,
+        }));
+        const bob = await asUser(BOB);
+
+        await assertFails(getDoc(doc(bob, legacyPath)));
+      });
+
+      test('the owner may clear one', async () => {
+        await seed((db) => setDoc(doc(db, legacyPath), { userId: ALICE }));
+        const alice = await asUser(ALICE);
+
+        await assertSucceeds(deleteDoc(doc(alice, legacyPath)));
+      });
+
+      test('nobody may create a new one, the old slot is closed to writes',
+        async () => {
+          const alice = await asUser(ALICE);
+
+          await assertFails(setDoc(doc(alice, legacyPath), {
+            userId: ALICE, avgHeartRateBpm: 152,
+          }));
+        });
     });
   });
 });

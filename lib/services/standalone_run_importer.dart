@@ -46,7 +46,13 @@ class StandaloneRunImporter {
 
   /// Writes the run and returns its new session id, or null if it was empty or
   /// unusable.
-  static Future<String?> import(Map<String, Object?> run) async {
+  ///
+  /// [repository] is injectable for tests and defaults to the app-wide
+  /// singleton, so no call site changes.
+  static Future<String?> import(
+    Map<String, Object?> run, {
+    RunSessionRepository? repository,
+  }) async {
     final rawFixes = run['fixes'];
     if (rawFixes is! List || rawFixes.length < 2) {
       debugPrint('StandaloneRunImporter: too few fixes to import');
@@ -74,7 +80,7 @@ class StandaloneRunImporter {
     final km = distanceMeters / 1000;
     final avgPace = km > 0 ? minutes / km : 0.0;
 
-    return RunSessionRepository.instance.saveSession(
+    return (repository ?? RunSessionRepository.instance).saveSession(
       // Named rather than prompted for: the run finished on a wrist, possibly
       // hours ago, and interrupting the user to name it on arrival would be
       // worse than a sensible default they can change later.

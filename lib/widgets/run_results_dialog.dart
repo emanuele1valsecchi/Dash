@@ -27,6 +27,12 @@ import 'units_scope.dart';
 Future<void> showRunResultsDialog({
   required BuildContext context,
   required String sessionId,
+  /// Injectable for tests, defaulting to the real Firestore, so no call site
+  /// changes. Area/XP wait on a `snapshots()` listener for the Cloud
+  /// Function's `pointsProcessed` write, and `FakeFirebaseFirestore` supports
+  /// streams — so a test can drive the "calculating…" state, the arrival of
+  /// the score, and the timeout independently.
+  FirebaseFirestore? firestore,
   required List<LatLng> path,
   required double distanceMeters,
   required Duration duration,
@@ -38,6 +44,7 @@ Future<void> showRunResultsDialog({
     barrierDismissible: false,
     builder: (_) => _RunResultsDialog(
       sessionId: sessionId,
+      firestore: firestore,
       path: path,
       distanceMeters: distanceMeters,
       duration: duration,
@@ -49,6 +56,7 @@ Future<void> showRunResultsDialog({
 
 class _RunResultsDialog extends StatefulWidget {
   final String sessionId;
+  final FirebaseFirestore? firestore;
   final List<LatLng> path;
   final double distanceMeters;
   final Duration duration;
@@ -57,6 +65,7 @@ class _RunResultsDialog extends StatefulWidget {
 
   const _RunResultsDialog({
     required this.sessionId,
+    this.firestore,
     required this.path,
     required this.distanceMeters,
     required this.duration,
@@ -79,7 +88,7 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
   @override
   void initState() {
     super.initState();
-    _sub = FirebaseFirestore.instance
+    _sub = (widget.firestore ?? FirebaseFirestore.instance)
         .collection('runningSessions')
         .doc(widget.sessionId)
         .snapshots()
@@ -329,7 +338,7 @@ class _RunResultsDialogState extends State<_RunResultsDialog> {
           const Divider(height: 1, color: Color(0xFFCFE3C0)),
           const SizedBox(height: 10),
           const Text(
-            'XP BREAKDOWN (DEBUG)',
+            'XP BREAKDOWN',
             style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF6B7266), letterSpacing: 0.4),
           ),
           const SizedBox(height: 6),

@@ -11,13 +11,25 @@ import '../services/unit_preferences.dart';
 import '../widgets/units_scope.dart';
 
 class CalendarScreen extends StatefulWidget {
-  const CalendarScreen({super.key});
+  /// Test seams. Production leaves both null and the state resolves
+  /// `.instance` lazily — an eager field initializer would throw
+  /// `[core/no-app]` when the widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseFirestore? firestore;
+  @visibleForTesting
+  final FirebaseAuth? auth;
+
+  const CalendarScreen({super.key, this.firestore, this.auth});
 
   @override
   State<CalendarScreen> createState() => _CalendarScreenState();
 }
 
 class _CalendarScreenState extends State<CalendarScreen> {
+  late final FirebaseFirestore _db =
+      widget.firestore ?? FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+
   /// Fraction of the screen's height each run card takes, matching the route
   /// library's own vertical list — a full-width card in a scrolling column.
   static const double _cardHeightFactor = 0.28;
@@ -41,13 +53,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   Future<void> _loadCalendarSessions() async {
     try {
-      final user = FirebaseAuth.instance.currentUser;
+      final user = _auth.currentUser;
       if (user == null) {
         if (mounted) setState(() => _isLoading = false);
         return;
       }
 
-      final querySnapshot = await FirebaseFirestore.instance
+      final querySnapshot = await _db
           .collection('runningSessions')
           .where('userId', isEqualTo: user.uid)
           .get();
@@ -59,6 +71,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
         // timestamp hasn't landed yet has no day to belong to, and the old
         // raw-map version skipped it for the same reason.
         if (doc.data()['createdAt'] == null) continue;
+
 
         final session = RunSession.fromDoc(doc);
         final createdAt = session.createdAt;
@@ -94,7 +107,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   /// rather than the data this screen already holds, and re-reads the session
   /// itself — one document read in exchange for one page instead of two.
   void _openSession(RunSession session) {
-    final userId = FirebaseAuth.instance.currentUser?.uid;
+    final userId = _auth.currentUser?.uid;
     if (userId == null) return;
 
     Navigator.push(

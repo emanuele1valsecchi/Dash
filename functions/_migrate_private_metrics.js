@@ -171,7 +171,11 @@ async function main() {
         if (avg !== undefined) metrics.avgHeartRateBpm = avg;
         if (max !== undefined) metrics.maxHeartRateBpm = max;
 
-        const privateRef = doc.ref.collection("private").doc("metrics");
+        // Addressed by the owner's uid, not a fixed "metrics" ID. The
+        // fixed ID let any signed-in user occupy anyone's slot and lock
+        // the real owner out of their own heart rate; the uid-addressed
+        // path makes that unreachable. See firestore.rules.
+        const privateRef = doc.ref.collection("private").doc(userId);
         pending.push((batch) => batch.set(privateRef, metrics, { merge: true }));
       } else {
         console.warn(

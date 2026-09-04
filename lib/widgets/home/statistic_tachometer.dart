@@ -116,12 +116,21 @@ class StatisticTachometer extends StatelessWidget{
               size: minorStyle.fontSize! * 1.5, 
               color: minorStyle.color
             ),
-            Text(
-              itemData.title,
-              textAlign: TextAlign.center,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: minorStyle,
+            // `Flexible` is what makes the `maxLines`/`ellipsis` below
+            // actually work. In a `Row` with `mainAxisSize: min` and no flex
+            // child, the Text takes its natural unbounded width and overflows
+            // instead of truncating — the truncation properties are inert
+            // until something constrains the width. Same fix as the stats
+            // strip in `DashMapCard`. Reachable with a long stat title or a
+            // large accessibility text scale.
+            Flexible(
+              child: Text(
+                itemData.title,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: minorStyle,
+              ),
             ),
           ],
         ),

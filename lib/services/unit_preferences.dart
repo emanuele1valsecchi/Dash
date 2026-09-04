@@ -101,8 +101,22 @@ class UnitPreferences extends ChangeNotifier {
   /// since the test runner does not guarantee an order, that failure would
   /// come and go. `warmUp()` cannot serve here: it returns early once
   /// `_warmedUp` is set, which is exactly the behaviour production wants.
+  /// Test seams for the cloud mirror. Production leaves both null and the
+  /// getters below resolve `.instance` lazily. Setting either also makes
+  /// [_firebaseReady] true, which is what lets a test reach the sync logic
+  /// at all — without a real Firebase app it would otherwise return early.
+  @visibleForTesting
+  FirebaseAuth? authOverride;
+  @visibleForTesting
+  FirebaseFirestore? firestoreOverride;
+
+  FirebaseAuth get _auth => authOverride ?? FirebaseAuth.instance;
+  FirebaseFirestore get _db => firestoreOverride ?? FirebaseFirestore.instance;
+
   @visibleForTesting
   void resetForTesting() {
+    authOverride = null;
+    firestoreOverride = null;
     _distance = DistanceUnit.kilometers;
     _area = AreaUnit.metric;
     _rate = RateDisplay.pace;
@@ -288,7 +302,8 @@ class UnitPreferences extends ChangeNotifier {
   /// meant a passing test suite printed a stack of alarming "cloud mirror
   /// failed" lines for a condition that is entirely normal. The `try` blocks
   /// below stay, for the genuine failures they were written for.
-  static bool get _firebaseReady => Firebase.apps.isNotEmpty;
+  bool get _firebaseReady =>
+      firestoreOverride != null || Firebase.apps.isNotEmpty;
 
   /// Best-effort background write, never awaited by a caller and never
   /// surfaced to the user — the local copy is authoritative, so a failure
@@ -300,9 +315,9 @@ class UnitPreferences extends ChangeNotifier {
     // unhandled async error rather than a caught one.
     if (!_firebaseReady) return;
     try {
-      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final uid = _auth.currentUser?.uid;
       if (uid == null) return;
-      await FirebaseFirestore.instance.collection('profiles').doc(uid).set({
+      await _db.collection('profiles').doc(uid).set({
         _cloudField: _toMap(),
       }, SetOptions(merge: true));
     } catch (e) {
@@ -325,7 +340,7 @@ class UnitPreferences extends ChangeNotifier {
     try {
       // Same reasoning as `_mirrorToCloud`: the auth read is inside the
       // `try`, since it throws when Firebase is not initialised.
-      final uid = FirebaseAuth.instance.currentUser?.uid;
+      final uid = _auth.currentUser?.uid;
       if (uid == null) return;
 
       if (_configured) {
@@ -333,10 +348,7 @@ class UnitPreferences extends ChangeNotifier {
         return;
       }
 
-      final doc = await FirebaseFirestore.instance
-          .collection('profiles')
-          .doc(uid)
-          .get();
+      final doc = await _db.collection('profiles').doc(uid).get();
       final raw = doc.data()?[_cloudField];
       if (raw is! Map) return;
 
@@ -380,20 +392,5 @@ class UnitPreferences extends ChangeNotifier {
   void dispose() {
     assert(false, 'UnitPreferences is an app-lifetime singleton');
     super.dispose();
-  }
-
-  /// Test hook: restores the shipped defaults without touching disk.
-  @visibleForTesting
-  void resetForTest() {
-    _distance = DistanceUnit.kilometers;
-    _area = AreaUnit.metric;
-    _rate = RateDisplay.pace;
-    _elevation = ElevationUnit.meters;
-    _energy = EnergyUnit.kcal;
-    _clock = ClockFormat.h24;
-    _weekStart = WeekStart.monday;
-    _configured = false;
-    _warmedUp = false;
-    notifyListeners();
   }
 }
