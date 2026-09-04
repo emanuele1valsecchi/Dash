@@ -14,6 +14,7 @@ import 'package:dash/widgets/profile/bio_text_box.dart';
 import 'package:dash/widgets/profile/profile_activity_sections.dart';
 import 'package:dash/widgets/profile/profile_badge_section.dart';
 import 'package:dash/widgets/profile/profile_header.dart';
+import 'package:dash/widgets/profile/profile_statistics_section.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
@@ -119,6 +120,9 @@ class _ProfilePageState extends State<ProfilePage> {
                   ProfileBadgeSection(
                     badges: _badges,
                     userId: FirebaseAuth.instance.currentUser!.uid
+                  ),
+                  ProfileStatisticsSection(
+                    userId: FirebaseAuth.instance.currentUser!.uid,
                   ),
                   ProfileActivitySections(
                     key: _activityKey,
