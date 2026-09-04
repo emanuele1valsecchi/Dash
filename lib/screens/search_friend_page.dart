@@ -2,8 +2,8 @@ import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
-import 'package:dash/screens/public_profile_page.dart';
 import 'package:dash/screens/qr_scanner_page.dart';
+import 'package:dash/utils/profile_navigator.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:dash/widgets/dash_text_form_field.dart';
 import 'package:dash/widgets/dash_user_tile.dart';
@@ -284,14 +284,6 @@ class _SearchFriendPageState extends State<SearchFriendPage> {
   void _profileTileTap(Map<String, dynamic> user){
     _saveRecent(user);
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => PublicProfilePage(
-          userId: user['uid'],
-          firestore: widget.firestore,
-        ),
-      ),
-    );
+    ProfileNavigation.openProfile(context, user['uid']);
   }
 }
