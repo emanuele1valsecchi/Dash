@@ -5,12 +5,26 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart'; // <-- Add this import
 
 class PushNotificationService {
+  /// Collaborators default to the real Firebase singletons, so an existing
+  /// `PushNotificationService()` call behaves exactly as before. Same shape
+  /// as `ProfileService`'s constructor, and for the same reason: the token
+  /// write is the one piece of real logic here, and it cannot be reached at
+  /// all without substituting these.
+  PushNotificationService({
+    FirebaseFirestore? firestore,
+    FirebaseAuth? auth,
+  })  : _firestoreOverride = firestore,
+        _authOverride = auth;
+
+  final FirebaseFirestore? _firestoreOverride;
+  final FirebaseAuth? _authOverride;
+
   // `late` so construction never touches Firebase: `LoginPage` builds this
   // service inline, and an eager read of any `.instance` here throws
   // `[core/no-app]` before the screen can render in a test.
   late final FirebaseMessaging _fcm = FirebaseMessaging.instance;
-  late final FirebaseFirestore _db = FirebaseFirestore.instance;
-  late final FirebaseAuth _auth = FirebaseAuth.instance;
+  late final FirebaseFirestore _db = _firestoreOverride ?? FirebaseFirestore.instance;
+  late final FirebaseAuth _auth = _authOverride ?? FirebaseAuth.instance;
   final FlutterLocalNotificationsPlugin _localNotificationsPlugin = FlutterLocalNotificationsPlugin(); // <-- Add this
 
   Future<void> initialize() async {
@@ -90,6 +104,15 @@ class PushNotificationService {
       );
     }
   }
+
+  /// Test seam for [_saveTokenToDatabase]. `initialize()` cannot be driven
+  /// from a test — it requests OS permission, fetches an FCM token and
+  /// registers two platform-channel listeners — but the token write it ends
+  /// in is ordinary Firestore logic, and is where a mistake is costly: a
+  /// token stored under the wrong document sends one user's notifications to
+  /// another user's phone.
+  @visibleForTesting
+  Future<void> saveTokenToDatabase(String token) => _saveTokenToDatabase(token);
 
   Future<void> _saveTokenToDatabase(String token) async {
     String? userId = _auth.currentUser?.uid;

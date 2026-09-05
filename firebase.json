@@ -19,6 +19,7 @@
         "firebase-debug.log",
         "firebase-debug.*.log",
         "*.local",
+        "test",
         "_verify_*.js",
         "_wipe_*.js",
         "_backfill_*.js",

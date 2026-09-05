@@ -126,11 +126,17 @@ void main() {
   group('paging between boards', () {
     testWidgets('swiping moves to the next board', (tester) async {
       await pumpSection(tester, [board('Global'), board('Milano')]);
+      expect(find.text('Milano').hitTestable(), findsNothing,
+          reason: 'the second board starts off screen');
 
       await tester.drag(find.byType(PageView), const Offset(-600, 0));
       await tester.pumpAndSettle();
 
-      expect(tester.takeException(), isNull);
+      // `hitTestable` rather than a plain finder: a `PageView` keeps the
+      // neighbouring page in the tree, so both names match otherwise and the
+      // assertion would hold however little the swipe did.
+      expect(find.text('Milano').hitTestable(), findsWidgets);
+      expect(find.text('Global').hitTestable(), findsNothing);
     });
 
     testWidgets('a single board does not break the pager', (tester) async {

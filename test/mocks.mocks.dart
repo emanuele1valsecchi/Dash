@@ -14,6 +14,7 @@ import 'package:cloud_functions_platform_interface/cloud_functions_platform_inte
 import 'package:dash/models/badge_model.dart' as _i19;
 import 'package:dash/services/auth_service.dart' as _i7;
 import 'package:dash/services/badge_service.dart' as _i18;
+import 'package:dash/services/claimed_area_repository.dart' as _i20;
 import 'package:dash/services/favorite_route_repository.dart' as _i15;
 import 'package:dash/services/follow_service.dart' as _i17;
 import 'package:dash/services/profile_service.dart' as _i9;
@@ -284,6 +285,15 @@ class MockPushNotificationService extends _i1.Mock
   _i8.Future<void> initialize() =>
       (super.noSuchMethod(
             Invocation.method(#initialize, []),
+            returnValue: _i8.Future<void>.value(),
+            returnValueForMissingStub: _i8.Future<void>.value(),
+          )
+          as _i8.Future<void>);
+
+  @override
+  _i8.Future<void> saveTokenToDatabase(String? token) =>
+      (super.noSuchMethod(
+            Invocation.method(#saveTokenToDatabase, [token]),
             returnValue: _i8.Future<void>.value(),
             returnValueForMissingStub: _i8.Future<void>.value(),
           )
@@ -612,6 +622,24 @@ class MockBadgeService extends _i1.Mock implements _i18.BadgeService {
             ),
           )
           as _i8.Future<List<_i19.BadgeModel>>);
+}
+
+/// A class which mocks [ClaimedAreaRepository].
+///
+/// See the documentation for Mockito's code generation for more information.
+class MockClaimedAreaRepository extends _i1.Mock
+    implements _i20.ClaimedAreaRepository {
+  MockClaimedAreaRepository() {
+    _i1.throwOnMissingStub(this);
+  }
+
+  @override
+  _i8.Stream<List<_i20.ClaimedArea>> areasStream() =>
+      (super.noSuchMethod(
+            Invocation.method(#areasStream, []),
+            returnValue: _i8.Stream<List<_i20.ClaimedArea>>.empty(),
+          )
+          as _i8.Stream<List<_i20.ClaimedArea>>);
 }
 
 /// A class which mocks [UserCredential].

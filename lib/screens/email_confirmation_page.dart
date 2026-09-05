@@ -8,9 +8,19 @@ import 'welcome_register_page.dart';
 class EmailConfirmationScreen extends StatefulWidget {
   final String email;
 
+  /// Test seams. Production leaves both null and the state resolves
+  /// `.instance` lazily — an eager field initializer would throw
+  /// `[core/no-app]` when the widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseAuth? auth;
+  @visibleForTesting
+  final ProfileService? profileService;
+
   const EmailConfirmationScreen({
     super.key,
     required this.email,
+    this.auth,
+    this.profileService,
   });
 
   @override
@@ -19,13 +29,16 @@ class EmailConfirmationScreen extends StatefulWidget {
 }
 
 class _EmailConfirmationScreenState extends State<EmailConfirmationScreen> {
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+  late final ProfileService _profileService =
+      widget.profileService ?? ProfileService();
+
   bool _isChecking = false;
   bool _isResending = false;
 
   // ── Naviga dopo login: primo accesso → WelcomeRegister, altrimenti Home ──
   Future<void> _navigateAfterLogin(BuildContext context) async {
-    final profileService = ProfileService();
-    final exists = await profileService.isProfileComplete();
+    final exists = await _profileService.isProfileComplete();
 
     if (!context.mounted) return;
 
@@ -46,7 +59,7 @@ class _EmailConfirmationScreenState extends State<EmailConfirmationScreen> {
     setState(() => _isChecking = true);
 
     try {
-      final user = FirebaseAuth.instance.currentUser;
+      final user = _auth.currentUser;
 
       if (user == null) {
         if (!mounted) return;
@@ -55,7 +68,7 @@ class _EmailConfirmationScreenState extends State<EmailConfirmationScreen> {
       }
 
       await user.reload();
-      final refreshedUser = FirebaseAuth.instance.currentUser;
+      final refreshedUser = _auth.currentUser;
 
       if (!mounted) return;
 
@@ -78,7 +91,7 @@ class _EmailConfirmationScreenState extends State<EmailConfirmationScreen> {
     setState(() => _isResending = true);
 
     try {
-      final user = FirebaseAuth.instance.currentUser;
+      final user = _auth.currentUser;
 
       if (user == null) {
         if (!mounted) return;

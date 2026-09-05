@@ -276,4 +276,68 @@ void main() {
       );
     });
   });
+
+  group('changing the profile picture', () {
+    // The picker itself is a platform channel and cannot run here. What is
+    // testable is the choice put in front of the user before it opens, which
+    // is the part with branches.
+    Future<void> openSourceSheet(WidgetTester tester) async {
+      await tester.tap(find.text('Change Profile Picture'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('offers both a camera and the gallery', (tester) async {
+      // Only offering the gallery would strand someone who has not taken the
+      // photo yet.
+      await pumpPage(tester);
+
+      await openSourceSheet(tester);
+
+      expect(find.text('Choose from Gallery'), findsOneWidget);
+      expect(find.text('Take a Picture'), findsOneWidget);
+    });
+
+    testWidgets('the sheet is dismissible without choosing', (tester) async {
+      await pumpPage(tester);
+      await openSourceSheet(tester);
+
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Choose from Gallery'), findsNothing);
+    });
+
+    testWidgets('choosing a source closes the sheet first', (tester) async {
+      // The upload runs behind whatever is on screen; leaving the sheet up
+      // over it would make the progress state invisible.
+      await pumpPage(tester);
+      await openSourceSheet(tester);
+
+      await tester.tap(find.text('Choose from Gallery'));
+      // Fixed pumps, not `pumpAndSettle`: choosing a source puts the page
+      // into its uploading state, whose spinner animates for as long as it
+      // is shown, so settling never returns.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(find.text('Choose from Gallery'), findsNothing);
+      expect(find.text('Take a Picture'), findsNothing);
+    });
+
+    testWidgets('a picker that yields nothing leaves the page usable',
+        (tester) async {
+      // No picker exists in a widget test, so this is the "user cancelled"
+      // path: no new picture, no error, and nothing stuck loading.
+      await pumpPage(tester);
+      await openSourceSheet(tester);
+
+      await tester.tap(find.text('Take a Picture'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Change Profile Picture'), findsOneWidget);
+    });
+  });
+
 }

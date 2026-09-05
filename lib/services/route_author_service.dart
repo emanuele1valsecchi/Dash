@@ -38,7 +38,18 @@ class RouteAuthorService extends ChangeNotifier {
   /// Firestore caps `whereIn` at 30 values per query.
   static const int _batchSize = 30;
 
-  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  /// Test seam, matching [UserAppearanceService.firestoreOverride].
+  @visibleForTesting
+  FirebaseFirestore? firestoreOverride;
+
+  /// A getter, not a `late final` field, and not an eager one either.
+  ///
+  /// Eager throws `[core/no-app]` the moment `instance` is first touched.
+  /// `late final` would resolve once and then ignore any later override —
+  /// which on an app-lifetime singleton means the second test in a file
+  /// silently keeps the first one's database. Same shape as
+  /// [UserAppearanceService].
+  FirebaseFirestore get _db => firestoreOverride ?? FirebaseFirestore.instance;
 
   /// sessionId → the uid that ran it.
   final Map<String, String> _ownerBySession = {};
@@ -149,5 +160,6 @@ class RouteAuthorService extends ChangeNotifier {
     _ownerBySession.clear();
     _unresolvable.clear();
     _inFlight.clear();
+    firestoreOverride = null;
   }
 }

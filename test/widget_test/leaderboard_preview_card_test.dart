@@ -80,12 +80,16 @@ void main() {
     });
 
     testWidgets('draws a pin per runner', (tester) async {
+      // Keyed by uid, which is also what stops flutter_map-style positional
+      // reconciliation putting one runner's face on another's pin.
       await pumpCard(
         tester,
         data(pins: [pin(userId: 'a'), pin(userId: 'b'), pin(userId: 'c')]),
       );
 
-      expect(tester.takeException(), isNull);
+      for (final uid in ['a', 'b', 'c']) {
+        expect(find.byKey(ValueKey(uid)), findsOneWidget, reason: uid);
+      }
     });
   });
 

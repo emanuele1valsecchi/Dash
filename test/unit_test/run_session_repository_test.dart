@@ -311,4 +311,158 @@ void main() {
       expect(await repo.fetchSessionById('nope'), isNull);
     });
   });
+
+  group('fetchPrivateMetrics', () {
+    test('reads back the heart rate the run was saved with', () async {
+      final id = await save(avgHeartRateBpm: 142, maxHeartRateBpm: 175);
+
+      final metrics = await repo.fetchPrivateMetrics(id);
+
+      expect(metrics, isNotNull);
+      expect(metrics!.avgHeartRateBpm, 142);
+      expect(metrics.maxHeartRateBpm, 175);
+    });
+
+    test('a phone-only run has none, and that is not an error', () async {
+      // No watch, so no private document was written at all. Absence has to
+      // read as "no heart rate", not as a failure — most runs are like this.
+      final id = await save();
+
+      expect(await repo.fetchPrivateMetrics(id), isNull);
+    });
+
+    test('a session that does not exist reads as none', () async {
+      expect(await repo.fetchPrivateMetrics('no-such-session'), isNull);
+    });
+
+    test('a signed-out caller gets none without touching the database',
+        () async {
+      // The document is addressed by the caller's own uid, so there is no
+      // path to read when there is no caller.
+      final id = await save(avgHeartRateBpm: 142);
+      final signedOut = RunSessionRepository.withDependencies(
+        db: db,
+        auth: MockFirebaseAuth(),
+        httpClient: geocoderReturning('{}'),
+      );
+
+      expect(await signedOut.fetchPrivateMetrics(id), isNull);
+    });
+
+    test('it is addressed by the owner uid, not a fixed name', () async {
+      // A fixed document id would let any signed-in user occupy anyone's
+      // slot and lock the real owner out of their own heart rate. The uid
+      // path makes that unreachable — see TEST_NOTES 5.
+      final id = await save(avgHeartRateBpm: 142);
+
+      final doc = await db
+          .collection('runningSessions')
+          .doc(id)
+          .collection('private')
+          .doc('runner-1')
+          .get();
+
+      expect(doc.exists, isTrue);
+    });
+
+    test('another user reads none from the same session', () async {
+      final id = await save(avgHeartRateBpm: 142);
+      final other = RunSessionRepository.withDependencies(
+        db: db,
+        auth: MockFirebaseAuth(
+            signedIn: true, mockUser: MockUser(uid: 'someone-else')),
+        httpClient: geocoderReturning('{}'),
+      );
+
+      expect(await other.fetchPrivateMetrics(id), isNull);
+    });
+  });
+
+  group('RunPrivateMetrics.fromDoc', () {
+    Future<RunPrivateMetrics> parse(Map<String, dynamic> data) async {
+      await db.collection('t').doc('d').set(data);
+      return RunPrivateMetrics.fromDoc(
+          await db.collection('t').doc('d').get());
+    }
+
+    test('reads both rates', () async {
+      final m = await parse({'avgHeartRateBpm': 130, 'maxHeartRateBpm': 168});
+
+      expect(m.avgHeartRateBpm, 130);
+      expect(m.maxHeartRateBpm, 168);
+    });
+
+    test('a document with neither reads as null, not zero', () async {
+      // Zero is a heart rate. Absent is not, and a chart drawing 0 bpm for a
+      // run with no watch would be a measurement the app never took.
+      final m = await parse({'userId': 'runner-1'});
+
+      expect(m.avgHeartRateBpm, isNull);
+      expect(m.maxHeartRateBpm, isNull);
+    });
+
+    test('a stored double is read as a whole beat count', () async {
+      // Firestore hands numbers back as `num`; a watch that wrote 142.0
+      // must not come back as a value no bpm display can format.
+      final m = await parse({'avgHeartRateBpm': 142.0});
+
+      expect(m.avgHeartRateBpm, 142);
+    });
+  });
+
+  group('startLocality naming', () {
+    Future<String?> localityFrom(String body) async {
+      final r = RunSessionRepository.withDependencies(
+        db: db, auth: auth, httpClient: geocoderReturning(body));
+      final id = await r.saveSession(
+        name: 'Run',
+        distanceMeters: 1000,
+        duration: const Duration(minutes: 6),
+        avgPaceMinPerKm: 6,
+        elevationDifferenceMeters: 0,
+        loopsCompleted: 0,
+        path: path,
+        closedLoops: const [],
+      );
+      final doc = await db.collection('runningSessions').doc(id).get();
+      return doc.data()!['startLocality'] as String?;
+    }
+
+    // Nominatim names the same administrative level differently depending on
+    // what kind of place it is, and a run started in a village would
+    // otherwise be filed under no locality at all.
+    test('a city', () async {
+      expect(await localityFrom('{"address":{"city":"Milano"}}'), 'Milano');
+    });
+
+    test('a town', () async {
+      expect(await localityFrom('{"address":{"town":"Seregno"}}'), 'Seregno');
+    });
+
+    test('a village', () async {
+      expect(await localityFrom('{"address":{"village":"Barzio"}}'), 'Barzio');
+    });
+
+    test('a municipality', () async {
+      expect(
+          await localityFrom('{"address":{"municipality":"Monza"}}'), 'Monza');
+    });
+
+    test('city wins when several are given', () async {
+      expect(
+          await localityFrom(
+              '{"address":{"city":"Milano","town":"X","village":"Y"}}'),
+          'Milano');
+    });
+
+    test('a response with no address at all leaves it unset', () async {
+      expect(await localityFrom('{}'), isNull);
+    });
+
+    test('an unparseable response leaves it unset rather than failing',
+        () async {
+      // Reverse geocoding is best effort: a run must still save.
+      expect(await localityFrom('not json'), isNull);
+    });
+  });
 }

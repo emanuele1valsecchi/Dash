@@ -22,13 +22,30 @@ import '../widgets/map/enhanced_map_gestures.dart';
 class ExplorePage extends StatefulWidget {
   final String? targetSessionId; // <--- AGGIUNTO PER INTERCETTARE LA NOTIFICA
 
-  const ExplorePage({super.key, this.targetSessionId});
+  /// Test seams. Production leaves both null and the state resolves the
+  /// singleton/`.instance` lazily — an eager field initializer would throw
+  /// `[core/no-app]` when the widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseAuth? auth;
+  @visibleForTesting
+  final ClaimedAreaRepository? areaRepository;
+
+  const ExplorePage({
+    super.key,
+    this.targetSessionId,
+    this.auth,
+    this.areaRepository,
+  });
 
   @override
   State<ExplorePage> createState() => _ExplorePageState();
 }
 
 class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin {
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+  late final ClaimedAreaRepository _areaRepository =
+      widget.areaRepository ?? ClaimedAreaRepository.instance;
+
   StreamSubscription<List<ClaimedArea>>? _areasSub;
   bool _hasFocusedOnStolenArea = false;
 
@@ -206,7 +223,7 @@ class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin
   }
 
   void _startAreasStream() {
-    _areasSub = ClaimedAreaRepository.instance.areasStream().listen((areas) {
+    _areasSub = _areaRepository.areasStream().listen((areas) {
       if (!mounted) return;
       
       setState(() => _allAreas = areas);
@@ -218,6 +235,12 @@ class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin
         _focusOnStolenArea(widget.targetSessionId!);
         _hasFocusedOnStolenArea = true; 
       }
+    }, onError: (Object e) {
+      // Guarded for the same reason as `route_create_page`: a `snapshots()`
+      // stream reports failure by *erroring*, so without this a permission
+      // change or a network blip escapes as an unhandled async error rather
+      // than costing only the territory overlay.
+      debugPrint('Could not load claimed areas: $e');
     });
   }
 
@@ -278,7 +301,7 @@ class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin
   }
 
   List<ClaimedArea> get _visibleAreas {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = _auth.currentUser?.uid;
     return _allAreas.where((area) {
       final isMine = area.userId == uid;
       return isMine ? _showMyAreas : _showOtherAreas;

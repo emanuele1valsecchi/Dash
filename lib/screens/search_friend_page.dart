@@ -19,7 +19,20 @@ class SearchFriendPage extends StatefulWidget {
   @visibleForTesting
   final FirebaseFirestore? firestore;
 
-  const SearchFriendPage({super.key, this.firestore});
+  /// What tapping a result opens. Defaults to [PublicProfilePage].
+  ///
+  /// Overridden only in tests: that page needs five injected dependencies of
+  /// its own, and one of them resolves Firebase eagerly, so building it here
+  /// would make the *tap* untestable — and the tap is what records a recent
+  /// search.
+  @visibleForTesting
+  final Widget Function(String userId)? profilePageBuilder;
+
+  const SearchFriendPage({
+    super.key,
+    this.firestore,
+    this.profilePageBuilder,
+  });
 
   @override
   State<SearchFriendPage> createState() => _SearchFriendPageState();
@@ -284,6 +297,20 @@ class _SearchFriendPageState extends State<SearchFriendPage> {
   void _profileTileTap(Map<String, dynamic> user){
     _saveRecent(user);
 
-    ProfileNavigation.openProfile(context, user['uid']);
+    final uid = user['uid'] as String;
+
+    // The seam short-circuits the real destination for tests (see
+    // `profilePageBuilder`); production goes through `ProfileNavigation`,
+    // which decides between your own profile and a stranger's.
+    final stub = widget.profilePageBuilder?.call(uid);
+    if (stub != null) {
+      Navigator.push(
+        context,
+        MaterialPageRoute<void>(builder: (_) => stub),
+      );
+      return;
+    }
+
+    ProfileNavigation.openProfile(context, uid);
   }
 }

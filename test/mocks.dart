@@ -1,5 +1,6 @@
 import 'package:dash/services/auth_service.dart';
 import 'package:dash/services/badge_service.dart';
+import 'package:dash/services/claimed_area_repository.dart';
 import 'package:dash/services/favorite_route_repository.dart';
 import 'package:dash/services/follow_service.dart';
 import 'package:dash/services/profile_service.dart';
@@ -38,6 +39,8 @@ import 'package:mockito/annotations.dart';
   RunSessionRepository,
   FollowService,
   BadgeService,
+  // Route creation shows other players' territory; one snapshot, not a feed.
+  ClaimedAreaRepository,
   // Returned by AuthService's sign-in methods, so a stubbed success needs one.
   UserCredential,
   User,

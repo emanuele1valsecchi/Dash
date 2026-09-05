@@ -1,3 +1,6 @@
+import 'package:dash/widgets/profile/profile_badge_section.dart';
+import 'package:dash/models/home_badge_ui_model.dart';
+import 'package:dash/models/badge_model.dart';
 import 'package:dash/config/app_theme.dart';
 import 'package:dash/screens/public_profile_page.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
@@ -100,6 +103,33 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
     await tester.pump(const Duration(milliseconds: 200));
   }
+
+
+  /// The badge view models the page actually handed to its badge row —
+  /// which is where the 0-100 -> 0..1 conversion has to have happened.
+  HomeBadgeUiModel badgeOf(WidgetTester tester, String title) => tester
+      .widget<ProfileBadgeSection>(find.byType(ProfileBadgeSection))
+      .badges
+      .firstWhere((b) => b.title == title);
+
+  double progressOf(WidgetTester tester, String title) =>
+      badgeOf(tester, title).progress;
+
+  bool unlockedOf(WidgetTester tester, String title) =>
+      badgeOf(tester, title).unlocked;
+
+  BadgeModel badgeModel({required String id, required String title}) =>
+      BadgeModel(
+        id: id,
+        title: title,
+        description: 'Do the thing.',
+        imagePath: 'badges/$id.png',
+        defaultVisible: true,
+        order: 1,
+        requiredValue: 10,
+        progress: 0,
+        unlocked: false,
+      );
 
   group('the profile itself', () {
     testWidgets('shows the persons name and bio', (tester) async {
@@ -262,4 +292,124 @@ void main() {
       expect(find.textContaining('Alice'), findsWidgets);
     });
   });
+
+  group('their badge progress', () {
+    // `badge_progress` stores progress as a **percentage, 0-100**, and every
+    // screen divides by 100 on the way in. Getting it wrong here draws a
+    // full ring on somebody else's profile for a badge barely started.
+    //
+    // Reading another user's progress is deliberate: achievements are meant
+    // to be seen, and the trust boundary on that collection is the write,
+    // not the read.
+    Future<void> setProgress(
+      String badgeId, {
+      double progress = 0,
+      bool unlocked = false,
+      String uid = them,
+    }) =>
+        db
+            .collection('profiles')
+            .doc(uid)
+            .collection('badge_progress')
+            .doc(badgeId)
+            .set({'progress': progress, 'unlocked': unlocked});
+
+    testWidgets('a stored percentage becomes a fraction of the ring',
+        (tester) async {
+      when(badges.getProfileBadges(any))
+          .thenAnswer((_) async => [badgeModel(id: 'duke', title: 'Duke')]);
+      await setProgress('duke', progress: 40);
+
+      await seedProfile(them);
+
+      await pumpPage(tester);
+
+      expect(progressOf(tester, 'Duke'), closeTo(0.4, 1e-9));
+    });
+
+    testWidgets('a miscounted value cannot overfill the ring', (tester) async {
+      when(badges.getProfileBadges(any))
+          .thenAnswer((_) async => [badgeModel(id: 'duke', title: 'Duke')]);
+      await setProgress('duke', progress: 250);
+
+      await seedProfile(them);
+
+      await pumpPage(tester);
+
+      expect(progressOf(tester, 'Duke'), 1.0);
+    });
+
+    testWidgets('a badge with no progress row reads as zero, not missing',
+        (tester) async {
+      // The common case for a new account: the row is seeded lazily, and an
+      // absent one must not render as an error or as complete.
+      when(badges.getProfileBadges(any))
+          .thenAnswer((_) async => [badgeModel(id: 'duke', title: 'Duke')]);
+
+      await seedProfile(them);
+
+      await pumpPage(tester);
+
+      expect(progressOf(tester, 'Duke'), 0.0);
+    });
+
+    testWidgets('a full badge counts as earned even without the flag',
+        (tester) async {
+      when(badges.getProfileBadges(any))
+          .thenAnswer((_) async => [badgeModel(id: 'duke', title: 'Duke')]);
+      await setProgress('duke', progress: 100, unlocked: false);
+
+      await seedProfile(them);
+
+      await pumpPage(tester);
+
+      expect(unlockedOf(tester, 'Duke'), isTrue);
+    });
+
+    testWidgets('the flag alone is enough', (tester) async {
+      // Some badges are awarded outright rather than counted up to.
+      when(badges.getProfileBadges(any))
+          .thenAnswer((_) async => [badgeModel(id: 'duke', title: 'Duke')]);
+      await setProgress('duke', progress: 10, unlocked: true);
+
+      await seedProfile(them);
+
+      await pumpPage(tester);
+
+      expect(unlockedOf(tester, 'Duke'), isTrue);
+    });
+
+    testWidgets('one badge being complete does not unlock the others',
+        (tester) async {
+      when(badges.getProfileBadges(any)).thenAnswer((_) async => [
+            badgeModel(id: 'duke', title: 'Duke'),
+            badgeModel(id: 'nomad', title: 'Nomad'),
+          ]);
+      await setProgress('duke', progress: 100);
+      await setProgress('nomad', progress: 20);
+
+      await seedProfile(them);
+
+      await pumpPage(tester);
+
+      expect(unlockedOf(tester, 'Duke'), isTrue);
+      expect(unlockedOf(tester, 'Nomad'), isFalse);
+      expect(progressOf(tester, 'Nomad'), closeTo(0.2, 1e-9));
+    });
+
+    testWidgets("another user's progress rows are not read", (tester) async {
+      // The subscription is scoped to the profile being viewed; reading the
+      // viewer's own rows here would show your badges on their page.
+      when(badges.getProfileBadges(any))
+          .thenAnswer((_) async => [badgeModel(id: 'duke', title: 'Duke')]);
+      await setProgress('duke', progress: 90, uid: me);
+
+      await seedProfile(them);
+
+      await pumpPage(tester);
+
+      expect(progressOf(tester, 'Duke'), 0.0);
+    });
+  });
+
 }

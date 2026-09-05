@@ -45,6 +45,26 @@ class ProfilePage extends StatefulWidget {
   @visibleForTesting
   final RouteRepository? routeRepository;
 
+  /// Test seams for the four places this page can go.
+  ///
+  /// Each destination builds its own Firebase-backed world — settings reads
+  /// preferences, share resolves a profile link, friend search opens a live
+  /// query — so a widget test cannot let the real page be constructed just
+  /// to find out whether the button pushed anything. Substituting the
+  /// destination is what makes the *tap* assertable, and the tap is the
+  /// behaviour: which button leads where, and that Share carries the
+  /// identity it is sharing. Same pattern as `SearchFriendPage`'s own
+  /// `profilePageBuilder`. Production leaves all four null.
+  @visibleForTesting
+  final Widget Function()? settingsPageBuilder;
+  @visibleForTesting
+  final Widget Function()? editProfilePageBuilder;
+  @visibleForTesting
+  final Widget Function(String userId, String name, String surname)?
+      shareProfilePageBuilder;
+  @visibleForTesting
+  final Widget Function()? searchFriendPageBuilder;
+
   const ProfilePage({
     super.key,
     this.isStandalone = false,
@@ -53,6 +73,10 @@ class ProfilePage extends StatefulWidget {
     this.badgeService,
     this.sessionRepository,
     this.routeRepository,
+    this.settingsPageBuilder,
+    this.editProfilePageBuilder,
+    this.shareProfilePageBuilder,
+    this.searchFriendPageBuilder,
   });
 
   @override
@@ -121,7 +145,9 @@ class _ProfilePageState extends State<ProfilePage> {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => const SettingsPage(),
+                  builder: (context) =>
+                      widget.settingsPageBuilder?.call() ??
+                      const SettingsPage(),
                 ),
               );
             },
@@ -158,7 +184,8 @@ class _ProfilePageState extends State<ProfilePage> {
                     userId: _auth.currentUser!.uid
                   ),
                   ProfileStatisticsSection(
-                    userId: FirebaseAuth.instance.currentUser!.uid,
+                    userId: _auth.currentUser!.uid,
+                    firestore: widget.firestore,
                   ),
                   ProfileActivitySections(
                     sessionRepository: widget.sessionRepository,
@@ -216,7 +243,8 @@ class _ProfilePageState extends State<ProfilePage> {
     Navigator.push(
       context,
       MaterialPageRoute<void>(
-        builder: (context) => EditProfilePage()
+        builder: (context) =>
+            widget.editProfilePageBuilder?.call() ?? EditProfilePage(),
       ),
     );
   }
@@ -229,12 +257,14 @@ class _ProfilePageState extends State<ProfilePage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => ShareProfilePage(
-          userId: user.uid,
-          name: _name,
-          surname: _surname,
-          profileImageUrl: _profileImageUrl,
-        ),
+        builder: (context) =>
+            widget.shareProfilePageBuilder?.call(user.uid, _name, _surname) ??
+            ShareProfilePage(
+              userId: user.uid,
+              name: _name,
+              surname: _surname,
+              profileImageUrl: _profileImageUrl,
+            ),
       ),
     );
   }
@@ -243,7 +273,8 @@ class _ProfilePageState extends State<ProfilePage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => const SearchFriendPage(),
+        builder: (context) =>
+            widget.searchFriendPageBuilder?.call() ?? const SearchFriendPage(),
       ),
     );
   }

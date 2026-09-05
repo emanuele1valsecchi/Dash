@@ -1,5 +1,6 @@
 import 'package:dash/extensions/responsive_border_radius.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
+import 'package:dash/utils/profile_link.dart';
 import 'package:dash/utils/profile_navigator.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
@@ -124,25 +125,21 @@ class _QrScannerPageState extends State<QrScannerPage> {
     final List<Barcode> barcodes = capture.barcodes;
 
     for (final barcode in barcodes) {
-      final String? rawValue = barcode.rawValue;
+      final String? scannedUserId = ProfileLink.userIdFrom(barcode.rawValue);
+      if (scannedUserId == null) continue;
 
-      if (rawValue == null) continue;
+      setState(() {
+        _hasScanned = true;
+      });
 
-      final Uri? uri = Uri.tryParse(rawValue);
-      if (uri != null && uri.pathSegments.length >= 2 && uri.pathSegments.first == 'profile') {
-        final String scannedUserId = uri.pathSegments[1];
+      _controller?.stop();
 
-        if (scannedUserId.isNotEmpty) {
-          setState(() {
-            _hasScanned = true;
-          });
-
-          _controller?.stop();
-
-          ProfileNavigation.openProfile(context, scannedUserId, replace: true);
-          return;
-        }
-      }
+      // `replace`, so backing out of the profile returns to whatever opened
+      // the scanner rather than to a live camera that would re-scan the same
+      // code. `openProfile` also sends you to your *own* profile if you scan
+      // your own link, which a bare `PublicProfilePage` push would not.
+      ProfileNavigation.openProfile(context, scannedUserId, replace: true);
+      return;
     }
   }
 }

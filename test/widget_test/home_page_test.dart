@@ -190,7 +190,8 @@ void main() {
   });
 
   group('monthly stats', () {
-    testWidgets('sum the last thirty days of running', (tester) async {
+    testWidgets('average the last thirty days of running', (tester) async {
+      // The cards show averages, not totals — 5 km and 3 km read as 4.0 km.
       await addProfile();
       await addStats();
       await addSession(distanceMeters: 5000, on: DateTime.now());
@@ -201,13 +202,18 @@ void main() {
 
       await pumpHome(tester);
 
-      expect(tester.takeException(), isNull);
-      expect(find.byType(HomePage), findsOneWidget);
+      expect(find.text('4.0 km'), findsWidgets);
+      expect(find.text('Previous 30 days: 0'), findsWidgets);
     });
 
     testWidgets('an older run is not counted in this month', (tester) async {
+      // Asserting only that nothing threw passed against a deliberately
+      // broken window that counted every run ever — see TEST_NOTES 1.18.
+      // The recent run alone must set the average; the 45-day-old one
+      // belongs to the previous period and would drag it to 7.0 km.
       await addProfile();
       await addStats();
+      await addSession(distanceMeters: 5000, on: DateTime.now());
       await addSession(
         distanceMeters: 9000,
         on: DateTime.now().subtract(const Duration(days: 45)),
@@ -215,7 +221,9 @@ void main() {
 
       await pumpHome(tester);
 
-      expect(tester.takeException(), isNull);
+      expect(find.text('5.0 km'), findsWidgets);
+      expect(find.text('7.0 km'), findsNothing);
+      expect(find.text('Previous 30 days: 1'), findsWidgets);
     });
 
     testWidgets('render with no runs at all', (tester) async {

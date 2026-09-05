@@ -95,18 +95,35 @@ Future<void> pushRunTracking(
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 class RunTrackingPage extends StatefulWidget {
-  const RunTrackingPage({super.key, this.plannedRoute});
+  const RunTrackingPage({
+    super.key,
+    this.plannedRoute,
+    this.auth,
+    this.areaRepository,
+  });
 
   /// Optional route to display as a thin static guide line, when the user
   /// chose "Save route and Run" from route creation. Purely visual — this
   /// screen doesn't track on/off-route state or reroute if the user strays.
   final List<LatLng>? plannedRoute;
 
+  /// Test seams. Production leaves both null and the state resolves the
+  /// singleton/`.instance` lazily — an eager field initializer would throw
+  /// `[core/no-app]` when the widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseAuth? auth;
+  @visibleForTesting
+  final ClaimedAreaRepository? areaRepository;
+
   @override
   State<RunTrackingPage> createState() => _RunTrackingPageState();
 }
 
 class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderStateMixin {
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+  late final ClaimedAreaRepository _areaRepository =
+      widget.areaRepository ?? ClaimedAreaRepository.instance;
+
   // ── Map ───────────────────────────────────────────────────────────────────
   final MapController _mapController = MapController();
   static const double _defaultZoom = 18.0;
@@ -166,7 +183,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   bool _showMyAreas = true;
 
   List<ClaimedArea> get _visibleAreas {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = _auth.currentUser?.uid;
     return _allAreas.where((area) {
       final isMine = area.userId == uid;
       return isMine ? _showMyAreas : _showOtherAreas;
@@ -301,7 +318,7 @@ class _RunTrackingPageState extends State<RunTrackingPage> with TickerProviderSt
   }
 
   Future<void> _loadClaimedAreas() async {
-    final areas = await ClaimedAreaRepository.instance.areasStream().first;
+    final areas = await _areaRepository.areasStream().first;
     if (!mounted) return;
     setState(() => _allAreas = areas);
   }

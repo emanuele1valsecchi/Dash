@@ -53,7 +53,14 @@ void main() {
     await mockNetworkImagesFor(() async {
       await pumpDashWidget(
         tester,
-        SearchFriendPage(firestore: db),
+        SearchFriendPage(
+          firestore: db,
+          // `PublicProfilePage` needs five injected dependencies of its own,
+          // one resolving Firebase eagerly, so a stand-in is what makes the
+          // *tap* assertable — and the tap is what records a recent search.
+          profilePageBuilder: (uid) =>
+              Scaffold(body: Text('PROFILE $uid')),
+        ),
         wrapInScaffold: false,
         surfaceSize: kPhoneSurface,
       );
@@ -278,4 +285,91 @@ void main() {
       expect(find.byIcon(Symbols.qr_code_scanner_rounded), findsOneWidget);
     });
   });
+
+  group('opening a result', () {
+    testWidgets("goes to that person's profile", (tester) async {
+      await addProfile('ada', name: 'Ada', email: 'ada@example.com');
+      await pumpPage(tester);
+      await search(tester, 'Ada');
+
+      await tester.tap(tileNamed('Ada'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('PROFILE ada'), findsOneWidget);
+    });
+
+    testWidgets('records it as a recent search', (tester) async {
+      await addProfile('ada', name: 'Ada', email: 'ada@example.com');
+      await pumpPage(tester);
+      await search(tester, 'Ada');
+
+      await tester.tap(tileNamed('Ada'));
+      await tester.pumpAndSettle();
+
+      final prefs = await SharedPreferences.getInstance();
+      final saved = jsonDecode(prefs.getString(recentsKey)!) as List;
+      expect(saved.single['uid'], 'ada');
+      expect(saved.single['name'], 'Ada');
+    });
+
+    testWidgets('a repeat visit moves to the top rather than duplicating',
+        (tester) async {
+      seedRecents([recent('bob', 'Bob'), recent('ada', 'Ada')]);
+      await addProfile('ada', name: 'Ada', email: 'ada@example.com');
+      await pumpPage(tester);
+      await search(tester, 'Ada');
+
+      await tester.tap(tileNamed('Ada'));
+      await tester.pumpAndSettle();
+
+      final prefs = await SharedPreferences.getInstance();
+      final saved = jsonDecode(prefs.getString(recentsKey)!) as List;
+      expect(saved, hasLength(2), reason: 'no duplicate entry');
+      expect(saved.first['uid'], 'ada', reason: 'most recent first');
+    });
+
+    testWidgets('the list is capped at ten', (tester) async {
+      // Otherwise it grows without bound in SharedPreferences.
+      seedRecents([for (var i = 0; i < 10; i++) recent('u$i', 'User$i')]);
+      await addProfile('ada', name: 'Ada', email: 'ada@example.com');
+      await pumpPage(tester);
+      await search(tester, 'Ada');
+
+      await tester.tap(tileNamed('Ada'));
+      await tester.pumpAndSettle();
+
+      final prefs = await SharedPreferences.getInstance();
+      final saved = jsonDecode(prefs.getString(recentsKey)!) as List;
+      expect(saved, hasLength(10));
+      expect(saved.first['uid'], 'ada');
+    });
+
+    testWidgets('only the fields the list needs are stored', (tester) async {
+      // The Firestore document carries more than this; copying it wholesale
+      // would put arbitrary profile data into local storage. The seeded
+      // document therefore has fields the recents list has no business
+      // keeping — without them the assertion cannot tell a whitelist from a
+      // wholesale copy.
+      await db.collection('profiles').doc('ada').set({
+        'name': 'Ada',
+        'surname': '',
+        'email': 'ada@example.com',
+        'profileImageUrl': '',
+        'totalPoints': 4200,
+        'fcmTokens': ['secret-token'],
+        'bio': 'private-ish',
+      });
+      await pumpPage(tester);
+      await search(tester, 'Ada');
+
+      await tester.tap(tileNamed('Ada'));
+      await tester.pumpAndSettle();
+
+      final prefs = await SharedPreferences.getInstance();
+      final saved = jsonDecode(prefs.getString(recentsKey)!) as List;
+      expect((saved.single as Map).keys.toSet(),
+          {'uid', 'name', 'surname', 'email', 'profileImageUrl'});
+    });
+  });
+
 }
