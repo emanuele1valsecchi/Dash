@@ -2,8 +2,8 @@ import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
-import 'package:dash/screens/public_profile_page.dart';
 import 'package:dash/screens/qr_scanner_page.dart';
+import 'package:dash/utils/profile_navigator.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:dash/widgets/dash_text_form_field.dart';
 import 'package:dash/widgets/dash_user_tile.dart';
@@ -297,16 +297,20 @@ class _SearchFriendPageState extends State<SearchFriendPage> {
   void _profileTileTap(Map<String, dynamic> user){
     _saveRecent(user);
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) =>
-            widget.profilePageBuilder?.call(user['uid'] as String) ??
-            PublicProfilePage(
-              userId: user['uid'],
-              firestore: widget.firestore,
-            ),
-      ),
-    );
+    final uid = user['uid'] as String;
+
+    // The seam short-circuits the real destination for tests (see
+    // `profilePageBuilder`); production goes through `ProfileNavigation`,
+    // which decides between your own profile and a stranger's.
+    final stub = widget.profilePageBuilder?.call(uid);
+    if (stub != null) {
+      Navigator.push(
+        context,
+        MaterialPageRoute<void>(builder: (_) => stub),
+      );
+      return;
+    }
+
+    ProfileNavigation.openProfile(context, uid);
   }
 }

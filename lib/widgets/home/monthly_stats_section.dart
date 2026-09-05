@@ -52,9 +52,9 @@ class MonthlyStatsSection extends StatelessWidget {
 
     return [
       MonthlyStatData(
-        title: 'Average\nsession time',
+        title: 'Average running\nsession time',
         value: raw.avgDurationStr,
-        icon: Icons.timer_outlined,
+        icon: Symbols.timer_rounded,
         progress: raw.bestDurationMs > 0
             ? (raw.avgDurationMs / raw.bestDurationMs).clamp(0.0, 1.0)
             : 0.0,
@@ -65,7 +65,7 @@ class MonthlyStatsSection extends StatelessWidget {
       MonthlyStatData(
         title: 'Average best\n$rateWord',
         value: units.rateFromSpeedKmh(raw.avgMaxSpeedKmh),
-        icon: Icons.speed_rounded,
+        icon: Symbols.sprint_rounded,
         progress: raw.bestSpeedKmh > 0
             ? (raw.avgMaxSpeedKmh / raw.bestSpeedKmh).clamp(0.0, 1.0)
             : 0.0,
@@ -76,7 +76,7 @@ class MonthlyStatsSection extends StatelessWidget {
       MonthlyStatData(
         title: 'Average\n$rateWord',
         value: units.rateFromSpeedKmh(raw.avgSpeedKmh),
-        icon: Icons.shutter_speed_rounded,
+        icon: Symbols.swap_driving_apps_wheel_rounded,
         progress: raw.bestAvgSpeedKmh > 0
             ? (raw.avgSpeedKmh / raw.bestAvgSpeedKmh).clamp(0.0, 1.0)
             : 0.0,
@@ -89,7 +89,7 @@ class MonthlyStatsSection extends StatelessWidget {
         value: raw.avgDistanceMeters > 0
             ? units.distance(raw.avgDistanceMeters, decimals: 1)
             : '--',
-        icon: Icons.swap_horiz_rounded,
+        icon: Symbols.arrow_range_rounded,
         progress: raw.bestDistanceMeters > 0
             ? (raw.avgDistanceMeters / raw.bestDistanceMeters).clamp(0.0, 1.0)
             : 0.0,
@@ -100,14 +100,14 @@ class MonthlyStatsSection extends StatelessWidget {
       MonthlyStatData(
         title: 'Completed\nactivities',
         value: '${raw.completedActivities}',
-        icon: Icons.directions_run_rounded,
+        icon: Symbols.steps_rounded,
         progress: raw.activitiesProgress,
         bottomText: 'Previous 30 days: ${raw.previousCompletedActivities}',
       ),
       MonthlyStatData(
         title: 'Average\ncalories',
         value: raw.avgCalories > 0 ? units.energy(raw.avgCalories) : '--',
-        icon: Icons.local_fire_department_rounded,
+        icon: Symbols.mode_heat_rounded,
         progress: raw.bestCalories > 0
             ? (raw.avgCalories / raw.bestCalories).clamp(0.0, 1.0)
             : 0.0,

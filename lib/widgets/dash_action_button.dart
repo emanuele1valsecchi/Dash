@@ -10,7 +10,7 @@ class DashActionButton extends StatelessWidget{
 
   final Function()? onPressed;
 
-
+  final bool isSelected; 
 
   const DashActionButton({
     super.key, 
@@ -20,7 +20,20 @@ class DashActionButton extends StatelessWidget{
     this.iconSize,
     this.iconFill = 0.0,
     required this.onPressed
-  }): assert(
+  }): isSelected = false, assert(
+    label != null || icon != null,
+    'DashActionButton must be provided with a label, an icon, or both.',
+  );
+
+  const DashActionButton.selected({
+    super.key, 
+    this.label,
+    this.labelSize, 
+    this.icon, 
+    this.iconSize,
+    this.iconFill = 0.0,
+    required this.onPressed
+  }): isSelected = true, assert(
     label != null || icon != null,
     'DashActionButton must be provided with a label, an icon, or both.',
   );
@@ -34,8 +47,12 @@ class DashActionButton extends StatelessWidget{
     );
 
     final ButtonStyle style = ElevatedButton.styleFrom(
-      foregroundColor: contextTheme.colorScheme.secondary,
-      backgroundColor: contextTheme.colorScheme.primaryContainer,
+      foregroundColor: (!isSelected) 
+        ? contextTheme.colorScheme.secondary
+        : contextTheme.colorScheme.primaryContainer,
+      backgroundColor: (!isSelected)
+        ? contextTheme.colorScheme.primaryContainer
+        : contextTheme.colorScheme.secondary,
       textStyle: textStyle
     );
 

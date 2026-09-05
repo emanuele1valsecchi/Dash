@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'package:dash/root_screen.dart';
+import 'package:dash/widgets/dash_navigation_bar.dart';
+
 import '../models/badge_model.dart';
 import '../services/route_repository.dart';
 import '../services/run_session_repository.dart';
@@ -17,6 +20,7 @@ import 'package:dash/widgets/profile/bio_text_box.dart';
 import 'package:dash/widgets/profile/profile_activity_sections.dart';
 import 'package:dash/widgets/profile/profile_badge_section.dart';
 import 'package:dash/widgets/profile/profile_header.dart';
+import 'package:dash/widgets/profile/profile_statistics_section.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
@@ -27,6 +31,9 @@ class ProfilePage extends StatefulWidget {
   /// Injectable for tests, each defaulting to the real thing, so no call
   /// site changes. Mirrors `PublicProfilePage`'s seam set — the two screens
   /// are twins and should stay testable the same way.
+  
+  final bool isStandalone;
+
   @visibleForTesting
   final FirebaseFirestore? firestore;
   @visibleForTesting
@@ -60,6 +67,7 @@ class ProfilePage extends StatefulWidget {
 
   const ProfilePage({
     super.key,
+    this.isStandalone = false,
     this.firestore,
     this.auth,
     this.badgeService,
@@ -175,6 +183,10 @@ class _ProfilePageState extends State<ProfilePage> {
                     badges: _badges,
                     userId: _auth.currentUser!.uid
                   ),
+                  ProfileStatisticsSection(
+                    userId: _auth.currentUser!.uid,
+                    firestore: widget.firestore,
+                  ),
                   ProfileActivitySections(
                     sessionRepository: widget.sessionRepository,
                     routeRepository: widget.routeRepository,
@@ -187,6 +199,16 @@ class _ProfilePageState extends State<ProfilePage> {
               ),
             ),
           ),
+
+      bottomNavigationBar: widget.isStandalone
+        ? DashNavigationbar(
+            selectedIndex: 2,
+            onDestinationSelected: (index) {
+              Navigator.popUntil(context, (route) => route.isFirst);
+              RootScreen.tabNotifier.value = index;
+            },
+          )
+        : null,
     );
   }
 

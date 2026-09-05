@@ -16,6 +16,8 @@ class RootScreen extends StatefulWidget {
 
   static bool isIntentionalLogout = false;
 
+  static final ValueNotifier<int> tabNotifier = ValueNotifier<int>(1);
+
   @override
   State<RootScreen> createState() => _RootScreenState();
 }
@@ -36,6 +38,8 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _currentIndex = RootScreen.tabNotifier.value;
+
     WidgetsBinding.instance.addObserver(this);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -44,13 +48,17 @@ class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
 
     _startAuthWatcher();
     _startRealtimeAccountWatcher();
+
+    RootScreen.tabNotifier.addListener(_onTabChanged);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _profileSub?.cancel();
-    _authSub?.cancel(); // Clean up auth listener
+    _authSub?.cancel();
+
+    RootScreen.tabNotifier.removeListener(_onTabChanged);
     super.dispose();
   }
 
@@ -194,6 +202,14 @@ void _redirectToProfileSetup() {
     );
   }
 
+  void _onTabChanged() {
+    if (mounted && _currentIndex != RootScreen.tabNotifier.value) {
+      setState(() {
+        _currentIndex = RootScreen.tabNotifier.value;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // THE LIFESAVER
@@ -215,9 +231,7 @@ void _redirectToProfileSetup() {
         onDestinationSelected: (index) {
           _verifyAccountIntegrity(); 
           
-          setState(() {
-            _currentIndex = index;
-          });
+          RootScreen.tabNotifier.value = index;
         },
       ),
     );

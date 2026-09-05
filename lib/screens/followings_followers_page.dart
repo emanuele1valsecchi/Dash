@@ -2,7 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dash/extensions/dash_snackbar.dart';
 import 'package:dash/extensions/responsive_border_radius.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
-import 'package:dash/screens/public_profile_page.dart';
+import 'package:dash/utils/profile_navigator.dart';
 import 'package:dash/widgets/dash_action_button.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:dash/widgets/dash_user_tile.dart';
@@ -321,14 +321,7 @@ class _UserTileWrapper extends StatelessWidget {
                 surname: surname,
                 email: email,
                 profileImageUrl: profileImageUrl,
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => PublicProfilePage(userId: targetUserId),
-                    ),
-                  );
-                },
+                onTap: () => ProfileNavigation.openProfile(context, targetUserId),
                 trailingIcon: !isSelf
                     ? DashActionButton(
                         icon: isFollowing ? Symbols.person_remove_rounded : Symbols.person_add_rounded,

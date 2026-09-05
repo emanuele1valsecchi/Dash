@@ -1,4 +1,4 @@
-import 'package:dash/screens/public_profile_page.dart';
+import 'package:dash/utils/profile_navigator.dart';
 import 'package:dash/utils/session_leaderboards.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
@@ -253,14 +253,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                         const Color(0xFFCD7F32);
 
     return GestureDetector(
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute<void>(
-            builder: (context) => PublicProfilePage(userId: entry.userId,)
-          ),
-        );
-      },
+      onTap: () => ProfileNavigation.openProfile(context, entry.userId),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
@@ -331,14 +324,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
 
   Widget _buildListItem(LeaderboardEntry entry) {
     return InkWell(
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute<void>(
-            builder: (context) => PublicProfilePage(userId: entry.userId,)
-          ),
-        );
-      },
+      onTap: () => ProfileNavigation.openProfile(context, entry.userId),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
         child: Row(

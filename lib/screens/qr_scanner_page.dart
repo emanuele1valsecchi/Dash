@@ -1,7 +1,7 @@
 import 'package:dash/extensions/responsive_border_radius.dart';
 import 'package:dash/extensions/responsive_spacing.dart';
-import 'package:dash/screens/public_profile_page.dart';
 import 'package:dash/utils/profile_link.dart';
+import 'package:dash/utils/profile_navigator.dart';
 import 'package:dash/widgets/dash_navigation_top_bar.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -134,12 +134,11 @@ class _QrScannerPageState extends State<QrScannerPage> {
 
       _controller?.stop();
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => PublicProfilePage(userId: scannedUserId),
-        ),
-      );
+      // `replace`, so backing out of the profile returns to whatever opened
+      // the scanner rather than to a live camera that would re-scan the same
+      // code. `openProfile` also sends you to your *own* profile if you scan
+      // your own link, which a bare `PublicProfilePage` push would not.
+      ProfileNavigation.openProfile(context, scannedUserId, replace: true);
       return;
     }
   }

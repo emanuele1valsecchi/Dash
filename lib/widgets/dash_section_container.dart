@@ -7,7 +7,7 @@ class DashSectionContainer extends StatelessWidget{
 
   final IconData? leadingIcon;
   final bool leadingIconFilled;
-  final String title;
+  final String? title;
   final bool hasForwardIcon;
 
   final bool _applyFadingEdge;
@@ -34,11 +34,20 @@ class DashSectionContainer extends StatelessWidget{
     required this.child, 
   }): _applyFadingEdge = true;
 
+  const DashSectionContainer.noTitle({
+    super.key, 
+    this.onTap,
+    required this.child, 
+  }): leadingIcon = null, leadingIconFilled = false, title = null, hasForwardIcon = false, _applyFadingEdge = false;
+
+  const DashSectionContainer.noTitleFadeEdge({
+    super.key, 
+    this.onTap,
+    required this.child, 
+  }): leadingIcon = null, leadingIconFilled = false, title = null, hasForwardIcon = false, _applyFadingEdge = true;
+
   @override
   Widget build(BuildContext context) {
-    final TextStyle textStyle = Theme.of(context).textTheme.titleMedium!;
-    final Color headerColor = Theme.of(context).colorScheme.secondary;
-
     Widget finalChild = child;
 
     if( _applyFadingEdge ){
@@ -76,27 +85,39 @@ class DashSectionContainer extends StatelessWidget{
           crossAxisAlignment: CrossAxisAlignment.start,
           spacing: ResponsiveSpacing().md,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.start,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              spacing: ResponsiveSpacing().sm,
-              children: [
-                ?_buildLeadingIcon(textStyle, headerColor),
-                Text(
-                  title,
-                  style: textStyle.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: headerColor
-                  ),
-                ),
-                Spacer(),
-                if (hasForwardIcon) _buildForwardIcon(headerColor, textStyle)
-              ],
-            ),
+            ?_buildTopRow(context),
             finalChild
           ],
         )
       ),
+    );
+  }
+
+  Widget? _buildTopRow(BuildContext context){
+    
+    final TextStyle textStyle = Theme.of(context).textTheme.titleMedium!;
+    final Color headerColor = Theme.of(context).colorScheme.secondary;
+
+    if( title == null || title == ""){
+      return null;
+    }
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      spacing: ResponsiveSpacing().sm,
+      children: [
+        ?_buildLeadingIcon(textStyle, headerColor),
+        Text(
+          title!,
+          style: textStyle.copyWith(
+            fontWeight: FontWeight.bold,
+            color: headerColor
+          ),
+        ),
+        Spacer(),
+        if (hasForwardIcon) _buildForwardIcon(headerColor, textStyle)
+      ],
     );
   }
 

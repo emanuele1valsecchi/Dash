@@ -1,9 +1,9 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:dash/utils/profile_navigator.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 
-import '../../screens/public_profile_page.dart';
 import '../../screens/run_session_detail_page.dart';
 import '../../services/claimed_area_repository.dart';
 import '../../services/profile_service.dart';
@@ -217,17 +217,6 @@ class _AreaDetailsSheetState extends State<AreaDetailsSheet> {
     );
   }
 
-  /// Opens the owner's profile. The name is the obvious thing to tap once you
-  /// are looking at "whose territory is this", and this sheet is the only
-  /// place on the map where a stranger's identity is spelled out.
-  void _openOwnerProfile() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PublicProfilePage(userId: widget.area.userId),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final area = widget.area;
@@ -273,7 +262,7 @@ class _AreaDetailsSheetState extends State<AreaDetailsSheet> {
                   Expanded(
                     child: GestureDetector(
                       behavior: HitTestBehavior.opaque,
-                      onTap: _openOwnerProfile,
+                      onTap: () => ProfileNavigation.openProfile(context, widget.area.userId),
                       child: Row(
                         children: [
                           Flexible(
