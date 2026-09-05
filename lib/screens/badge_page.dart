@@ -14,10 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 class BadgePage extends StatefulWidget {
   final String userId;
 
-  /// Injectable for tests, defaulting to what the app already uses, so no
-  /// call site changes. Badge *progress* is a live `snapshots()` query, which
-  /// `FakeFirebaseFirestore` supports — so a test can seed progress rows and
-  /// watch the grid react.
+  // Injectable for tests, defaulting to what the app already uses, so no
   final BadgeService? badgeService;
   final FirebaseFirestore? firestore;
 

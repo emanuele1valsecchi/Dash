@@ -14,12 +14,10 @@ void main() {
 /// Dash's Wear OS companion.
 ///
 /// Driven by [PhoneRelayStatsSource] — live data relayed from the phone over
-/// the Wearable Data Layer. Swap in [FakeRunStatsSource] to develop the screens
-/// without a phone in the room; nothing else changes, because every screen is
-/// written against the [RunStatsSource] interface rather than a transport.
-///
-/// A standalone local-GPS source, for recording with the phone left at home,
-/// slots into the same place later.
+/// the Wearable Data Layer — or by the watch's own GPS when there is no phone
+/// to relay from. Nothing else changes between the two, because every screen
+/// is written against the [RunStatsSource] interface rather than a transport,
+/// and [WatchRunCoordinator] presents whichever is active as that interface.
 class DashWearApp extends StatefulWidget {
   const DashWearApp({super.key});
 

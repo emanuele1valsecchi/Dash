@@ -1,3 +1,7 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
 
@@ -12,10 +16,13 @@ import 'package:dash_wear/standalone_recorder.dart';
 /// two drift apart, the same run reads as two different distances depending
 /// on which device recorded it.
 ///
-/// Nothing here touches the file on disk: the persistence half goes through
-/// `getApplicationDocumentsDirectory`, which needs a platform channel. What
-/// is covered is everything that decides *what would be written*.
+/// The file half is covered too, through a mocked `path_provider` writing
+/// into a temp directory. It matters as much as the filtering: a standalone
+/// run exists nowhere but that file until the phone acknowledges it, so every
+/// branch around it is one where a real run is either kept or lost.
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   late StandaloneRecorder recorder;
 
   setUp(() => recorder = StandaloneRecorder());
@@ -235,4 +242,150 @@ void main() {
       expect(recorder.hasLostGps, isFalse);
     });
   });
+
+  // ── The pending run on disk ───────────────────────────────────────────────
+  //
+  // A standalone run exists nowhere else until the phone acknowledges it, so
+  // every branch here is a branch where a real run is either kept or lost.
+
+  group('the pending run file', () {
+    late Directory tempDir;
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('dash_recorder_test');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const MethodChannel('plugins.flutter.io/path_provider'),
+        (call) async => tempDir.path,
+      );
+    });
+
+    tearDown(() async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+              const MethodChannel('plugins.flutter.io/path_provider'), null);
+      if (await tempDir.exists()) await tempDir.delete(recursive: true);
+    });
+
+    File file() => File('${tempDir.path}/standalone_run.json');
+
+    Future<void> writeRun(Object? contents) =>
+        file().writeAsString(contents is String ? contents : jsonEncode(contents));
+
+    test('nothing pending reads as null, not as an error', () async {
+      // The ordinary case on every launch. An exception here would surface as
+      // a broken app rather than as "no run waiting".
+      expect(await StandaloneRecorder.readPending(), isNull);
+    });
+
+    test('a stored run is read back', () async {
+      await writeRun({'distanceMeters': 5000.0, 'fixes': <Object?>[]});
+
+      final pending = await StandaloneRecorder.readPending();
+
+      expect(pending, isNotNull);
+      expect(pending!['distanceMeters'], 5000.0);
+    });
+
+    test('an unreadable file reads as null rather than throwing', () async {
+      // A half-written file after a battery death. Losing the run is bad;
+      // taking the app down with it on every launch is worse.
+      await writeRun('{not json');
+
+      expect(await StandaloneRecorder.readPending(), isNull);
+    });
+
+    test('a file that is not an object reads as null', () async {
+      await writeRun([1, 2, 3]);
+
+      expect(await StandaloneRecorder.readPending(), isNull);
+    });
+
+    test('marking it sent records when, without touching the run', () async {
+      // `sentAt` is what makes a run eligible for the automatic retry; the
+      // run itself has to survive intact underneath it.
+      await writeRun({'distanceMeters': 5000.0});
+
+      await StandaloneRecorder.markSent();
+
+      final pending = (await StandaloneRecorder.readPending())!;
+      expect(pending['sentAt'], isNotNull);
+      expect(pending['distanceMeters'], 5000.0);
+    });
+
+    test('marking a run that is not there does nothing', () async {
+      await StandaloneRecorder.markSent();
+
+      expect(await StandaloneRecorder.readPending(), isNull);
+    });
+
+    test('a run is not "sent" until it has been', () async {
+      await writeRun({'distanceMeters': 5000.0});
+
+      expect(await StandaloneRecorder.wasSent(), isFalse);
+      await StandaloneRecorder.markSent();
+      expect(await StandaloneRecorder.wasSent(), isTrue);
+    });
+
+    test('with nothing pending, nothing was sent', () async {
+      expect(await StandaloneRecorder.wasSent(), isFalse);
+    });
+
+    test('clearing removes it', () async {
+      // Called only once the phone confirms it stored the run — clearing on
+      // send would lose runs whenever a transfer failed halfway.
+      await writeRun({'distanceMeters': 5000.0});
+
+      await StandaloneRecorder.clearPending();
+
+      expect(file().existsSync(), isFalse);
+      expect(await StandaloneRecorder.readPending(), isNull);
+    });
+
+    test('clearing nothing is not an error', () async {
+      await StandaloneRecorder.clearPending();
+
+      expect(await StandaloneRecorder.readPending(), isNull);
+    });
+
+    test('stopping a run writes it, fixes and all', () async {
+      // The whole point of the file: a run that has ended but not yet
+      // reached the phone is still on the watch.
+      recorder.onPosition(fix());
+      recorder.onPosition(
+          fix(latitude: northOf(20), after: const Duration(seconds: 10)));
+      recorder.setHeartRate(average: 142, max: 175);
+
+      await recorder.stop();
+
+      final pending = (await StandaloneRecorder.readPending())!;
+      expect((pending['fixes'] as List), hasLength(2));
+      expect(pending['distanceMeters'], closeTo(20, 2));
+      expect(pending['avgHeartRateBpm'], 142);
+      expect(pending['maxHeartRateBpm'], 175);
+    });
+
+    test('a stopped run is not yet marked sent', () async {
+      recorder.onPosition(fix());
+
+      await recorder.stop();
+
+      expect(await StandaloneRecorder.wasSent(), isFalse,
+          reason: 'finishing a run does not hand it over');
+    });
+
+    test('the stored fixes survive a round trip', () async {
+      recorder.onPosition(fix(altitude: 137.5));
+      await recorder.stop();
+
+      final pending = (await StandaloneRecorder.readPending())!;
+      final fixes = (pending['fixes'] as List)
+          .map((f) => RecordedFix.fromJson((f as Map).cast<String, Object?>()))
+          .toList();
+
+      expect(fixes.single.altitude, 137.5);
+      expect(fixes.single.time, start);
+    });
+  });
+
 }

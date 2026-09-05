@@ -18,8 +18,8 @@ class LeaderboardPreviewData {
   final int position;
   final int points;
   final String? variation;
-  final String city; // Nuova aggiunta
-  final List<PreviewPin> pins; // Nuova aggiunta
+  final String city; 
+  final List<PreviewPin> pins; 
 
   const LeaderboardPreviewData({
     required this.position,
