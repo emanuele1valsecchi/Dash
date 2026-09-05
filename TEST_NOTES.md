@@ -412,7 +412,151 @@ differ, and arrange that — do not just add another assertion.
 
 ---
 
+### 1.18 A printed exception is not a failing test — but check what the test asserts
+
+`flutter test` prints a lot of `Exception: denied` / `Could not load ...`
+lines while passing. Those are **`debugPrint` from the app's own `catch` and
+`onError` handlers**, in tests that inject the failure deliberately to prove
+the screen degrades instead of dying. They are not escaping errors: an
+unhandled exception fails a Flutter test automatically, so if one of these
+were genuinely uncaught the test would be red, not chatty. Several of them
+only pass *because* the guard exists — a `snapshots()` stream reports failure
+by erroring, so removing the `onError` on `route_create_page`'s claimed-area
+subscription turns that test red immediately.
+
+**But the print proves the failure was injected, not that the assertion is
+worth anything.** Reviewing the five noisiest, four asserted something a bug
+would break; one did not:
+
+`profile_page_test`'s "a failed run load does not stop the routes loading"
+asserted `takeException() isNull` and `verify(fetchUserRoutes()).called(1)`.
+Both hold under the exact bug the test is named after — a shared `_failed`
+flag still calls `fetchUserRoutes`, it just discards the result. Confirmed by
+reintroducing the shared flag: the sibling test in
+`profile_activity_sections_test.dart` went red, this one stayed green.
+
+Rewritten to seed a route, delay the run failure so it lands *after* the
+routes succeed (per 1.17), and assert exactly one "Could not load" alongside a
+surviving `DashRouteCard`. Now fails against the mutation.
+
+**"Verify the collaborator was called" is the weak form of this assertion.**
+Independence is about what happens to the *result*, so assert on what
+rendered.
+
 ---
+
+### 1.19 Auditing the suite against its own worst case
+
+Prompted by the right question — *are we testing, or just catching the
+exceptions the app throws?* Two checks, both worth repeating periodically.
+
+**Check 1: how many tests assert nothing but the absence of a crash.**
+
+    32 of 1406 bodies (2.3%) have `takeException()` as their only assertion.
+
+Most are legitimate: `dash_badge`'s out-of-range progress, disposal tests,
+`enhanced_map_gestures` disposing mid-gesture. There "it does not throw" *is*
+the behaviour. Three were not, and all three named a behaviour they never
+checked:
+
+| Test | Would also have passed if… |
+|---|---|
+| `home_page` "an older run is not counted in this month" | every run ever were counted |
+| `leaderboard_preview_card` "draws a pin per runner" | no pins were drawn |
+| `leaderboard_section` "swiping moves to the next board" | swiping did nothing |
+
+All three rewritten to assert the rendered value. `hitTestable()` matters for
+the third: a `PageView` keeps its neighbour in the tree, so a plain
+`find.text` matches both pages however little the swipe did.
+
+**Check 2: break real feature code and see whether the suite notices.**
+Five mutations in app logic rather than error handling:
+
+| Mutation | First run |
+|---|---|
+| monthly stats ignore the 30-day window | **survived** |
+| loop closure reports the smallest loop, not the biggest | **survived** |
+| polygon area doubled (shoelace missing its halving) | caught |
+| area formatting loses its precision scaling | caught |
+| GPS simplification also applied to scoring geometry | caught |
+
+The second survivor is the serious one. **`GeometryUtils.findLoopClosureIndex`
+had no direct test at all** — it was reached only through
+`RunSessionController`, whose fixtures each contain a single qualifying
+closure point, so nearest and farthest are the same index and the two
+opposite rules are indistinguishable. That function decides how much ground a
+live run claims and how much XP it earns, and returning the nearest closure
+is a documented, field-reported bug class.
+
+Fixed by `test/unit_test/loop_closure_test.dart` (10 tests). The fixture that
+does the work is a 300 m lap followed by an 80 m lap from the same corner, so
+the trail passes its own start twice; the assertion is in **square metres, not
+indices**, because area is the unit the mistake is felt in — 96 400 m² claimed
+versus 6 400 m². All five mutations are caught now.
+
+**The lesson is about fixtures, not coverage.** Both survivors sat on lines
+the suite executes on nearly every run. Line coverage cannot see either of
+them; only a fixture built to separate two candidate behaviours can.
+
+---
+
+---
+
+
+### 1.20 A surviving mutation is not always a weak test
+
+Route creation closes a loop two independent ways: tapping back near an
+earlier waypoint snaps to it (`_routeAndCloseAtWaypoint`), and any new
+segment is separately checked for crossing the existing route
+(`_checkSelfIntersection`). Disabling the snap check entirely — `if (false)`
+on its distance test — left every test in
+`route_create_page_test.dart` green, including one written specifically to
+close a loop by snapping.
+
+Three fixtures were tried before concluding anything:
+
+| Fixture | Result |
+| --- | --- |
+| Tap the first pin's exact coordinate to close a square | survives — self-intersection finds the same loop |
+| Tap a *middle* pin, where the closing leg shares a pin rather than crossing | survives |
+| Tap 25 m off that middle pin, inside the 40 m snap radius | survives |
+
+The third is the one that settles it. A non-snapping tap 25 m away leaves the
+closing leg ending 25 m from the waypoint, and the crossing search *still*
+finds the loop — its vertex-proximity tolerance is wider than that. So both
+mechanisms genuinely cover the same ground, and removing one changes nothing
+the user can see.
+
+That makes it an **equivalent mutant**: the code differs, the behaviour does
+not. It is a property of the app — deliberate redundancy — not a hole in the
+suite, and no fixture can catch it without asserting on internals the screen
+does not expose. The same applies to the guard that stops the route *tip*
+counting as a snap target: `RouteLoops` rejects the degenerate loop that
+would produce, so the guard is defence in depth behind a layer that has its
+own tests.
+
+**The lesson is the reverse of 1.16, and both are true.** A survivor is worth
+chasing until you can say precisely why it survived. Sometimes the answer is
+a vacuous test (1.16, 1.17); sometimes it is that two code paths really do
+mean the same thing. What is not acceptable is leaving it unexplained, or
+contorting a fixture until it goes red by accident — an assertion tuned to
+trip on a mutation it does not really distinguish is worse than no assertion,
+because it looks like proof.
+
+Three of the five mutations in that run *were* caught, and two of those only
+after the tests were strengthened: deleting a middle pin was checked on pin
+count alone (blind to a stale leg left spanning the gap — `segmentCount` was
+added for exactly this), and nothing exercised the guard that stops a delete
+racing an in-flight route (`routingHangs`, a `Completer` that never
+completes, since an unfinished `Future.delayed` is a pending timer and fails
+the test on teardown).
+
+One test in the same batch had to be deleted rather than fixed: "tapping a
+pin does nothing while the delete tool is not selected" asserted a behaviour
+the app does not have. Outside delete mode a pin handles no taps at all, so
+one falls through to the map and places a *new* pin — correct, and the
+opposite of what the test claimed. It was replaced with the real contract:
+the delete affordance is not offered until the tool is selected.
 
 ## 2. Bugs the tests actually found
 
@@ -429,6 +573,8 @@ differ, and arrange that — do not just add another assertion.
 | **Two more unguarded `async void` badge loads** — `ProfilePage._startBadgesStream` and `HomePage._startBadgesStream` both awaited their badge read with no try/catch, so a failure escaped as an unhandled async error instead of costing only the badges. The third and fourth copies of the bug already fixed in `public_profile_page.dart` and `badge_page.dart`, and realistic rather than hypothetical: this read was denied outright before the `badge_progress` rule was widened. | `profile_page.dart`, `home_page.dart` | **Both fixed** — same guard as the twins. Each pinned by a "a failed badge read does not take the page down" test, confirmed failing first. |
 | **A signed-out user was stuck on a permanent spinner** on Push Notification settings. `_loadPreferences` returns early when there is no uid — but that `return` sits *above* the `try`, so the `finally` that clears `_isLoading` never ran. | `notification_settings_page.dart` | **Fixed** — clears the loading flag before returning. Pinned by "a signed-out user is not left on a spinner forever", which fails with `pumpAndSettle timed out` before the fix. |
 | **Magic-byte sniffing on profile-picture upload did not actually reject arbitrary content.** `lookupMimeType(fileName, headerBytes: ...)` tries the magic number *first* and, when it matches nothing, **falls back to the path's extension** — so a file of arbitrary bytes named `avatar.png` resolved to `image/png`, passed the allow-list, and then matched itself in the extension/content cross-check. A real JPEG mislabelled `.png` *was* caught (its magic resolves to a different known type), which is why the control looked like it worked. | `image_upload_service.dart` | **Fixed** — sniff with an empty path (`lookupMimeType('', headerBytes: ...)`) so there is no extension to fall back to. Verified first that every allowed format is magic-detectable, HEIC included, so nothing legitimate is lost. |
+| **A failed claimed-areas load escaped as an unhandled async error, on every map screen.** `areasStream()` is a Firestore `snapshots()` stream, which reports failure by *erroring* rather than by completing, and none of the four `listen` calls passed an `onError`. A permission change or a network blip therefore took the error out of the screen instead of costing only the territory overlay. Same class as the unguarded `async void` badge loads. | `route_create_page.dart`, `explore_page.dart`, `route_search_page.dart` | **Fixed in all three** — each degrades to "no overlay" and logs. `test_run_creator_page.dart` has it too and was left alone: it is being deleted. Each guard is pinned by a test that fails without it. |
+| **A fail-fast `Future.wait` discarded a list that had already loaded.** `SavedRoutesSection` read owned routes and favourites together and awaited both with one `Future.wait` behind a single `_failed` flag. `Future.wait` fails fast, so a permission error on either — different collections, different rules — threw away the other's result and showed both lists empty. Exactly the bug already fixed in `ProfileActivitySections`; this was the second copy. | `saved_routes_section.dart` | **Fixed** — the two settle independently, with a flag each so whichever finishes second cannot clear the other's failure. Pinned by the two "does not blank" tests, both confirmed failing first. |
 | "Badge progress off by 100x" | — | **Not real.** See below. |
 | Two "overflow" bugs | — | **Not real.** See 1.2. |
 
@@ -717,10 +863,10 @@ rather than treated as parity work.
 
 ### High value
 
-1. **`lib/screens/` is ~4% covered and is 7,528 lines — 62% of the codebase.**
-   Every screen that reaches Firebase directly (27 of them) needs the same
-   constructor-injection treatment `LoginScreen` and `RegisterScreen` now have
-   before its success paths are reachable.
+1. ~~**`lib/screens/` is ~4% covered**~~ — **stale, now 53.9%** and every
+   screen that reaches Firebase directly has the constructor-injection
+   treatment. What remains is concentrated in two files: `route_search_page`
+   (908 uncovered) and `route_create_page` (475 uncovered, see below).
 2. ~~**`functions/_verify_*.js` are not tests in any runner's sense**~~ —
    **done (2026-09-04).** All four were ported to `node:test` under
    `functions/test/`, run with `npm test` in `functions/`, and now exit
@@ -741,6 +887,61 @@ rather than treated as parity work.
 
    `functions/test/` is in `firebase.json`'s functions `ignore` list — without
    that entry the suite is uploaded with every deploy.
+
+### Coverage that stops deliberately short
+
+- **`route_create_page.dart` is at 43.7% and that is the end of what a widget
+  test can reach.** 19 tests (`route_create_page_test.dart`, 6/6 mutations
+  caught) cover the tool gating, the undo/redo stack, pin placement and its
+  ORS round trip, and the claimed-areas failure path.
+
+  The remaining ~475 lines are the three gesture pipelines: freehand drawing
+  (a `Listener` overlay capturing a raw stroke, then a chain of ORS calls),
+  the pin drag-to-edit flow, and the camera flight animations. All three need
+  real pointer sequences against a live map camera with a real projection —
+  a synthetic tap on `FlutterMap` runs its own recognizers and yields a
+  coordinate derived from the camera, so a test driving them would be
+  asserting on flutter_map rather than on this screen.
+
+  Two honest routes to more: an integration test on a device, or a further
+  extraction in the shape of `RouteLoops` — pulling the stroke-to-waypoints
+  and pin-move-to-segments logic out into pure functions. The geometry those
+  pipelines *use* is already covered (`route_loops_test`,
+  `drawn_route_converter_test`, `routing_service_test`); what is uncovered is
+  the gesture plumbing around it.
+
+  **Map taps in this file go through `MapOptions.onTap`, not a synthetic tap
+  on the widget** — same reason as above. Worth copying for any other map
+  screen.
+
+- **`route_search_page.dart`'s strategy was extracted, not left untested.**
+  The earlier note here claimed the remaining lines were `RoutingService`'s
+  and already covered. That was wrong: `RoutingService` provides only the
+  transport primitives, and the *strategy* lived in the screen with no tests.
+
+  It is now `lib/utils/route_candidates.dart` — **100% covered, 35 tests,
+  7/7 mutations caught**: `enclosesRealArea` (rejects the out-and-back whose
+  shoelace area cancels — a reported field bug), `dedupeSimilar` (both halves
+  required: same length *and* same place), `deriveTarget` (the conflict
+  tolerance and the single unit-conversion boundary), `totalKm` (the laps
+  multiplication), `offset` and `polylineCentroid`.
+
+  The screen itself keeps 16 wizard tests and sits at ~35%. What is still
+  uncovered there is map building, the bottom sheet, camera animation and the
+  async `_generate*` orchestration that chains ORS calls — the *decisions*
+  those make are now in `RouteCandidates`.
+
+- **`notifications_page.dart` stops at 82.1% deliberately.** Its remaining
+  ~25 lines are the tap-routing branches, which push six different real
+  screens (`PublicProfilePage`, `RunSessionDetailPage`,
+  `SavedRouteDetailPage`, `ExplorePage`, `LeaderboardScreen`, `BadgePage`).
+  Every *guard* — the cases where a notification names a destination it
+  cannot open and the tap must be inert — is already tested. Covering the
+  navigation itself would mean six destination seams to assert "it pushed the
+  right page", which is disproportionate to what it would catch.
+
+  Every routing call in that file is stubbed to **fail** by default, so no
+  test can come to depend on a route being found without saying so.
 
 ### Medium
 

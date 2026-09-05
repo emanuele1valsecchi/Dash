@@ -61,7 +61,23 @@ class SavedRoutesSectionState extends State<SavedRoutesSection> {
   static const double _cardHeightFactor = 0.24;
 
   bool _loading = true;
-  bool _failed = false;
+
+  /// One flag per list, not one for the section. The two come from different
+  /// collections with different rules — `routes` is owner-scoped, while a
+  /// favourite is a link in `favoriteRoutes` — so a permission error on one
+  /// says nothing about the other. Sharing a flag behind a fail-fast
+  /// `Future.wait` reported "Could not load" over *both* lists even when one
+  /// had already come back fine, and discarded that good result. Same bug,
+  /// same fix, as `ProfileActivitySections`.
+  ///
+  /// Two flags rather than one even though a single banner reads both: with
+  /// one shared flag, whichever loader settled *second* would clear the
+  /// other's failure on its way past, so a failed list could silently stop
+  /// reporting itself depending on which read happened to be slower.
+  bool _ownedFailed = false;
+  bool _favoritesFailed = false;
+
+  bool get _failed => _ownedFailed || _favoritesFailed;
 
   List<SavedRoute> _owned = const [];
   List<SavedRoute> _favorites = const [];
@@ -86,28 +102,42 @@ class SavedRoutesSectionState extends State<SavedRoutesSection> {
   }
 
   Future<void> _load() async {
+    // Run in parallel but settle independently: `Future.wait` fails fast, so
+    // one rejected read would discard the other's result even after it had
+    // already succeeded.
+    await Future.wait([_loadOwned(), _loadFavorites()]);
+    if (!mounted) return;
+    setState(() => _loading = false);
+  }
+
+  Future<void> _loadOwned() async {
     try {
-      final results = await Future.wait([
-        _routeRepo.fetchUserRoutes(),
-        _favoriteRepo.fetchFavorites(),
-      ]);
+      final owned = await _routeRepo.fetchUserRoutes();
       if (!mounted) return;
       setState(() {
-        _owned = results[0];
-        _favorites = results[1];
-        _loading = false;
-        _failed = false;
+        _owned = owned;
+        _ownedFailed = false;
+      });
+    } catch (e) {
+      debugPrint('Could not load saved routes: $e');
+      if (mounted) setState(() => _ownedFailed = true);
+    }
+  }
+
+  Future<void> _loadFavorites() async {
+    try {
+      final favorites = await _favoriteRepo.fetchFavorites();
+      if (!mounted) return;
+      setState(() {
+        _favorites = favorites;
+        _favoritesFailed = false;
       });
       // Fire-and-forget: a card renders fine with no author line.
       RouteAuthorService.instance
           .ensureLoaded(_favorites.map((r) => r.sourceSessionId));
     } catch (e) {
-      debugPrint('Could not load saved routes: $e');
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _failed = true;
-      });
+      debugPrint('Could not load favourite routes: $e');
+      if (mounted) setState(() => _favoritesFailed = true);
     }
   }
 

@@ -438,4 +438,59 @@ void main() {
       expect(auth.currentUser, isNotNull);
     });
   });
+
+  group('change password', () {
+    // A reset email is the whole flow — the app never handles the password
+    // itself, which is why this is one tap and not a form.
+    testWidgets('sends a reset email to the signed-in address',
+        (tester) async {
+      await pumpPage(tester);
+
+      await tester.tap(find.text('Change Password'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Password reset email sent!'), findsOneWidget);
+    });
+
+    testWidgets('says so when it could not be sent', (tester) async {
+      // Offline, or a rate limit on the auth backend. Silence would read as
+      // "sent", and the user would sit waiting for an email that never
+      // arrives.
+      final failing = MockFirebaseAuth(
+        signedIn: true,
+        mockUser: MockUser(uid: 'me', email: 'me@example.com'),
+      );
+      whenCalling(Invocation.method(#sendPasswordResetEmail, null))
+          .on(failing)
+          .thenThrow(Exception('network'));
+      await pumpPage(tester, withAuth: failing);
+
+      await tester.tap(find.text('Change Password'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Error'), findsOneWidget);
+      expect(find.text('Password reset email sent!'), findsNothing);
+    });
+
+    testWidgets('an account with no email address sends nothing',
+        (tester) async {
+      // A Google account can reach this page without an email on the
+      // credential; there is nowhere to send a reset to.
+      await pumpPage(
+        tester,
+        withAuth: MockFirebaseAuth(
+          signedIn: true,
+          mockUser: MockUser(uid: 'me', email: ''),
+        ),
+      );
+
+      await tester.tap(find.text('Change Password'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Password reset email sent!'), findsNothing);
+      expect(find.textContaining('Error'), findsNothing,
+          reason: 'nothing was attempted, so nothing failed');
+    });
+  });
+
 }

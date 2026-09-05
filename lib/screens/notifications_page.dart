@@ -97,7 +97,40 @@ class NotificationsScreen extends StatefulWidget {
   @visibleForTesting
   final FirebaseAuth? auth;
 
-  const NotificationsScreen({super.key, this.firestore, this.auth});
+  /// Test seams for the six places a notification can lead.
+  ///
+  /// Which destination a tap opens *is* this screen's logic — the switch on
+  /// `NotificationType`, and the guards that decide when a notification is
+  /// inert. None of it is assertable while a tap builds the real page, since
+  /// every destination stands up its own Firebase-backed world (a live map,
+  /// a leaderboard query, a route document). Substituting the destination
+  /// makes the decision testable without touching it. Same pattern as
+  /// `SearchFriendPage`'s `profilePageBuilder`; production leaves all null.
+  @visibleForTesting
+  final Widget Function(String userId)? profilePageBuilder;
+  @visibleForTesting
+  final Widget Function(String sessionId, String userId)? runDetailPageBuilder;
+  @visibleForTesting
+  final Widget Function(String routeId, String? authorName)?
+      routeDetailPageBuilder;
+  @visibleForTesting
+  final Widget Function(String? sessionId)? explorePageBuilder;
+  @visibleForTesting
+  final Widget Function(String cityFilter)? leaderboardPageBuilder;
+  @visibleForTesting
+  final Widget Function(String userId)? badgePageBuilder;
+
+  const NotificationsScreen({
+    super.key,
+    this.firestore,
+    this.auth,
+    this.profilePageBuilder,
+    this.runDetailPageBuilder,
+    this.routeDetailPageBuilder,
+    this.explorePageBuilder,
+    this.leaderboardPageBuilder,
+    this.badgePageBuilder,
+  });
 
   @override
   State<NotificationsScreen> createState() => _NotificationsScreenState();
@@ -196,7 +229,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             if (actorId != null && actorId.isNotEmpty && actorId != 'system') {
               Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (_) => PublicProfilePage(userId: actorId),
+                  builder: (_) =>
+                      widget.profilePageBuilder?.call(actorId) ??
+                      PublicProfilePage(userId: actorId),
                 ),
               );
             }
@@ -205,18 +240,21 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           case NotificationType.routeSaved:
           case NotificationType.newRoutePublished:
           case NotificationType.routeRunFaster:
-            
-            // CASE 1: RUNNING SESSION 
+
+            // CASE 1: RUNNING SESSION
             if (item.sessionId != null && item.sessionId!.isNotEmpty) {
               Navigator.of(context).push(
                 MaterialPageRoute(
-                  builder: (_) => RunSessionDetailPage(
-                    sessionId: item.sessionId!,
-                    userId: item.actorId ?? '', 
-                  ),
+                  builder: (_) =>
+                      widget.runDetailPageBuilder
+                          ?.call(item.sessionId!, item.actorId ?? '') ??
+                      RunSessionDetailPage(
+                        sessionId: item.sessionId!,
+                        userId: item.actorId ?? '',
+                      ),
                 ),
               );
-            } 
+            }
             // CASE 2: IT'S A SAVED/PLANNED ROUTE
             else if (item.routeId != null && item.routeId!.isNotEmpty) {
               try {
@@ -236,11 +274,18 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
                   Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) => SavedRouteDetailPage(
-                        route: route,
-                        source: RouteSource.owned,
-                        authorName: item.boldText.isNotEmpty ? item.boldText : null,
-                      ),
+                      builder: (_) =>
+                          widget.routeDetailPageBuilder?.call(
+                            routeDoc.id,
+                            item.boldText.isNotEmpty ? item.boldText : null,
+                          ) ??
+                          SavedRouteDetailPage(
+                            route: route,
+                            source: RouteSource.owned,
+                            authorName: item.boldText.isNotEmpty
+                                ? item.boldText
+                                : null,
+                          ),
                     ),
                   );
                 }
@@ -254,7 +299,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             if (item.sessionId != null) {
               Navigator.of(context).push(
                 MaterialPageRoute(
-                  builder: (_) => ExplorePage(targetSessionId: item.sessionId),
+                  builder: (_) =>
+                      widget.explorePageBuilder?.call(item.sessionId) ??
+                      ExplorePage(targetSessionId: item.sessionId),
                 ),
               );
             }
@@ -264,7 +311,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             if (item.cityName != null) {
               Navigator.of(context).push(
                 MaterialPageRoute(
-                  builder: (_) => LeaderboardScreen(cityFilter: item.cityName!),
+                  builder: (_) =>
+                      widget.leaderboardPageBuilder?.call(item.cityName!) ??
+                      LeaderboardScreen(cityFilter: item.cityName!),
                 ),
               );
             }
@@ -274,7 +323,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           case NotificationType.leaderboardOvertake:
             Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => const LeaderboardScreen(cityFilter: 'Global Leaderboard'),
+                builder: (_) =>
+                    widget.leaderboardPageBuilder?.call('Global Leaderboard') ??
+                    const LeaderboardScreen(
+                        cityFilter: 'Global Leaderboard'),
               ),
             );
             break;
@@ -284,7 +336,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             if (currentUser != null) {
               Navigator.of(context).push(
                 MaterialPageRoute(
-                  builder: (_) => BadgePage(userId: currentUser.uid),
+                  builder: (_) =>
+                      widget.badgePageBuilder?.call(currentUser.uid) ??
+                      BadgePage(userId: currentUser.uid),
                 ),
               );
             }
@@ -504,8 +558,8 @@ class _FollowToggleWidgetState extends State<_FollowToggleWidget> {
   Widget build(BuildContext context) {
     if (_isLoading) {
       return const SizedBox(
-        width: 24, 
-        height: 24, 
+        width: 24,
+        height: 24,
         child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4A8C52))
       );
     }

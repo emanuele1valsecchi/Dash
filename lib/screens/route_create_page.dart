@@ -50,7 +50,22 @@ enum _Tool { pinDrop, freeDraw }
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 class RouteCreatePage extends StatefulWidget {
-  const RouteCreatePage({super.key});
+  /// Test seams. Production leaves all three null and the state resolves the
+  /// singleton/`.instance` lazily — an eager field initializer would throw
+  /// `[core/no-app]` when the widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseAuth? auth;
+  @visibleForTesting
+  final ClaimedAreaRepository? areaRepository;
+  @visibleForTesting
+  final RouteRepository? routeRepository;
+
+  const RouteCreatePage({
+    super.key,
+    this.auth,
+    this.areaRepository,
+    this.routeRepository,
+  });
 
   @override
   State<RouteCreatePage> createState() => _RouteCreatePageState();
@@ -58,6 +73,12 @@ class RouteCreatePage extends StatefulWidget {
 
 class _RouteCreatePageState extends State<RouteCreatePage>
     with TickerProviderStateMixin {
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+  late final ClaimedAreaRepository _areaRepository =
+      widget.areaRepository ?? ClaimedAreaRepository.instance;
+  late final RouteRepository _routeRepository =
+      widget.routeRepository ?? RouteRepository.instance;
+
   StreamSubscription<List<ClaimedArea>>? _areasSub;
   
   // ── Map ───────────────────────────────────────────────────────────────────
@@ -94,7 +115,7 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   bool _showMyAreas = true;
 
   List<ClaimedArea> get _visibleAreas {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = _auth.currentUser?.uid;
     return _allAreas.where((area) {
       final isMine = area.userId == uid;
       return isMine ? _showMyAreas : _showOtherAreas;
@@ -258,9 +279,16 @@ class _RouteCreatePageState extends State<RouteCreatePage>
   }
 
   void _startAreasStream() {
-    _areasSub = ClaimedAreaRepository.instance.areasStream().listen((areas) {
+    _areasSub = _areaRepository.areasStream().listen((areas) {
       if (!mounted) return;
       setState(() => _allAreas = areas);
+    }, onError: (Object e) {
+      // Guarded because a `snapshots()` stream reports failure by *erroring*,
+      // not by completing: without this a permission change or a network
+      // blip escapes as an unhandled async error rather than costing only
+      // the territory overlay. The map, and every route already planned on
+      // it, must survive not knowing who owns what.
+      debugPrint('Could not load claimed areas: $e');
     });
   }
 
@@ -1314,7 +1342,7 @@ class _RouteCreatePageState extends State<RouteCreatePage>
     if (_isPublishing) return false;
     setState(() => _isPublishing = true);
     try {
-      await RouteRepository.instance.publishRoute(
+      await _routeRepository.publishRoute(
         isPublic: isPublic,
         name: _trackNameCtrl.text,
         waypoints: List<LatLng>.from(_waypoints),

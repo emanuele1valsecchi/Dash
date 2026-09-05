@@ -19,6 +19,7 @@ import '../services/place_search_service.dart';
 import '../services/route_repository.dart';
 import '../services/routing_service.dart';
 import '../utils/geometry_utils.dart';
+import '../utils/route_candidates.dart';
 import '../utils/unit_formatter.dart';
 import '../widgets/save_route_dialog.dart';
 import '../widgets/units_scope.dart';
@@ -67,13 +68,34 @@ enum _RouteSheetAction { save, runNow }
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 class RouteSearchPage extends StatefulWidget {
-  const RouteSearchPage({super.key});
+  /// Test seams. Production leaves all three null and the state resolves the
+  /// singleton/`.instance` lazily — an eager field initializer would throw
+  /// `[core/no-app]` when the widget is *constructed*, before `runApp`.
+  @visibleForTesting
+  final FirebaseAuth? auth;
+  @visibleForTesting
+  final ClaimedAreaRepository? areaRepository;
+  @visibleForTesting
+  final RouteRepository? routeRepository;
+
+  const RouteSearchPage({
+    super.key,
+    this.auth,
+    this.areaRepository,
+    this.routeRepository,
+  });
 
   @override
   State<RouteSearchPage> createState() => _RouteSearchPageState();
 }
 
 class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderStateMixin {
+  late final FirebaseAuth _auth = widget.auth ?? FirebaseAuth.instance;
+  late final ClaimedAreaRepository _areaRepository =
+      widget.areaRepository ?? ClaimedAreaRepository.instance;
+  late final RouteRepository _routeRepository =
+      widget.routeRepository ?? RouteRepository.instance;
+
   StreamSubscription<List<ClaimedArea>>? _areasSub;
   // ── Map ───────────────────────────────────────────────────────────────────
   final MapController _mapController = MapController();
@@ -89,7 +111,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   bool _showMyAreas = true;
 
   List<ClaimedArea> get _visibleAreas {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = _auth.currentUser?.uid;
     return _allAreas.where((area) {
       final isMine = area.userId == uid;
       return isMine ? _showMyAreas : _showOtherAreas;
@@ -150,7 +172,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   // Set when every loop candidate that otherwise qualified (real ORS
   // geometry, right distance) turned out to be a degenerate "there and
   // back" sliver rather than an actual enclosed loop — see
-  // `_enclosesRealArea`. Distinct from a plain "no match" so `_search` can
+  // `RouteCandidates.enclosesRealArea`. Distinct from a plain "no match" so `_search` can
   // point at the actual cause instead of a generic message.
   bool _lastSearchOnlyDegenerateLoops = false;
 
@@ -166,12 +188,6 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   static const double _paceMinPerKm = 9.0;   // magic default
   static const double _calPerKm = 70.0;       // magic default
 
-  // Cross-checking the user's own time/distance/calorie entries against each
-  // other in `_deriveTarget` — all three are independently derived from the
-  // magic per-km constants above, so they're never expected to agree
-  // exactly. Kept loose so entering, say, a time and a distance that imply
-  // slightly different paces isn't treated as a hard conflict.
-  static const double _conflictTolerance = 0.30;
 
   // Filtering *generated* routes against the resolved target distance is a
   // separate, much tighter band — a "find me an 8 km route" search
@@ -217,9 +233,15 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   }
 
   void _startAreasStream() {
-    _areasSub = ClaimedAreaRepository.instance.areasStream().listen((areas) {
+    _areasSub = _areaRepository.areasStream().listen((areas) {
       if (!mounted) return;
       setState(() => _allAreas = areas);
+    }, onError: (Object e) {
+      // Guarded for the same reason as `route_create_page`/`explore_page`: a
+      // `snapshots()` stream reports failure by *erroring*, so without this a
+      // permission change or a network blip escapes as an unhandled async
+      // error rather than costing only the territory overlay.
+      debugPrint('Could not load claimed areas: $e');
     });
   }
 
@@ -356,53 +378,17 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
 
   // ── Constraint resolution ─────────────────────────────────────────────────
 
-  ({bool isConflict, bool isEmpty, double? targetKm}) _deriveTarget() {
-    // The distance and calorie fields are typed in whatever units the user
-    // has chosen, but everything downstream of here — `_paceMinPerKm`,
-    // `_calPerKm`, every generator's target, `_matchTolerance` — is metric.
-    // Converting at this single boundary is what keeps the search logic
-    // itself unit-agnostic.
-    final units = Units.current;
-
-    final double? fromTime = double.tryParse(_timeCtrl.text.trim()) != null
-        ? double.parse(_timeCtrl.text.trim()) / _paceMinPerKm
-        : null;
-    final double? typedDist = double.tryParse(_distCtrl.text.trim());
-    final double? fromDist =
-        typedDist == null ? null : units.majorToMeters(typedDist) / 1000.0;
-    final double? typedCal = double.tryParse(_calCtrl.text.trim());
-    final double? fromCal = typedCal == null
-        ? null
-        : units.displayToKcal(typedCal) / _calPerKm;
-
-    final targets =
-        [fromTime, fromDist, fromCal].whereType<double>().toList();
-
-    if (targets.isEmpty) return (isConflict: false, isEmpty: true, targetKm: null);
-
-    if (targets.length > 1) {
-      final minV = targets.reduce(math.min);
-      final maxV = targets.reduce(math.max);
-      if (minV > 0 && (maxV - minV) / minV > _conflictTolerance) {
-        return (isConflict: true, isEmpty: false, targetKm: null);
-      }
-    }
-
-    final avg = targets.reduce((a, b) => a + b) / targets.length;
-    return (isConflict: false, isEmpty: false, targetKm: avg);
-  }
+  RouteTarget _deriveTarget() => RouteCandidates.deriveTarget(
+        timeText: _timeCtrl.text,
+        distanceText: _distCtrl.text,
+        caloriesText: _calCtrl.text,
+        units: Units.current,
+      );
 
   // ── Geometry ──────────────────────────────────────────────────────────────
 
-  LatLng _offset(LatLng center, double distanceM, double bearingDeg) {
-    final rad = bearingDeg * math.pi / 180;
-    const mPerLat = 110540.0;
-    final mPerLng = 111320.0 * math.cos(center.latitude * math.pi / 180);
-    return LatLng(
-      center.latitude + (distanceM * math.cos(rad)) / mPerLat,
-      center.longitude + (distanceM * math.sin(rad)) / mPerLng,
-    );
-  }
+  LatLng _offset(LatLng center, double distanceM, double bearingDeg) =>
+      RouteCandidates.offset(center, distanceM, bearingDeg);
 
   // ── Routing helpers ───────────────────────────────────────────────────────
   //
@@ -641,25 +627,10 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   /// circular max is generous enough to accept a real but elongated loop
   /// (even a lopsided 10:1 rectangle clears it several times over) while
   /// still catching a genuine sliver.
-  bool _enclosesRealArea(RouteSegment seg) {
-    if (seg.polyline.length < 4 || seg.distanceMeters <= 0) return false;
-    final area = GeometryUtils.polygonAreaM2(seg.polyline);
-    final maxCircularArea =
-        (seg.distanceMeters * seg.distanceMeters) / (4 * math.pi);
-    return area >= maxCircularArea * 0.02;
-  }
 
   /// Average of a polyline's vertices — a cheap shape fingerprint for
   /// `_dedupeSimilarRoutes` (adequate at city scale; true polygon
   /// centroids aren't needed there).
-  LatLng _polylineCentroid(List<LatLng> points) {
-    var lat = 0.0, lng = 0.0;
-    for (final p in points) {
-      lat += p.latitude;
-      lng += p.longitude;
-    }
-    return LatLng(lat / points.length, lng / points.length);
-  }
 
   /// Drops candidates that are effectively the same route as one already
   /// kept — different round-trip seeds (or a padded detour and a natural
@@ -669,29 +640,6 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   /// max(60 m, 2% of the length) — deliberately loose fingerprints, since
   /// near-identical routes offer the user nothing distinct anyway. Keeps
   /// input order, so callers sort by preference first.
-  List<RouteSegment> _dedupeSimilarRoutes(List<RouteSegment> segments) {
-    final kept = <RouteSegment>[];
-    final centroids = <LatLng>[];
-    const dist = Distance();
-    for (final s in segments) {
-      final c = _polylineCentroid(s.polyline);
-      var isDup = false;
-      for (var i = 0; i < kept.length; i++) {
-        final lengthGap = (kept[i].distanceMeters - s.distanceMeters).abs() /
-            math.max(kept[i].distanceMeters, s.distanceMeters);
-        if (lengthGap > 0.03) continue;
-        if (dist(centroids[i], c) <= math.max(60.0, s.distanceMeters * 0.02)) {
-          isDup = true;
-          break;
-        }
-      }
-      if (!isDup) {
-        kept.add(s);
-        centroids.add(c);
-      }
-    }
-    return kept;
-  }
 
   /// A user-shaped loop (start → stops → back to start). With no target the
   /// stops fully determine the shape — the natural loop is returned as long
@@ -750,7 +698,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
       }
     }
 
-    final real = candidates.where(_enclosesRealArea).toList();
+    final real = candidates.where(RouteCandidates.enclosesRealArea).toList();
     if (real.isEmpty) {
       _lastSearchOnlyDegenerateLoops = true;
       _lastSearchRateLimited = paddingRateLimited;
@@ -769,7 +717,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
       // best answer for the user's own stops — never an empty result.
       chosen = matched.isNotEmpty
           ? matched
-          : (_enclosesRealArea(natural)
+          : (RouteCandidates.enclosesRealArea(natural)
               ? [natural]
               : (real
                 ..sort((a, b) => GeometryUtils.polygonAreaM2(b.polyline)
@@ -779,7 +727,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
     }
 
     final results = <_FoundRoute>[];
-    for (final seg in _dedupeSimilarRoutes(chosen).take(3)) {
+    for (final seg in RouteCandidates.dedupeSimilar(chosen).take(3)) {
       results.add(_toFoundRoute(seg, results.length, laps: laps));
     }
     return results;
@@ -789,7 +737,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   /// out-and-back unless the return leg is deliberately routed differently
   /// from the outbound one — ORS's plain shortest path each way will almost
   /// always retrace the same street, which is exactly the degenerate
-  /// "ran up and down the road" shape `_enclosesRealArea` exists to catch.
+  /// "ran up and down the road" shape `RouteCandidates.enclosesRealArea` exists to catch.
   /// The outbound leg is routed normally; return-leg candidates come from
   /// ORS's alternative routes and — when a target asks for more distance
   /// than any natural return can offer — from padded detours sized so the
@@ -856,7 +804,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
       return [];
     }
 
-    final real = candidates.where(_enclosesRealArea).toList();
+    final real = candidates.where(RouteCandidates.enclosesRealArea).toList();
     if (real.isEmpty) {
       _lastSearchOnlyDegenerateLoops = true;
       _lastSearchRateLimited = paddingRateLimited;
@@ -882,7 +830,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
     }
 
     final results = <_FoundRoute>[];
-    for (final seg in _dedupeSimilarRoutes(chosen).take(3)) {
+    for (final seg in RouteCandidates.dedupeSimilar(chosen).take(3)) {
       results.add(_toFoundRoute(seg, results.length, laps: laps));
     }
     return results;
@@ -900,7 +848,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
   /// rather than a guarantee, so the closest misses get one corrective
   /// re-request each with the length rescaled by the measured ratio (same
   /// seed → the loop grows/shrinks in place instead of jumping direction).
-  /// Every candidate still has to clear `_enclosesRealArea` — a sparse
+  /// Every candidate still has to clear `RouteCandidates.enclosesRealArea` — a sparse
   /// network can force even a round trip into an out-and-back (a single
   /// dead-end valley road, say).
   ///
@@ -949,10 +897,10 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
 
     final matched = <RouteSegment>[
       for (final c in usable)
-        if (matchesDistance(c.seg) && _enclosesRealArea(c.seg)) c.seg,
+        if (matchesDistance(c.seg) && RouteCandidates.enclosesRealArea(c.seg)) c.seg,
     ];
     var sawDegenerateMatch =
-        usable.any((c) => matchesDistance(c.seg) && !_enclosesRealArea(c.seg));
+        usable.any((c) => matchesDistance(c.seg) && !RouteCandidates.enclosesRealArea(c.seg));
 
     // Correct the closest misses — a round trip's measured length responds
     // roughly linearly to the requested length for a fixed seed.
@@ -975,7 +923,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
         }
         final seg = corrected.seg;
         if (seg == null || !matchesDistance(seg)) continue;
-        if (_enclosesRealArea(seg)) {
+        if (RouteCandidates.enclosesRealArea(seg)) {
           matched.add(seg);
         } else {
           sawDegenerateMatch = true;
@@ -983,7 +931,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
       }
     }
 
-    var segments = _dedupeSimilarRoutes(matched
+    var segments = RouteCandidates.dedupeSimilar(matched
       ..sort((a, b) => _toleranceMiss(a.distanceMeters, targetDistM)
           .compareTo(_toleranceMiss(b.distanceMeters, targetDistM))));
 
@@ -1045,11 +993,11 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
 
     final segments = <RouteSegment>[
       for (final c in usable)
-        if (matchesDistance(c.chain.seg) && _enclosesRealArea(c.chain.seg))
+        if (matchesDistance(c.chain.seg) && RouteCandidates.enclosesRealArea(c.chain.seg))
           c.chain.seg,
     ];
     var sawDegenerate = usable.any(
-        (c) => matchesDistance(c.chain.seg) && !_enclosesRealArea(c.chain.seg));
+        (c) => matchesDistance(c.chain.seg) && !RouteCandidates.enclosesRealArea(c.chain.seg));
 
     if (segments.isEmpty && usable.isNotEmpty && !rateLimited) {
       final best = usable.first;
@@ -1069,7 +1017,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
         }
         currentDist = refined.seg.distanceMeters;
         if (matchesDistance(refined.seg)) {
-          if (_enclosesRealArea(refined.seg)) {
+          if (RouteCandidates.enclosesRealArea(refined.seg)) {
             segments.add(refined.seg);
           } else {
             sawDegenerate = true;
@@ -1245,7 +1193,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
       }
 
       final results = <_FoundRoute>[];
-      for (final seg in _dedupeSimilarRoutes(chosen).take(3)) {
+      for (final seg in RouteCandidates.dedupeSimilar(chosen).take(3)) {
         results.add(_toFoundRoute(seg, results.length));
       }
       return results;
@@ -1333,7 +1281,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
       return [];
     }
 
-    final ranked = _dedupeSimilarRoutes([...padded.segments]
+    final ranked = RouteCandidates.dedupeSimilar([...padded.segments]
       ..sort((a, b) => _toleranceMiss(a.distanceMeters, targetDistM)
           .compareTo(_toleranceMiss(b.distanceMeters, targetDistM))));
 
@@ -1646,7 +1594,7 @@ class _RouteSearchPageState extends State<RouteSearchPage> with TickerProviderSt
     final name = '${Units.current.distanceMajor(route.distanceKm * 1000, decimals: 1)} '
         '${_isClosedCircuit ? 'loop' : 'route'}';
     try {
-      await RouteRepository.instance.publishRoute(
+      await _routeRepository.publishRoute(
         name: name,
         isPublic: choice.isPublic,
         waypoints: const [],

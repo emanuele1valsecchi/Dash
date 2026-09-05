@@ -19,7 +19,20 @@ class SearchFriendPage extends StatefulWidget {
   @visibleForTesting
   final FirebaseFirestore? firestore;
 
-  const SearchFriendPage({super.key, this.firestore});
+  /// What tapping a result opens. Defaults to [PublicProfilePage].
+  ///
+  /// Overridden only in tests: that page needs five injected dependencies of
+  /// its own, and one of them resolves Firebase eagerly, so building it here
+  /// would make the *tap* untestable — and the tap is what records a recent
+  /// search.
+  @visibleForTesting
+  final Widget Function(String userId)? profilePageBuilder;
+
+  const SearchFriendPage({
+    super.key,
+    this.firestore,
+    this.profilePageBuilder,
+  });
 
   @override
   State<SearchFriendPage> createState() => _SearchFriendPageState();
@@ -287,10 +300,12 @@ class _SearchFriendPageState extends State<SearchFriendPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => PublicProfilePage(
-          userId: user['uid'],
-          firestore: widget.firestore,
-        ),
+        builder: (context) =>
+            widget.profilePageBuilder?.call(user['uid'] as String) ??
+            PublicProfilePage(
+              userId: user['uid'],
+              firestore: widget.firestore,
+            ),
       ),
     );
   }

@@ -374,4 +374,259 @@ void main() {
       expect(find.textContaining('14 March 2026'), findsOneWidget);
     });
   });
+
+  /// The assembled notification line. The actor's name and the rest of the
+  /// message are two spans of one `RichText`, so a plain text finder sees
+  /// neither half — only the whole thing, read back from the span tree.
+  String richMessage(WidgetTester tester) {
+    // Identified by structure, not position or length: the message is the
+    // only `RichText` built from several spans (the bold name and the rest).
+    // Icon fonts and the date line are single-span `RichText`s too, and both
+    // would otherwise win a "first" or "longest" heuristic.
+    final rich = tester.widgetList<RichText>(find.byType(RichText)).firstWhere(
+        (w) => w.text is TextSpan && (w.text as TextSpan).children != null);
+    return rich.text.toPlainText();
+  }
+
+  group('the actor avatar', () {
+    // A notification carries the actor's picture when there is one. Falling
+    // back to a glyph matters: `imageUrl` is absent for a system message and
+    // empty for a user who never uploaded one, and both must render.
+    testWidgets('a follow with a picture shows it', (tester) async {
+      await addNotification(
+        type: 'newFollower',
+        actorName: 'Ada',
+        extra: {'actorImageUrl': 'https://example.com/ada.png'},
+      );
+
+      await pumpScreen(tester);
+
+      expect(find.byType(CircleAvatar), findsWidgets);
+      expect(find.byIcon(Icons.person_add_alt_1_rounded), findsNothing);
+    });
+
+    testWidgets('a follow without one falls back to a glyph', (tester) async {
+      await addNotification(type: 'newFollower', actorName: 'Ada');
+
+      await pumpScreen(tester);
+
+      expect(find.byIcon(Icons.person_add_alt_1_rounded), findsOneWidget);
+    });
+
+    testWidgets('an empty picture url is treated as none', (tester) async {
+      // Stored as '' rather than omitted by several writers; a NetworkImage
+      // on an empty string renders nothing at all.
+      await addNotification(
+        type: 'newFollower',
+        actorName: 'Ada',
+        extra: {'actorImageUrl': ''},
+      );
+
+      await pumpScreen(tester);
+
+      expect(find.byIcon(Icons.person_add_alt_1_rounded), findsOneWidget);
+    });
+
+    testWidgets('a route notification with a picture shows it', (tester) async {
+      await addNotification(
+        type: 'routeSaved',
+        actorName: 'Ada',
+        extra: {'actorImageUrl': 'https://example.com/ada.png'},
+      );
+
+      await pumpScreen(tester);
+
+      expect(find.byType(CircleAvatar), findsWidgets);
+      expect(find.byIcon(Icons.map_rounded), findsNothing);
+    });
+
+    testWidgets('a route notification without one falls back to a map glyph',
+        (tester) async {
+      await addNotification(type: 'routeSaved', actorName: 'Ada');
+
+      await pumpScreen(tester);
+
+      expect(find.byIcon(Icons.map_rounded), findsOneWidget);
+    });
+  });
+
+  group('the message', () {
+    // The actor's name is drawn in bold and the rest follows it, so the
+    // spacing between the two is assembled here rather than stored.
+    testWidgets('a named actor is separated from the text', (tester) async {
+      await addNotification(actorName: 'Ada', message: 'took your territory');
+
+      await pumpScreen(tester);
+
+      expect(richMessage(tester), 'Ada took your territory',
+          reason: 'a space is added when the message does not carry one');
+    });
+
+    testWidgets('a message already spaced is not spaced twice', (tester) async {
+      await addNotification(actorName: 'Ada', message: ' took your territory');
+
+      await pumpScreen(tester);
+
+      expect(richMessage(tester), 'Ada took your territory',
+          reason: 'not spaced twice');
+    });
+
+    testWidgets('a system message with no actor starts at the left edge',
+        (tester) async {
+      // Nothing is bold, so the leading space that would follow a name would
+      // read as a stray indent.
+      await addNotification(message: '  Your badge is ready');
+
+      await pumpScreen(tester);
+
+      expect(richMessage(tester), 'Your badge is ready',
+          reason: 'no bold name, so no leading space either');
+    });
+  });
+
+
+  group('where a notification leads', () {
+    // The switch on `NotificationType` is this screen's actual logic, and
+    // getting it wrong sends someone to a stranger's profile instead of
+    // their own leaderboard. Destinations are substituted (see the page's
+    // builder seams) so the decision can be asserted without standing up a
+    // live map or leaderboard query.
+    Future<void> pumpWithStubs(WidgetTester tester) async {
+      await mockNetworkImagesFor(() async {
+        await pumpDashWidget(
+          tester,
+          NotificationsScreen(
+            firestore: db,
+            auth: auth,
+            profilePageBuilder: (uid) => Text('PROFILE $uid'),
+            runDetailPageBuilder: (s, u) => Text('RUN $s by $u'),
+            routeDetailPageBuilder: (r, a) => Text('ROUTE $r by $a'),
+            explorePageBuilder: (s) => Text('EXPLORE $s'),
+            leaderboardPageBuilder: (c) => Text('BOARD $c'),
+            badgePageBuilder: (uid) => Text('BADGES $uid'),
+          ),
+          wrapInScaffold: false,
+        );
+        await tester.pumpAndSettle();
+      });
+    }
+
+    Future<void> tapFirst(WidgetTester tester) async {
+      await tester.tap(find.byType(InkWell).first);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a new follower opens that person, not the viewer',
+        (tester) async {
+      await addNotification(
+          type: 'newFollower', actorName: 'Ada', extra: {'actorId': 'ada'});
+      await pumpWithStubs(tester);
+
+      await tapFirst(tester);
+
+      expect(find.text('PROFILE ada'), findsOneWidget);
+    });
+
+    testWidgets('a stolen area opens the map at that run', (tester) async {
+      // Explore takes the session so it can fly to the ground that changed
+      // hands — without it the user lands on their own position and has to
+      // hunt for what happened.
+      await addNotification(
+          type: 'areaStolen', extra: {'sessionId': 'sess-9'});
+      await pumpWithStubs(tester);
+
+      await tapFirst(tester);
+
+      expect(find.text('EXPLORE sess-9'), findsOneWidget);
+    });
+
+    testWidgets('a route notification naming a run opens the run',
+        (tester) async {
+      await addNotification(
+        type: 'routeSaved',
+        actorName: 'Ada',
+        extra: {'sessionId': 'sess-1', 'actorId': 'ada'},
+      );
+      await pumpWithStubs(tester);
+
+      await tapFirst(tester);
+
+      expect(find.text('RUN sess-1 by ada'), findsOneWidget);
+    });
+
+    testWidgets('a run wins over a route when both are named', (tester) async {
+      // The run is the richer destination and the one the notification is
+      // really about; the route id is denormalised alongside it.
+      await addNotification(
+        type: 'routeSaved',
+        actorName: 'Ada',
+        extra: {'sessionId': 'sess-1', 'routeId': 'r-1', 'actorId': 'ada'},
+      );
+      await pumpWithStubs(tester);
+
+      await tapFirst(tester);
+
+      expect(find.text('RUN sess-1 by ada'), findsOneWidget);
+      expect(find.textContaining('ROUTE'), findsNothing);
+    });
+
+    testWidgets('a route notification naming only a route opens the route',
+        (tester) async {
+      await db.collection('routes').doc('r-1').set({
+        'name': 'Park loop',
+        'routePolyline': const <Object>[],
+        'distanceMeters': 4000,
+      });
+      await addNotification(
+          type: 'newRoutePublished',
+          actorName: 'Ada',
+          extra: {'routeId': 'r-1'});
+      await pumpWithStubs(tester);
+
+      await tapFirst(tester);
+
+      expect(find.text('ROUTE r-1 by Ada'), findsOneWidget);
+    });
+
+    testWidgets('a city leaderboard entry opens that city', (tester) async {
+      await addNotification(
+          type: 'leaderboardCityEntry', extra: {'cityName': 'Milano'});
+      await pumpWithStubs(tester);
+
+      await tapFirst(tester);
+
+      expect(find.text('BOARD Milano'), findsOneWidget);
+    });
+
+    testWidgets('a global entry opens the global board', (tester) async {
+      await addNotification(type: 'leaderboardGlobalEntry');
+      await pumpWithStubs(tester);
+
+      await tapFirst(tester);
+
+      expect(find.text('BOARD Global Leaderboard'), findsOneWidget);
+    });
+
+    testWidgets('being overtaken opens the global board too', (tester) async {
+      await addNotification(type: 'leaderboardOvertake');
+      await pumpWithStubs(tester);
+
+      await tapFirst(tester);
+
+      expect(find.text('BOARD Global Leaderboard'), findsOneWidget);
+    });
+
+    testWidgets('an unlocked badge opens your own badges, not the actor\'s',
+        (tester) async {
+      // The badge is yours; the notification names no one else.
+      await addNotification(
+          type: 'badgeUnlocked', extra: {'actorId': 'someone'});
+      await pumpWithStubs(tester);
+
+      await tapFirst(tester);
+
+      expect(find.text('BADGES me'), findsOneWidget);
+    });
+  });
+
 }

@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:mockito/mockito.dart';
 import 'package:network_image_mock/network_image_mock.dart';
 
 import 'package:firebase_core/firebase_core.dart';
@@ -20,6 +21,7 @@ import 'package:dash/widgets/map/claimed_areas_layer.dart';
 
 import '../helpers/fake_location_platform.dart';
 import '../helpers/pump_app.dart';
+import '../mocks.mocks.dart' hide MockUser;
 
 /// The map everyone sees: every player's claimed territory drawn over a
 /// tile map, with the two filter toggles that decide whose ground is shown.
@@ -284,4 +286,32 @@ void main() {
       expect(drawnIds(tester), ['mine']);
     });
   });
+
+  group('a failed territory load', () {
+    testWidgets('costs the overlay, not the screen', (tester) async {
+      // A `snapshots()` stream reports failure by *erroring*, not by
+      // completing, so without an `onError` the failure escapes as an
+      // unhandled async error. Same class as the unguarded `async void`
+      // badge loads fixed elsewhere: the map must survive not knowing who
+      // owns what.
+      final failing = MockClaimedAreaRepository();
+      when(failing.areasStream())
+          .thenAnswer((_) => Stream.error(Exception('permission-denied')));
+
+      await mockNetworkImagesFor(() async {
+        await pumpDashWidget(
+          tester,
+          ExplorePage(auth: auth, areaRepository: failing),
+          wrapInScaffold: false,
+          surfaceSize: kPhoneSurface,
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+      });
+
+      expect(tester.takeException(), isNull);
+      expect(find.byType(ClaimedAreasLayer), findsOneWidget);
+    });
+  });
+
 }

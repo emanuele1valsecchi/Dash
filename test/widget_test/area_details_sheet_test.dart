@@ -330,4 +330,55 @@ void main() {
       expect(find.byType(AreaDetailsSheet), findsNothing);
     });
   });
+
+  group('how long each contributing run took', () {
+    // Three shapes, because a claimed area can come from a long trail run or
+    // from one quick lap of a block, and "0m 42s" or "94m" would both read
+    // as a bug next to the other rows.
+    testWidgets('under a minute is shown in seconds alone', (tester) async {
+      await pumpSheet(
+          tester, area(contributions: [contribution(durationMs: 42000)]));
+
+      expect(find.textContaining('42s'), findsOneWidget);
+      expect(find.textContaining('0m'), findsNothing);
+    });
+
+    testWidgets('under an hour is shown in minutes and seconds',
+        (tester) async {
+      await pumpSheet(
+          tester, area(contributions: [contribution(durationMs: 754000)]));
+
+      expect(find.textContaining('12m 34s'), findsOneWidget);
+    });
+
+    testWidgets('an hour or more drops the seconds', (tester) async {
+      // At that length a second of precision says nothing, and the row has
+      // to fit beside the date and pace.
+      await pumpSheet(
+          tester, area(contributions: [contribution(durationMs: 5040000)]));
+
+      expect(find.textContaining('1h 24m'), findsOneWidget);
+      expect(find.textContaining('1h 24m 0s'), findsNothing,
+          reason: 'seconds are dropped entirely, not shown as zero');
+    });
+
+    testWidgets('exactly one hour is not shown as 60 minutes', (tester) async {
+      await pumpSheet(
+          tester, area(contributions: [contribution(durationMs: 3600000)]));
+
+      expect(find.textContaining('1h 0m'), findsOneWidget);
+      expect(find.textContaining('60m'), findsNothing);
+    });
+
+    testWidgets('a run of no recorded length still renders a row',
+        (tester) async {
+      // Sessions written before duration was denormalised onto the
+      // contribution carry zero; the row must still list the run.
+      await pumpSheet(
+          tester, area(contributions: [contribution(durationMs: 0)]));
+
+      expect(find.textContaining('0s'), findsOneWidget);
+    });
+  });
+
 }

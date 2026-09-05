@@ -235,6 +235,12 @@ class _ExplorePageState extends State<ExplorePage> with TickerProviderStateMixin
         _focusOnStolenArea(widget.targetSessionId!);
         _hasFocusedOnStolenArea = true; 
       }
+    }, onError: (Object e) {
+      // Guarded for the same reason as `route_create_page`: a `snapshots()`
+      // stream reports failure by *erroring*, so without this a permission
+      // change or a network blip escapes as an unhandled async error rather
+      // than costing only the territory overlay.
+      debugPrint('Could not load claimed areas: $e');
     });
   }
 
