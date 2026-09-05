@@ -165,6 +165,16 @@ class StandaloneRecorder {
     return true;
   }
 
+  /// Feeds one fix through the recorder exactly as the GPS stream would.
+  ///
+  /// The filtering below decides how far the watch thinks you ran, and a
+  /// standalone run has no phone recording alongside it to check against —
+  /// so it needs to be testable without a device. Mirrors
+  /// `RunSessionController.onPosition` on the phone, which exists for the
+  /// same reason.
+  @visibleForTesting
+  void onPosition(Position pos) => _onPosition(pos);
+
   void _onPosition(Position pos) {
     if (pos.accuracy > _accuracyThresholdMeters) return;
 
