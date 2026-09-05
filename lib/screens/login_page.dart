@@ -1,6 +1,7 @@
 import 'package:dash/root_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // <-- Aggiunto per il reset password
 import '../services/auth_service.dart';
 import 'legal_page.dart';
 import 'register_page.dart';
@@ -88,6 +89,37 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } on Exception catch (e) {
       setState(() => _errorMessage = _parseError(e.toString()));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // ─── Reset Password Logic ───────────────────────────────────────────────────
+  Future<void> _resetPassword() async {
+    final email = _emailController.text.trim();
+    if (email.isEmpty) {
+      setState(() => _errorMessage = 'Please enter your email address first.');
+      return;
+    }
+
+    setState(() { _isLoading = true; _errorMessage = null; });
+    
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      if (mounted) {
+        // Usiamo lo SnackBar nativo per sicurezza al 100% senza import extra
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Password reset email sent! Check your inbox.'),
+            backgroundColor: Color(0xFF4A8C52),
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      setState(() => _errorMessage = e.message ?? 'Could not send reset email.');
+    } catch (e) {
+      setState(() => _errorMessage = 'Something went wrong. Try again.');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -215,9 +247,30 @@ class _LoginScreenState extends State<LoginScreen> {
                 onSubmitted: (_) => _onLoginPressed(),
               ),
 
+              // ── Forgot Password ────────────────────────────
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: _isLoading ? null : _resetPassword,
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: const Text(
+                    'Forgot password?',
+                    style: TextStyle(
+                      color: Color(0xFF4A8C52),
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              ),
+
               // ── Errore ─────────────────────────────────────
               if (_errorMessage != null) ...[
-                const SizedBox(height: 10),
+                const SizedBox(height: 2), // Leggermente ridotto per compensare il bottone forgot
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
@@ -494,12 +547,3 @@ class _GooglePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
-
-// ─── Meta Icon ────────────────────────────────────────────────────────────────
-/*
-class _MetaIcon extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) =>
-      const Icon(Icons.facebook, color: Color(0xFF1877F2), size: 24);
-}*/
-
