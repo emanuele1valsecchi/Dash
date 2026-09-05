@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -41,6 +42,7 @@ void main() {
   late PhoneRelayStatsSource relay;
   late WatchRunCoordinator coordinator;
   late Directory tempDir;
+  late List<String> serviceCalls;
 
   setUp(() async {
     tempDir = await Directory.systemTemp.createTemp('dash_wear_test');
@@ -48,14 +50,19 @@ void main() {
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
 
     // The relay and the foreground service are pure platform channels here.
-    for (final channel in [wearChannel, runServiceChannel]) {
-      messenger.setMockMethodCallHandler(channel, (call) async {
-        if (call.method == 'nodes' || call.method == 'getData') {
-          return <Object?>[];
-        }
-        return null;
-      });
-    }
+    messenger.setMockMethodCallHandler(wearChannel, (call) async {
+      if (call.method == 'nodes' || call.method == 'getData') {
+        return <Object?>[];
+      }
+      return null;
+    });
+    // The service calls are recorded rather than discarded: *when* it starts
+    // relative to the countdown is load-bearing, not incidental.
+    serviceCalls = [];
+    messenger.setMockMethodCallHandler(runServiceChannel, (call) async {
+      serviceCalls.add(call.method);
+      return null;
+    });
     // `StandaloneRecorder`'s static pending-run helpers write real files.
     messenger.setMockMethodCallHandler(pathProvider, (call) async {
       return tempDir.path;
@@ -222,6 +229,383 @@ void main() {
       expect(coordinator.current.distanceMeters, 1234);
     });
   });
+
+  // ── Handing a finished run to the phone ───────────────────────────────────
+  //
+  // The most consequential thing the watch does. A standalone run exists only
+  // as a file on the watch until the phone acknowledges it, so the states here
+  // decide whether a real run is kept, retried, or quietly lost.
+
+  /// Writes a finished run to the pending file, as a real standalone run
+  /// would have left behind.
+  Future<void> writePendingRun({bool alreadySent = false}) async {
+    final file = File('${tempDir.path}/standalone_run.json');
+    await file.writeAsString(jsonEncode({
+      'startedAt': DateTime.now().millisecondsSinceEpoch,
+      'durationMs': 1800000,
+      'distanceMeters': 5000.0,
+      'fixes': <Object?>[],
+      if (alreadySent) 'sentAt': DateTime.now().millisecondsSinceEpoch,
+    }));
+  }
+
+  bool pendingFileExists() =>
+      File('${tempDir.path}/standalone_run.json').existsSync();
+
+  Map<String, Object?> pendingFile() => (jsonDecode(
+        File('${tempDir.path}/standalone_run.json').readAsStringSync(),
+      ) as Map)
+          .cast<String, Object?>();
+
+  /// Decides whether the Data Layer accepts the run.
+  ///
+  /// A refusal throws rather than returning false: `sendStandaloneRun`
+  /// discards `putData`'s return value and reports failure only from the
+  /// exception, which is how the platform actually signals an unreachable
+  /// phone.
+  void phoneAccepts(bool accepted) {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(wearChannel, (call) async {
+      if (call.method == 'nodes' || call.method == 'getData') {
+        return <Object?>[];
+      }
+      if (call.method == 'putData') {
+        if (!accepted) {
+          throw PlatformException(code: 'unavailable', message: 'no node');
+        }
+        return true;
+      }
+      return null;
+    });
+  }
+
+  group('handing a finished run to the phone', () {
+    test('does nothing when there is no run on disk', () async {
+      phoneAccepts(true);
+
+      await coordinator.sendPendingRun();
+
+      expect(coordinator.sendState, RunSendState.failed,
+          reason: 'nothing was handed over, so nothing succeeded');
+    });
+
+    test('is marked sent once the phone has queued it', () async {
+      // `sentAt` is what makes the run eligible for an automatic retry later;
+      // without it an unacknowledged run is never chased.
+      await writePendingRun();
+      phoneAccepts(true);
+
+      await coordinator.sendPendingRun();
+
+      expect(coordinator.sendState, RunSendState.sent);
+      expect(pendingFile()['sentAt'], isNotNull);
+    });
+
+    test('the file survives being sent', () async {
+      // Deleting on send rather than on acknowledgement would lose the run
+      // whenever a transfer failed halfway.
+      await writePendingRun();
+      phoneAccepts(true);
+
+      await coordinator.sendPendingRun();
+
+      expect(pendingFileExists(), isTrue);
+    });
+
+    test('a refused hand-off is reported, and the run is not marked sent',
+        () async {
+      // Out of range, or the phone app not installed. Marking it sent would
+      // make the retry think it had already gone.
+      await writePendingRun();
+      phoneAccepts(false);
+
+      await coordinator.sendPendingRun();
+
+      expect(coordinator.sendState, RunSendState.failed);
+      expect(pendingFile()['sentAt'], isNull);
+      expect(pendingFileExists(), isTrue);
+    });
+
+    test('a failed send can be tried again', () async {
+      // `failed` is not a terminal state — the runner walks back into range
+      // and taps again.
+      await writePendingRun();
+      phoneAccepts(false);
+      await coordinator.sendPendingRun();
+      expect(coordinator.sendState, RunSendState.failed);
+
+      phoneAccepts(true);
+      await coordinator.sendPendingRun();
+
+      expect(coordinator.sendState, RunSendState.sent);
+    });
+
+    test('a run already sent is not sent twice', () async {
+      // The transfer is invisible and slow; a second tap on a button that has
+      // already succeeded should do nothing rather than duplicate the run.
+      await writePendingRun();
+      phoneAccepts(true);
+      await coordinator.sendPendingRun();
+
+      var puts = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(wearChannel, (call) async {
+        if (call.method == 'putData') puts++;
+        return call.method == 'putData' ? true : <Object?>[];
+      });
+      await coordinator.sendPendingRun();
+
+      expect(puts, 0);
+    });
+
+    test('the send state is published, so the button can follow it', () async {
+      // The screen shows "Send", "Sending…", "Sent" off this stream.
+      await writePendingRun();
+      phoneAccepts(true);
+      final seen = <RunSendState>[];
+      final sub = coordinator.sendStates.listen(seen.add);
+
+      await coordinator.sendPendingRun();
+      // The controller is a broadcast stream, so the last event is delivered
+      // a turn later than the call that produced it.
+      await settle();
+      await sub.cancel();
+
+      expect(seen, [RunSendState.sending, RunSendState.sent]);
+    });
+
+    test('a refusal ends in failed, not stuck sending', () async {
+      await writePendingRun();
+      phoneAccepts(false);
+      final seen = <RunSendState>[];
+      final sub = coordinator.sendStates.listen(seen.add);
+
+      await coordinator.sendPendingRun();
+      await settle();
+      await sub.cancel();
+
+      expect(seen.last, RunSendState.failed);
+    });
+  });
+
+  group('heart rate', () {
+    test('reaches the recorder, which is what writes it into the run',
+        () async {
+      // Only the watch can measure this. If it does not reach the recorder it
+      // never reaches the file, and the phone has nothing to import.
+      final readings = StreamController<HeartRateReading>.broadcast();
+      addTearDown(readings.close);
+      coordinator.attachHeartRate(readings.stream);
+
+      readings.add(const HeartRateReading(
+          currentBpm: 150, averageBpm: 142, maxBpm: 175));
+      await settle();
+
+      expect(recorder.avgHeartRate, 142);
+      expect(recorder.maxHeartRate, 175);
+    });
+
+    test('the latest reading wins', () async {
+      final readings = StreamController<HeartRateReading>.broadcast();
+      addTearDown(readings.close);
+      coordinator.attachHeartRate(readings.stream);
+
+      readings.add(const HeartRateReading(
+          currentBpm: 120, averageBpm: 118, maxBpm: 130));
+      await settle();
+      readings.add(const HeartRateReading(
+          currentBpm: 160, averageBpm: 145, maxBpm: 178));
+      await settle();
+
+      expect(recorder.avgHeartRate, 145);
+      expect(recorder.maxHeartRate, 178);
+    });
+  });
+
+  // ── Starting a run with no phone ──────────────────────────────────────────
+  //
+  // `testWidgets` rather than `test`, for the clock: the countdown is a
+  // `Timer.periodic` and only a widget binding gives a fake one that can be
+  // wound forward without waiting five real seconds.
+
+  group('the pre-run countdown', () {
+    /// Asks for a run and lets the countdown run to completion.
+    Future<void> startAndCountDown(WidgetTester tester,
+        {int seconds = 6}) async {
+      await coordinator.send(WatchCommand.start);
+      for (var i = 0; i < seconds; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+      // `pump`, not the `settle` helper the plain tests use: inside
+      // `testWidgets` the clock is fake, so an awaited `Future.delayed` never
+      // fires unless the test advances it — and waiting on one hangs.
+      await tester.pump();
+    }
+
+    testWidgets('the foreground service starts before the counting does',
+        (tester) async {
+      // Load-bearing ordering, not tidiness. Wear OS backgrounds the app
+      // within seconds of the wrist lowering, and a backgrounded Flutter
+      // engine has its timers throttled — a countdown begun without the
+      // service simply never finishes and the run never starts. Android 12+
+      // also refuses a background service start, so it has to happen while
+      // the app is still visible.
+      await coordinator.send(WatchCommand.start);
+
+      expect(serviceCalls.first, 'start');
+      expect(coordinator.current.phase, RunPhase.countdown);
+      // Cancels the countdown or the run ticker. A body that ends
+      // with a periodic timer still pending fails the test, and a
+      // tearDown runs after that check rather than before it.
+      coordinator.dispose();
+    });
+
+    testWidgets('counts down from five', (tester) async {
+      await coordinator.send(WatchCommand.start);
+
+      expect(coordinator.current.countdownValue, 5);
+      await tester.pump(const Duration(seconds: 1));
+      expect(coordinator.current.countdownValue, 4);
+      await tester.pump(const Duration(seconds: 1));
+      expect(coordinator.current.countdownValue, 3);
+      // Cancels the countdown or the run ticker. A body that ends
+      // with a periodic timer still pending fails the test, and a
+      // tearDown runs after that check rather than before it.
+      coordinator.dispose();
+    });
+
+    testWidgets('recording begins when it reaches zero', (tester) async {
+      await startAndCountDown(tester);
+
+      expect(coordinator.current.phase, RunPhase.running);
+      expect(coordinator.isStandalone, isTrue);
+      // Cancels the countdown or the run ticker. A body that ends
+      // with a periodic timer still pending fails the test, and a
+      // tearDown runs after that check rather than before it.
+      coordinator.dispose();
+    });
+
+    testWidgets('the service is told the run is under way', (tester) async {
+      // The notification text changes from "Starting run" to "Recording run";
+      // leaving it on the former is the visible symptom of a countdown that
+      // never completed.
+      await startAndCountDown(tester);
+
+      expect(serviceCalls, contains('update'));
+      // Cancels the countdown or the run ticker. A body that ends
+      // with a periodic timer still pending fails the test, and a
+      // tearDown runs after that check rather than before it.
+      coordinator.dispose();
+    });
+
+    testWidgets('the phone is asked too, so it can win the race',
+        (tester) async {
+      // The local countdown doubles as the grace period — deciding up front
+      // on whether a phone once answered left the watch waiting forever on a
+      // phone that was asleep.
+      await coordinator.send(WatchCommand.start);
+
+      expect(coordinator.current.phase, RunPhase.countdown);
+      // Cancels the countdown or the run ticker. A body that ends
+      // with a periodic timer still pending fails the test, and a
+      // tearDown runs after that check rather than before it.
+      coordinator.dispose();
+    });
+
+    group('when location is unavailable', () {
+      testWidgets('it falls back to idle rather than ticking over nothing',
+          (tester) async {
+        // A clock counting up over a recorder that captured no fixes is worse
+        // than no run at all: it looks like a run right up until the moment
+        // the runner tries to save it.
+        recorder.startResult = false;
+
+        await startAndCountDown(tester);
+
+        expect(coordinator.current.phase, RunPhase.idle);
+        coordinator.dispose();
+      });
+
+      testWidgets('the watch does not stay in standalone mode',
+          (tester) async {
+        // Otherwise the phone can never take the next run.
+        recorder.startResult = false;
+
+        await startAndCountDown(tester);
+
+        expect(coordinator.isStandalone, isFalse);
+        coordinator.dispose();
+      });
+
+      testWidgets('the foreground service is stopped again', (tester) async {
+        // It was started before the countdown; leaving it running would pin a
+        // notification over a run that does not exist.
+        recorder.startResult = false;
+
+        await startAndCountDown(tester);
+
+        expect(serviceCalls, contains('stop'));
+        coordinator.dispose();
+      });
+    });
+  });
+
+  group('controlling a standalone run', () {
+    Future<void> beginRun(WidgetTester tester) async {
+      await coordinator.send(WatchCommand.start);
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+      await tester.pump();
+    }
+
+    testWidgets('pausing pauses the recorder, not just the display',
+        (tester) async {
+      // The clock stopping is cosmetic; if the GPS stream keeps running the
+      // pause adds distance the runner did not cover.
+      await beginRun(tester);
+
+      await coordinator.send(WatchCommand.pause);
+
+      expect(recorder.paused, isTrue);
+      expect(coordinator.current.phase, RunPhase.paused);
+      // Cancels the countdown or the run ticker. A body that ends
+      // with a periodic timer still pending fails the test, and a
+      // tearDown runs after that check rather than before it.
+      coordinator.dispose();
+    });
+
+    testWidgets('resuming resumes it', (tester) async {
+      await beginRun(tester);
+      await coordinator.send(WatchCommand.pause);
+
+      await coordinator.send(WatchCommand.resume);
+
+      expect(recorder.resumed, isTrue);
+      expect(coordinator.current.phase, RunPhase.running);
+      // Cancels the countdown or the run ticker. A body that ends
+      // with a periodic timer still pending fails the test, and a
+      // tearDown runs after that check rather than before it.
+      coordinator.dispose();
+    });
+
+    testWidgets('a second start while already recording is ignored',
+        (tester) async {
+      // The start button is gone by then, but a queued command from the phone
+      // could still arrive — restarting would discard the run in progress.
+      await beginRun(tester);
+      final before = coordinator.current.phase;
+
+      await coordinator.send(WatchCommand.start);
+
+      expect(coordinator.current.phase, before);
+      expect(recorder.stopped, isFalse);
+      // Cancels the countdown or the run ticker. A body that ends
+      // with a periodic timer still pending fails the test, and a
+      // tearDown runs after that check rather than before it.
+      coordinator.dispose();
+    });
+  });
 }
 
 /// A recorder that never touches GPS. `WatchRunCoordinator` takes one by
@@ -229,12 +613,27 @@ void main() {
 class _FakeRecorder extends StandaloneRecorder {
   Duration elapsedOverride = Duration.zero;
   bool stopped = false;
+  int? avgHeartRate;
+  int? maxHeartRate;
+
+  @override
+  void setHeartRate({int? average, int? max}) {
+    avgHeartRate = average;
+    maxHeartRate = max;
+  }
 
   @override
   Duration get elapsed => elapsedOverride;
 
+  /// Whether the watch's GPS is available. False is a real state — location
+  /// switched off, or permission refused — and the coordinator has to fall
+  /// back rather than tick over a run recording nothing.
+  bool startResult = true;
+  bool paused = false;
+  bool resumed = false;
+
   @override
-  Future<bool> start() async => true;
+  Future<bool> start() async => startResult;
 
   @override
   Future<void> stop() async {
@@ -242,8 +641,8 @@ class _FakeRecorder extends StandaloneRecorder {
   }
 
   @override
-  Future<void> pause() async {}
+  Future<void> pause() async => paused = true;
 
   @override
-  Future<void> resume() async {}
+  Future<void> resume() async => resumed = true;
 }

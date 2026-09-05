@@ -89,6 +89,7 @@ class _ControlsPageState extends State<ControlsPage>
                     label: _hold.value > 0.02 ? 'KEEP HOLDING' : 'HOLD TO END',
                     color: WatchTheme.danger,
                     onTap: null, // hold only — a tap must never end a run
+                    fill: _hold.value,
                   ),
                 ],
               ),
@@ -101,32 +102,60 @@ class _ControlsPageState extends State<ControlsPage>
 }
 
 class _RoundButton extends StatelessWidget {
+  /// The disc at rest: a 24 dp icon inside 11 dp of padding.
+  static const double _restingDiameter = 46;
+
+  /// What it grows to at a completed hold — the inner edge of the 56 dp
+  /// progress ring, whose 3 dp stroke leaves exactly this much room inside.
+  /// Growing past it would have the disc slide under the ring rather than
+  /// meet it.
+  static const double _filledDiameter = 50;
+
+  static const double _restingAlpha = 0.16;
+  static const double _filledAlpha = 0.40;
+
   final IconData icon;
   final String label;
   final Color color;
   final VoidCallback? onTap;
+
+  /// How far a press-and-hold has accumulated, 0 to 1.
+  ///
+  /// The disc swells and deepens in step with the ring sweeping around it.
+  /// Without this the ring fills while the button sits unchanged inside it,
+  /// which reads as an animation playing *next to* the control rather than
+  /// as the control itself responding to being held.
+  final double fill;
 
   const _RoundButton({
     required this.icon,
     required this.label,
     required this.color,
     required this.onTap,
+    this.fill = 0,
   });
 
   @override
   Widget build(BuildContext context) {
+    final t = fill.clamp(0.0, 1.0);
+    final diameter =
+        _restingDiameter + (_filledDiameter - _restingDiameter) * t;
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Material(
-          color: color.withValues(alpha: 0.16),
+          color: color.withValues(
+            alpha: _restingAlpha + (_filledAlpha - _restingAlpha) * t,
+          ),
           shape: const CircleBorder(),
           child: InkWell(
             customBorder: const CircleBorder(),
             onTap: onTap,
-            child: Padding(
-              padding: const EdgeInsets.all(11),
-              child: Icon(icon, size: 24, color: color),
+            child: SizedBox(
+              width: diameter,
+              height: diameter,
+              child: Center(child: Icon(icon, size: 24, color: color)),
             ),
           ),
         ),
